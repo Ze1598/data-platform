@@ -1,0 +1,25 @@
+# Single-node kind cluster for local development.
+#
+# Single-node specifically: Trino's local-filesystem connector requires the
+# storage path to be a mount shared across every cluster node — trivially
+# true with exactly one node. See Roadmap.md "Kubernetes target".
+#
+# IMPORTANT: `kind create cluster --config platform/kind/kind-cluster.yaml`
+# must be run from the repo root — the hostPath below is resolved relative
+# to the current working directory at cluster-creation time.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: data-platform
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: ./data-lake
+        containerPath: /data-lake
+    extraPortMappings:
+      # Postgres, exposed via a NodePort Service (see metadata/k8s/service.yaml)
+      # so host tools (e.g. the Phase 1 Streamlit app running via `uv run`,
+      # or a local psql client) can keep connecting to localhost:5432
+      # unchanged, even though Postgres now runs inside the cluster.
+      - containerPort: 30432
+        hostPort: 5432
+        protocol: TCP
