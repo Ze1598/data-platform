@@ -1,0 +1,24 @@
+# One-off bucket creation — MinIO doesn't auto-create buckets. Safe to re-run
+# (`mc mb --ignore-existing` no-ops if the bucket is already there).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-create-bucket
+  namespace: query-engine
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: create-bucket
+          image: minio/mc:latest
+          command:
+            - sh
+            - -c
+            - |
+              mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" &&
+              mc mb --ignore-existing local/lakehouse
+          envFrom:
+            - secretRef:
+                name: minio-credentials

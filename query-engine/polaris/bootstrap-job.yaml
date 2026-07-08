@@ -1,0 +1,27 @@
+# One-off schema bootstrap for the relational-jdbc backend. Self-bootstrap via
+# POLARIS_BOOTSTRAP_CREDENTIALS on the main server creates the realm/root
+# credential record but does NOT create the underlying database schema —
+# confirmed by a live "relation polaris_schema.entities does not exist"
+# error querying the running server. This Job must be run once before the
+# server can actually serve requests. Safe to re-run (bootstrap is idempotent
+# against an already-bootstrapped realm).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: polaris-bootstrap
+  namespace: query-engine
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: apache/polaris-admin-tool:latest
+          args: ["bootstrap", "-r", "POLARIS", "-c", "POLARIS,root,s3cr3t"]
+          env:
+            - name: POLARIS_PERSISTENCE_TYPE
+              value: relational-jdbc
+          envFrom:
+            - secretRef:
+                name: polaris-credentials

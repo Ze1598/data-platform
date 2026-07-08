@@ -1,0 +1,54 @@
+# Local dev sizing: single pod (coordinator doing double duty as worker) to
+# fit a laptop-constrained kind cluster (~7-8GB total Docker memory, shared
+# with Postgres, Polaris, MinIO, and Kubernetes system pods). Revisit for
+# anything resembling a real workload.
+server:
+  workers: 0
+
+coordinator:
+  jvm:
+    maxHeapSize: "1500M"
+  config:
+    nodeScheduler:
+      # Lets the coordinator also execute query tasks, since we're running
+      # with zero dedicated workers.
+      includeCoordinator: true
+    query:
+      maxMemoryPerNode: "700MB"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      memory: "2Gi"
+
+service:
+  type: NodePort
+  nodePort: 30880
+
+# See query-engine/polaris (catalog config) and query-engine/minio (S3-compatible
+# object storage standing in for Azure Blob Storage locally — see Roadmap.md
+# for why this replaced the originally-planned local-filesystem/FILE storage
+# type approach). vended-credentials-enabled=false and static hive.s3.aws-access-key/
+# aws-secret-key (MinIO's own, not real cloud creds): Polaris's credential-vending
+# path for staged table creation rejects even the root/service_admin principal
+# with "not authorized for op CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION" post a
+# recent CVE fix that tightened those permission checks — simplest to route
+# around it by having Trino talk to MinIO directly with static credentials.
+# Legacy Hadoop-S3A filesystem (fs.hadoop.enabled + hive.s3.*), not the modern
+# fs.native-s3 — see Roadmap.md "Polaris + MinIO gotchas" for why.
+catalogs:
+  iceberg: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://polaris.query-engine.svc.cluster.local:8181/api/catalog
+    iceberg.rest-catalog.warehouse=data_platform
+    iceberg.rest-catalog.security=OAUTH2
+    iceberg.rest-catalog.oauth2.credential=root:s3cr3t
+    iceberg.rest-catalog.oauth2.scope=PRINCIPAL_ROLE:ALL
+    iceberg.rest-catalog.vended-credentials-enabled=false
+    fs.hadoop.enabled=true
+    hive.s3.endpoint=http://minio.query-engine.svc.cluster.local:9000
+    hive.s3.path-style-access=true
+    hive.s3.aws-access-key=admin
+    hive.s3.aws-secret-key=password

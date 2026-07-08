@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polaris
+  namespace: query-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polaris
+  template:
+    metadata:
+      labels:
+        app: polaris
+    spec:
+      containers:
+        - name: polaris
+          image: apache/polaris:latest
+          ports:
+            - containerPort: 8181
+              name: api
+            - containerPort: 8182
+              name: management
+          env:
+            - name: POLARIS_PERSISTENCE_TYPE
+              value: relational-jdbc
+            - name: POLARIS_REALM_CONTEXT_REALMS
+              value: POLARIS
+            # Polaris's own AWS SDK client needs a region and credentials to
+            # validate S3 locations during staged table creation, independent
+            # of anything Trino sends — confirmed live via "Unable to load
+            # region"/"Unable to load credentials from any of the providers
+            # in the chain" otherwise. Same MinIO admin/password as the
+            # per-catalog s3.access-key-id/secret-access-key properties.
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ACCESS_KEY_ID
+              value: admin
+            - name: AWS_SECRET_ACCESS_KEY
+              value: password
+            # The missing piece: Polaris's internal S3FileIO client (used to
+            # validate/finalize table commits server-side) was defaulting to
+            # real AWS S3 despite the catalog's s3.endpoint property —
+            # confirmed via Polaris's own logs + a live MinIO traffic trace
+            # showing the failing request never reached MinIO at all. This is
+            # the AWS SDK Java v2 env var for a custom S3 endpoint override.
+            - name: AWS_ENDPOINT_URL_S3
+              value: http://minio.query-engine.svc.cluster.local:9000
+          envFrom:
+            - secretRef:
+                name: polaris-credentials
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /q/health
+              port: 8182
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /q/health
+              port: 8182
+            initialDelaySeconds: 30
+            periodSeconds: 10

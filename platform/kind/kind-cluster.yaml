@@ -23,3 +23,9 @@ nodes:
       - containerPort: 30432
         hostPort: 5432
         protocol: TCP
+      # Trino, exposed via a NodePort Service (see query-engine/trino/ Helm
+      # values) — host tools (Trino CLI/Python client for manual verification
+      # now, dbt's profiles.yml from Phase 4 onward) reach it at localhost:8080.
+      - containerPort: 30880
+        hostPort: 8080
+        protocol: TCP

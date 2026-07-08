@@ -1,0 +1,67 @@
+# S3-compatible object storage, standing in for Azure Blob Storage locally.
+# Not the original plan (Polaris's FILE storage type was chosen specifically
+# to avoid this extra component — see Roadmap.md), but FILE storage hit
+# multiple layered "insecure, must not be used" gates in Polaris 1.6.0 that
+# resisted every documented bypass. S3 (via MinIO here, real ADLS Gen2 later)
+# is Polaris's well-supported, non-defense-gated path.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: query-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          env:
+            # Trino has a known bug (trinodb/trino#25187) where it defaults
+            # to virtual-hosted-style S3 addressing (bucket.host) regardless
+            # of s3.path-style-access — MinIO rejected those requests with a
+            # 301 until this was set, since it didn't recognize itself as a
+            # valid host for that bucket. This makes MinIO accept both
+            # styles instead of fighting Trino's client behavior.
+            - name: MINIO_DOMAIN
+              value: minio.query-engine.svc.cluster.local
+          envFrom:
+            - secretRef:
+                name: minio-credentials
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: minio-data
