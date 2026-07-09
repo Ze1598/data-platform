@@ -1,0 +1,19 @@
+name: "data_platform"
+version: "1.0.0"
+config-version: 2
+
+profile: "data_platform"
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  data_platform:
+    staging:
+      +materialized: incremental
+      +incremental_strategy: merge

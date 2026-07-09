@@ -46,6 +46,14 @@ spec:
             # the AWS SDK Java v2 env var for a custom S3 endpoint override.
             - name: AWS_ENDPOINT_URL_S3
               value: http://minio.query-engine.svc.cluster.local:9000
+            # DROP TABLE/VIEW default to requesting a purge, which Polaris
+            # rejects by default. This is NOT a realm/env-var-level setting
+            # despite the error message's first suggestion — every
+            # POLARIS_FEATURES_* env var attempt here was a dead end. It's a
+            # per-catalog property (polaris.config.drop-with-purge.enabled)
+            # set on the catalog entity itself via the Polaris Management
+            # API/CLI, not the Quarkus config layer. See register-catalog.sh
+            # and Learnings.md for the actual fix.
           envFrom:
             - secretRef:
                 name: polaris-credentials

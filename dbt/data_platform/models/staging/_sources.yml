@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: clean
+    database: iceberg
+    schema: clean
+    tables:
+      - name: customers

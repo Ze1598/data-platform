@@ -29,14 +29,20 @@ service:
 # See query-engine/polaris (catalog config) and query-engine/minio (S3-compatible
 # object storage standing in for Azure Blob Storage locally — see Roadmap.md
 # for why this replaced the originally-planned local-filesystem/FILE storage
-# type approach). vended-credentials-enabled=false and static hive.s3.aws-access-key/
-# aws-secret-key (MinIO's own, not real cloud creds): Polaris's credential-vending
-# path for staged table creation rejects even the root/service_admin principal
-# with "not authorized for op CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION" post a
-# recent CVE fix that tightened those permission checks — simplest to route
-# around it by having Trino talk to MinIO directly with static credentials.
-# Legacy Hadoop-S3A filesystem (fs.hadoop.enabled + hive.s3.*), not the modern
-# fs.native-s3 — see Roadmap.md "Polaris + MinIO gotchas" for why.
+# type approach).
+# vended-credentials-enabled=false is a permanent choice, not a workaround for
+# lack of RBAC privileges (that part was fixed — see Learnings.md "Phase 3").
+# The real reason: the catalog's storageConfigInfo has stsUnavailable=true
+# (MinIO has no real STS), so when Trino requests vended credentials Polaris
+# has nothing real to hand out — confirmed via "Credential vending was
+# requested for table ..., but no credentials are available" on both plain
+# reads and CREATE TABLE, even with full privileges granted. Static MinIO
+# credentials below are the correct approach for this storage backend, not a
+# temporary bypass.
+# fs.native-s3 (not the legacy Hadoop-S3A fs.hadoop.enabled/hive.s3.* setup)
+# — confirmed working now that Polaris's own S3FileIO endpoint bug is fixed
+# (AWS_ENDPOINT_URL_S3 on the Polaris deployment); the earlier suspected
+# Trino path-style-access bug was a red herring.
 catalogs:
   iceberg: |
     connector.name=iceberg
@@ -47,8 +53,9 @@ catalogs:
     iceberg.rest-catalog.oauth2.credential=root:s3cr3t
     iceberg.rest-catalog.oauth2.scope=PRINCIPAL_ROLE:ALL
     iceberg.rest-catalog.vended-credentials-enabled=false
-    fs.hadoop.enabled=true
-    hive.s3.endpoint=http://minio.query-engine.svc.cluster.local:9000
-    hive.s3.path-style-access=true
-    hive.s3.aws-access-key=admin
-    hive.s3.aws-secret-key=password
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.query-engine.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.region=us-east-1
+    s3.aws-access-key=admin
+    s3.aws-secret-key=password
