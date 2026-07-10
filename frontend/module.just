@@ -14,3 +14,7 @@ start:
 
 kill:
     pkill -f "streamlit run app.py" || echo "streamlit not running"
+
+# Tests against the live Postgres (not mocks) -- needs the cluster up.
+test:
+    uv run pytest

@@ -21,7 +21,7 @@ kubectl exec -n metadata postgres-0 -- psql -U platform -d platform_metadata -c 
 **Scenario**: before re-running an end-to-end verification script, so `INSERT`s referencing fixed test codes (`test_src`, `test_feed`) don't collide with leftovers from a previous run.
 ```bash
 kubectl exec -n metadata postgres-0 -- psql -U platform -d platform_metadata -c \
-  "truncate table model_feed_source, run_audit_log, model_feed, schema_registry, data_feed, source_system cascade;"
+  "truncate table model_feed_source, data_feed_run, data_model_run, model_feed, schema_registry, data_feed, source_system cascade;"
 ```
 Order matters less than it looks because of `cascade`, but listing dependents-first is clearer to read. `cascade` is required because of the FK relationships between these tables.
 

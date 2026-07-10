@@ -9,5 +9,15 @@ dependencies = [
     "pandas>=2.2",
 ]
 
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# frontend is `package = false` -- metadata_db.py is a loose script file,
+# not an installed package like raw_to_clean/dagster_data_platform, so it
+# needs an explicit sys.path entry for tests/ (a sibling directory) to
+# import it.
+pythonpath = ["."]

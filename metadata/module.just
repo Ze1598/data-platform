@@ -1,4 +1,4 @@
-# Postgres (source_system/data_feed/model_feed/run_audit_log + polaris_db).
+# Postgres (source_system/data_feed/model_feed/data_feed_run/data_model_run + polaris_db).
 # See DebugReference.md for the manual-command equivalents this wraps.
 # POSTGRES_* env vars come from the root Justfile's `set dotenv-load`.
 

@@ -18,7 +18,7 @@ _TYPE_MAP: dict[str, type] = {
 class SchemaValidationError(Exception):
     """Raised when a DataFrame doesn't match a feed's current
     schema_registry definition. Never caught silently — this is meant to
-    fail the Dagster run and land in run_audit_log as a real failure."""
+    fail the Dagster run and land in data_feed_run as a real failure."""
 
 
 def validate_schema(df: pl.DataFrame, column_definitions: list[dict[str, Any]]) -> None:

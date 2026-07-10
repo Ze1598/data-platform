@@ -9,3 +9,15 @@ members = ["frontend", "dbt/data_platform", "query-engine/polaris_client", "orch
 
 [tool.uv]
 package = false
+# uv's default link-mode ("clone", APFS clonefile()) sets the macOS UF_HIDDEN
+# BSD flag on files it installs into .venv/lib/.../site-packages on this
+# machine. Python 3.13's site.py added a security check (CPython #113659,
+# defending against hidden malicious .pth files) that silently *skips* any
+# .pth file with that flag set -- which broke every workspace member's
+# editable install (raw_to_clean, polaris_client, dagster_data_platform),
+# recurring across this whole project until root-caused. "copy" mode writes
+# plain files with no inherited/incidental flags, confirmed via a from-
+# scratch rebuild to fix this completely (zero hidden files, zero numbered
+# duplicate .pth files, imports work with no `--reinstall-package` dance).
+# See Learnings.md for the full investigation.
+link-mode = "copy"

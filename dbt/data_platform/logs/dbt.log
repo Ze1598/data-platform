@@ -2526,3 +2526,2139 @@ having count(*) > 1
 [0m14:05:47.582350 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ee73ac0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ef89c70>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ef8acb0>]}
 [0m14:05:47.582512 [debug] [MainThread]: Flushing usage events
 [0m14:05:48.008115 [debug] [MainThread]: An error was encountered while trying to flush usage events
+[0m15:00:17.338406 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x108af7b60>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x109ddb4d0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x109ddb750>]}
+
+
+============================== 15:00:17.340922 | 7019201b-c2bf-4aca-9cac-d6e68cdef32f ==============================
+[0m15:00:17.340922 [info ] [MainThread]: Running with dbt=1.11.12
+[0m15:00:17.341165 [debug] [MainThread]: running dbt with arguments {'partial_parse': 'True', 'quiet': 'False', 'use_colors': 'True', 'use_experimental_parser': 'False', 'introspect': 'True', 'cache_selected_only': 'False', 'fail_fast': 'False', 'log_cache_events': 'False', 'log_format': 'default', 'indirect_selection': 'eager', 'no_print': 'None', 'version_check': 'True', 'static_parser': 'True', 'warn_error': 'None', 'profiles_dir': 'profiles', 'target_path': 'None', 'write_json': 'True', 'empty': 'None', 'warn_error_options': 'WarnErrorOptionsV2(error=[], warn=[], silence=[])', 'printer_width': '80', 'log_path': '/Users/josecosta/Documents/projects/data-platform/dbt/data_platform/logs', 'invocation_command': 'dbt test --profiles-dir profiles', 'debug': 'False', 'send_anonymous_usage_stats': 'True'}
+[0m15:00:17.447349 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'project_id', 'label': '7019201b-c2bf-4aca-9cac-d6e68cdef32f', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x1090b4b00>]}
+[0m15:00:17.477858 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'adapter_info', 'label': '7019201b-c2bf-4aca-9cac-d6e68cdef32f', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x109661bf0>]}
+[0m15:00:17.478201 [info ] [MainThread]: Registered adapter: trino=1.10.2
+[0m15:00:17.521665 [debug] [MainThread]: checksum: f368f5348cf42803b94ef7fb8257ecf3bf9a9a16dd9c8c51fe5172f2dbeb457f, vars: {}, profile: , target: , version: 1.11.12
+[0m15:00:17.587711 [debug] [MainThread]: Partial parsing enabled: 0 files deleted, 0 files added, 0 files changed.
+[0m15:00:17.587925 [debug] [MainThread]: Nothing changed, skipping partial parsing.
+[0m15:00:17.588047 [debug] [MainThread]: Partial parsing enabled, no changes found, skipping parsing
+[0m15:00:17.605998 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'load_project', 'label': '7019201b-c2bf-4aca-9cac-d6e68cdef32f', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10a440450>]}
+[0m15:00:17.669117 [debug] [MainThread]: Wrote artifact WritableManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/manifest.json
+[0m15:00:17.670258 [debug] [MainThread]: Wrote artifact SemanticManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/semantic_manifest.json
+[0m15:00:18.011554 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'resource_counts', 'label': '7019201b-c2bf-4aca-9cac-d6e68cdef32f', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10afb08c0>]}
+[0m15:00:18.011848 [info ] [MainThread]: Found 2 models, 15 data tests, 2 sources, 497 macros
+[0m15:00:18.012041 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': '7019201b-c2bf-4aca-9cac-d6e68cdef32f', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10a115c50>]}
+[0m15:00:18.013108 [info ] [MainThread]: 
+[0m15:00:18.013250 [info ] [MainThread]: Concurrency: 4 threads (target='dev')
+[0m15:00:18.013354 [info ] [MainThread]: 
+[0m15:00:18.013548 [debug] [MainThread]: Acquiring new trino connection 'master'
+[0m15:00:18.015421 [debug] [ThreadPool]: Acquiring new trino connection 'list_iceberg_staging'
+[0m15:00:18.062885 [debug] [ThreadPool]: Using trino connection "list_iceberg_staging"
+[0m15:00:18.063087 [debug] [ThreadPool]: On list_iceberg_staging: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "connection_name": "list_iceberg_staging"} */
+select
+      t.table_catalog as database,
+      t.table_name as name,
+      t.table_schema as schema,
+      case when mv.name is not null then 'materialized_view'
+           when t.table_type = 'BASE TABLE' then 'table'
+           when t.table_type = 'VIEW' then 'view'
+           else t.table_type
+      end as table_type
+    from "iceberg".INFORMATION_SCHEMA.tables t
+    left join (
+            select * from system.metadata.materialized_views
+            where catalog_name = 'iceberg'
+              and schema_name = 'staging') mv
+          on mv.catalog_name = t.table_catalog and mv.schema_name = t.table_schema and mv.name = t.table_name
+    where t.table_schema = 'staging'
+[0m15:00:18.063218 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m15:00:18.063318 [warn ] [ThreadPool]: [[33mWARNING[0m]: SSL certificate validation is disabled by default. It is legacy behavior which will be changed in future releases. It is strongly advised to enable `require_certificate_validation` flag or explicitly set `cert` configuration to `True` for security reasons. You may receive an error after that if your SSL setup is incorrect.
+You may opt into the new behavior sooner by setting `flags.require_certificate_validation` to `True` in `dbt_project.yml`.
+Visit https://docs.getdbt.com/reference/global-configs/behavior-changes for more information.
+[0m15:00:18.063602 [debug] [ThreadPool]: Sending event: {'category': 'dbt', 'action': 'BehaviorChangeEvent', 'label': '7019201b-c2bf-4aca-9cac-d6e68cdef32f', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10a8b4600>]}
+[0m15:00:18.292706 [debug] [ThreadPool]: SQL status: SUCCESS in 0.229 seconds
+[0m15:00:18.293473 [debug] [ThreadPool]: On list_iceberg_staging: ROLLBACK
+[0m15:00:18.293620 [debug] [ThreadPool]: On list_iceberg_staging: Close
+[0m15:00:18.294132 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': '7019201b-c2bf-4aca-9cac-d6e68cdef32f', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10afc5490>]}
+[0m15:00:18.294384 [debug] [MainThread]: On master: COMMIT
+[0m15:00:18.296047 [debug] [Thread-3 (]: Began running node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:00:18.296244 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:00:18.296389 [debug] [Thread-1 (]: Began running node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:00:18.296526 [debug] [Thread-2 (]: Began running node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:00:18.296665 [info ] [Thread-3 (]: 3 of 15 START test accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet  [RUN]
+[0m15:00:18.296828 [info ] [Thread-4 (]: 4 of 15 START test not_null_stg_customers__key_hash ............................ [RUN]
+[0m15:00:18.296962 [info ] [Thread-1 (]: 1 of 15 START test accepted_values_stg_sales_customer_type__Member__Normal ..... [RUN]
+[0m15:00:18.297093 [info ] [Thread-2 (]: 2 of 15 START test accepted_values_stg_sales_gender__Male__Female .............. [RUN]
+[0m15:00:18.297299 [debug] [Thread-3 (]: Acquiring new trino connection 'test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97'
+[0m15:00:18.297499 [debug] [Thread-4 (]: Acquiring new trino connection 'test.data_platform.not_null_stg_customers__key_hash.68611866ca'
+[0m15:00:18.297687 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly list_iceberg_staging, now test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a)
+[0m15:00:18.297880 [debug] [Thread-2 (]: Acquiring new trino connection 'test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067'
+[0m15:00:18.298038 [debug] [Thread-3 (]: Began compiling node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:00:18.298174 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:00:18.298316 [debug] [Thread-1 (]: Began compiling node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:00:18.298451 [debug] [Thread-2 (]: Began compiling node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:00:18.303700 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m15:00:18.306748 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m15:00:18.308633 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m15:00:18.310107 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m15:00:18.311162 [debug] [Thread-3 (]: Began executing node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:00:18.317534 [debug] [Thread-2 (]: Began executing node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:00:18.318488 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m15:00:18.318648 [debug] [Thread-1 (]: Began executing node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:00:18.319612 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m15:00:18.319823 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:00:18.320797 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m15:00:18.321919 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m15:00:18.323083 [debug] [Thread-3 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m15:00:18.323812 [debug] [Thread-2 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m15:00:18.324063 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        payment_method as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by payment_method
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Cash','Credit card','Ewallet'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.324353 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        gender as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by gender
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Male','Female'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.325148 [debug] [Thread-1 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m15:00:18.325297 [debug] [Thread-3 (]: Opening a new connection, currently in state init
+[0m15:00:18.325437 [debug] [Thread-2 (]: Opening a new connection, currently in state init
+[0m15:00:18.325574 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        customer_type as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by customer_type
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Member','Normal'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.326089 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m15:00:18.326633 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:00:18.326908 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers__key_hash.68611866ca"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select _key_hash
+from "iceberg"."staging"."customers"
+where _key_hash is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.327620 [debug] [Thread-4 (]: Opening a new connection, currently in state init
+[0m15:00:18.595027 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.267 seconds
+[0m15:00:18.599578 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: ROLLBACK
+[0m15:00:18.600079 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: Close
+[0m15:00:18.600837 [info ] [Thread-4 (]: 4 of 15 PASS not_null_stg_customers__key_hash .................................. [[32mPASS[0m in 0.30s]
+[0m15:00:18.601461 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:00:18.601864 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:00:18.602216 [info ] [Thread-4 (]: 5 of 15 START test not_null_stg_customers_customer_id .......................... [RUN]
+[0m15:00:18.602851 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers__key_hash.68611866ca, now test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa)
+[0m15:00:18.603305 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:00:18.607604 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m15:00:18.608744 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:00:18.611945 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m15:00:18.613682 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m15:00:18.614143 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select customer_id
+from "iceberg"."staging"."customers"
+where customer_id is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.614995 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m15:00:18.640020 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.315 seconds
+[0m15:00:18.641719 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: ROLLBACK
+[0m15:00:18.642165 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: Close
+[0m15:00:18.642859 [info ] [Thread-3 (]: 3 of 15 PASS accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet  [[32mPASS[0m in 0.35s]
+[0m15:00:18.643577 [debug] [Thread-3 (]: Finished running node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:00:18.644004 [debug] [Thread-3 (]: Began running node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:00:18.644424 [info ] [Thread-3 (]: 6 of 15 START test not_null_stg_customers_email ................................ [RUN]
+[0m15:00:18.644876 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97, now test.data_platform.not_null_stg_customers_email.d7cf761533)
+[0m15:00:18.645227 [debug] [Thread-3 (]: Began compiling node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:00:18.648775 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m15:00:18.651173 [debug] [Thread-3 (]: Began executing node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:00:18.653282 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m15:00:18.655289 [debug] [Thread-3 (]: Using trino connection "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m15:00:18.655553 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers_email.d7cf761533"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select email
+from "iceberg"."staging"."customers"
+where email is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.655771 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m15:00:18.658768 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.332 seconds
+[0m15:00:18.660049 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: ROLLBACK
+[0m15:00:18.660623 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: Close
+[0m15:00:18.662149 [info ] [Thread-1 (]: 1 of 15 PASS accepted_values_stg_sales_customer_type__Member__Normal ........... [[32mPASS[0m in 0.36s]
+[0m15:00:18.663233 [debug] [Thread-1 (]: Finished running node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:00:18.663841 [debug] [Thread-1 (]: Began running node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:00:18.664277 [info ] [Thread-1 (]: 7 of 15 START test not_null_stg_sales__key_hash ................................ [RUN]
+[0m15:00:18.665268 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a, now test.data_platform.not_null_stg_sales__key_hash.56b249fabe)
+[0m15:00:18.665432 [debug] [Thread-1 (]: Began compiling node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:00:18.667197 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m15:00:18.667976 [debug] [Thread-1 (]: Began executing node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:00:18.668960 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m15:00:18.669912 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.344 seconds
+[0m15:00:18.670667 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: ROLLBACK
+[0m15:00:18.671977 [debug] [Thread-1 (]: Using trino connection "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m15:00:18.672391 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: Close
+[0m15:00:18.672967 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select _key_hash
+from "iceberg"."staging"."sales"
+where _key_hash is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.674173 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:00:18.673792 [info ] [Thread-2 (]: 2 of 15 PASS accepted_values_stg_sales_gender__Male__Female .................... [[32mPASS[0m in 0.38s]
+[0m15:00:18.675340 [debug] [Thread-2 (]: Finished running node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:00:18.676265 [debug] [Thread-2 (]: Began running node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:00:18.678047 [info ] [Thread-2 (]: 8 of 15 START test not_null_stg_sales_customer_type ............................ [RUN]
+[0m15:00:18.679117 [debug] [Thread-2 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067, now test.data_platform.not_null_stg_sales_customer_type.ae0d184b28)
+[0m15:00:18.679599 [debug] [Thread-2 (]: Began compiling node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:00:18.682169 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m15:00:18.683066 [debug] [Thread-2 (]: Began executing node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:00:18.684021 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m15:00:18.684996 [debug] [Thread-2 (]: Using trino connection "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m15:00:18.685177 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select customer_type
+from "iceberg"."staging"."sales"
+where customer_type is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.685315 [debug] [Thread-2 (]: Opening a new connection, currently in state closed
+[0m15:00:18.835968 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.221 seconds
+[0m15:00:18.837697 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: ROLLBACK
+[0m15:00:18.838140 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: Close
+[0m15:00:18.838834 [info ] [Thread-4 (]: 5 of 15 PASS not_null_stg_customers_customer_id ................................ [[32mPASS[0m in 0.24s]
+[0m15:00:18.839434 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:00:18.839835 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:00:18.840186 [info ] [Thread-4 (]: 9 of 15 START test not_null_stg_sales_gender ................................... [RUN]
+[0m15:00:18.840650 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa, now test.data_platform.not_null_stg_sales_gender.caef17b073)
+[0m15:00:18.840853 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:00:18.842680 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m15:00:18.843526 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:00:18.844517 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m15:00:18.846669 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m15:00:18.847314 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_gender.caef17b073"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select gender
+from "iceberg"."staging"."sales"
+where gender is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.847905 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m15:00:18.869542 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.214 seconds
+[0m15:00:18.871597 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: ROLLBACK
+[0m15:00:18.872947 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: Close
+[0m15:00:18.875222 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.201 seconds
+[0m15:00:18.876706 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: ROLLBACK
+[0m15:00:18.874647 [info ] [Thread-3 (]: 6 of 15 PASS not_null_stg_customers_email ...................................... [[32mPASS[0m in 0.23s]
+[0m15:00:18.877184 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: Close
+[0m15:00:18.877478 [debug] [Thread-3 (]: Finished running node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:00:18.878414 [debug] [Thread-3 (]: Began running node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:00:18.878122 [info ] [Thread-1 (]: 7 of 15 PASS not_null_stg_sales__key_hash ...................................... [[32mPASS[0m in 0.21s]
+[0m15:00:18.878860 [info ] [Thread-3 (]: 10 of 15 START test not_null_stg_sales_invoice_id .............................. [RUN]
+[0m15:00:18.880038 [debug] [Thread-1 (]: Finished running node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:00:18.880292 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.195 seconds
+[0m15:00:18.880496 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers_email.d7cf761533, now test.data_platform.not_null_stg_sales_invoice_id.826c409c3f)
+[0m15:00:18.880662 [debug] [Thread-1 (]: Began running node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:00:18.881858 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: ROLLBACK
+[0m15:00:18.882087 [debug] [Thread-3 (]: Began compiling node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:00:18.882252 [info ] [Thread-1 (]: 11 of 15 START test not_null_stg_sales_payment_method .......................... [RUN]
+[0m15:00:18.882514 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: Close
+[0m15:00:18.885012 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m15:00:18.885271 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales__key_hash.56b249fabe, now test.data_platform.not_null_stg_sales_payment_method.42777b78ba)
+[0m15:00:18.885870 [info ] [Thread-2 (]: 8 of 15 PASS not_null_stg_sales_customer_type .................................. [[32mPASS[0m in 0.21s]
+[0m15:00:18.886464 [debug] [Thread-1 (]: Began compiling node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:00:18.887040 [debug] [Thread-2 (]: Finished running node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:00:18.889163 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m15:00:18.889626 [debug] [Thread-2 (]: Began running node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:00:18.890240 [debug] [Thread-3 (]: Began executing node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:00:18.892357 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m15:00:18.890568 [info ] [Thread-2 (]: 12 of 15 START test not_null_stg_sales_quantity ................................ [RUN]
+[0m15:00:18.893043 [debug] [Thread-2 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_customer_type.ae0d184b28, now test.data_platform.not_null_stg_sales_quantity.0198ea4c12)
+[0m15:00:18.893382 [debug] [Thread-2 (]: Began compiling node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:00:18.895042 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m15:00:18.895250 [debug] [Thread-1 (]: Began executing node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:00:18.896141 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m15:00:18.897012 [debug] [Thread-3 (]: Using trino connection "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m15:00:18.897206 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select invoice_id
+from "iceberg"."staging"."sales"
+where invoice_id is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.897357 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m15:00:18.897925 [debug] [Thread-2 (]: Began executing node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:00:18.898796 [debug] [Thread-1 (]: Using trino connection "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m15:00:18.899683 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m15:00:18.900078 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select payment_method
+from "iceberg"."staging"."sales"
+where payment_method is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.900433 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:00:18.901850 [debug] [Thread-2 (]: Using trino connection "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m15:00:18.902086 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select quantity
+from "iceberg"."staging"."sales"
+where quantity is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:18.902263 [debug] [Thread-2 (]: Opening a new connection, currently in state closed
+[0m15:00:19.013282 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.165 seconds
+[0m15:00:19.014982 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: ROLLBACK
+[0m15:00:19.015436 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: Close
+[0m15:00:19.016101 [info ] [Thread-4 (]: 9 of 15 PASS not_null_stg_sales_gender ......................................... [[32mPASS[0m in 0.18s]
+[0m15:00:19.016687 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:00:19.017075 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:00:19.017490 [info ] [Thread-4 (]: 13 of 15 START test not_null_stg_sales_total ................................... [RUN]
+[0m15:00:19.017984 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_gender.caef17b073, now test.data_platform.not_null_stg_sales_total.e9941188b2)
+[0m15:00:19.018363 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:00:19.020685 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m15:00:19.021408 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:00:19.022263 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m15:00:19.024260 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m15:00:19.024762 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_total.e9941188b2"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select total
+from "iceberg"."staging"."sales"
+where total is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:19.025127 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m15:00:19.047802 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.150 seconds
+[0m15:00:19.049388 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: ROLLBACK
+[0m15:00:19.049806 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: Close
+[0m15:00:19.050447 [info ] [Thread-3 (]: 10 of 15 PASS not_null_stg_sales_invoice_id .................................... [[32mPASS[0m in 0.17s]
+[0m15:00:19.051145 [debug] [Thread-3 (]: Finished running node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:00:19.051553 [debug] [Thread-3 (]: Began running node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:00:19.051955 [info ] [Thread-3 (]: 14 of 15 START test unique_stg_customers__key_hash ............................. [RUN]
+[0m15:00:19.052282 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_invoice_id.826c409c3f, now test.data_platform.unique_stg_customers__key_hash.ffe16a0886)
+[0m15:00:19.052446 [debug] [Thread-3 (]: Began compiling node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:00:19.055675 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m15:00:19.056276 [debug] [Thread-3 (]: Began executing node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:00:19.057328 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m15:00:19.058320 [debug] [Thread-3 (]: Using trino connection "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m15:00:19.058483 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+select
+    _key_hash as unique_field,
+    count(*) as n_records
+
+from "iceberg"."staging"."customers"
+where _key_hash is not null
+group by _key_hash
+having count(*) > 1
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:19.058613 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m15:00:19.076709 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.176 seconds
+[0m15:00:19.078369 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: ROLLBACK
+[0m15:00:19.078791 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: Close
+[0m15:00:19.079629 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.177 seconds
+[0m15:00:19.081849 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: ROLLBACK
+[0m15:00:19.080317 [info ] [Thread-1 (]: 11 of 15 PASS not_null_stg_sales_payment_method ................................ [[32mPASS[0m in 0.19s]
+[0m15:00:19.082369 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: Close
+[0m15:00:19.082647 [debug] [Thread-1 (]: Finished running node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:00:19.083570 [debug] [Thread-1 (]: Began running node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:00:19.083160 [info ] [Thread-2 (]: 12 of 15 PASS not_null_stg_sales_quantity ...................................... [[32mPASS[0m in 0.19s]
+[0m15:00:19.084046 [info ] [Thread-1 (]: 15 of 15 START test unique_stg_sales__key_hash ................................. [RUN]
+[0m15:00:19.084536 [debug] [Thread-2 (]: Finished running node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:00:19.084783 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_payment_method.42777b78ba, now test.data_platform.unique_stg_sales__key_hash.4346c96806)
+[0m15:00:19.085026 [debug] [Thread-1 (]: Began compiling node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:00:19.087177 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m15:00:19.087696 [debug] [Thread-1 (]: Began executing node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:00:19.088615 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m15:00:19.090161 [debug] [Thread-1 (]: Using trino connection "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m15:00:19.090514 [debug] [Thread-1 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.unique_stg_sales__key_hash.4346c96806"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+select
+    _key_hash as unique_field,
+    count(*) as n_records
+
+from "iceberg"."staging"."sales"
+where _key_hash is not null
+group by _key_hash
+having count(*) > 1
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:00:19.090779 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:00:19.178721 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.154 seconds
+[0m15:00:19.180388 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: ROLLBACK
+[0m15:00:19.180858 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: Close
+[0m15:00:19.181517 [info ] [Thread-4 (]: 13 of 15 PASS not_null_stg_sales_total ......................................... [[32mPASS[0m in 0.16s]
+[0m15:00:19.182068 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:00:19.211736 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.153 seconds
+[0m15:00:19.213399 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: ROLLBACK
+[0m15:00:19.213799 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: Close
+[0m15:00:19.214158 [info ] [Thread-3 (]: 14 of 15 PASS unique_stg_customers__key_hash ................................... [[32mPASS[0m in 0.16s]
+[0m15:00:19.214390 [debug] [Thread-3 (]: Finished running node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:00:19.233185 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.142 seconds
+[0m15:00:19.233913 [debug] [Thread-1 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: ROLLBACK
+[0m15:00:19.234068 [debug] [Thread-1 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: Close
+[0m15:00:19.234329 [info ] [Thread-1 (]: 15 of 15 PASS unique_stg_sales__key_hash ....................................... [[32mPASS[0m in 0.15s]
+[0m15:00:19.234545 [debug] [Thread-1 (]: Finished running node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:00:19.235137 [debug] [MainThread]: On master: COMMIT
+[0m15:00:19.235326 [debug] [MainThread]: Connection 'master' was properly closed.
+[0m15:00:19.235448 [debug] [MainThread]: Connection 'test.data_platform.unique_stg_sales__key_hash.4346c96806' was properly closed.
+[0m15:00:19.235548 [debug] [MainThread]: Connection 'test.data_platform.unique_stg_customers__key_hash.ffe16a0886' was properly closed.
+[0m15:00:19.235637 [debug] [MainThread]: Connection 'test.data_platform.not_null_stg_sales_total.e9941188b2' was properly closed.
+[0m15:00:19.235722 [debug] [MainThread]: Connection 'test.data_platform.not_null_stg_sales_quantity.0198ea4c12' was properly closed.
+[0m15:00:19.235837 [info ] [MainThread]: 
+[0m15:00:19.235953 [info ] [MainThread]: Finished running 15 data tests in 0 hours 0 minutes and 1.22 seconds (1.22s).
+[0m15:00:19.236743 [debug] [MainThread]: Command end result
+[0m15:00:19.250520 [debug] [MainThread]: Wrote artifact WritableManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/manifest.json
+[0m15:00:19.251368 [debug] [MainThread]: Wrote artifact SemanticManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/semantic_manifest.json
+[0m15:00:19.254482 [debug] [MainThread]: Wrote artifact RunExecutionResult to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/run_results.json
+[0m15:00:19.254621 [info ] [MainThread]: 
+[0m15:00:19.254759 [info ] [MainThread]: [32mCompleted successfully[0m
+[0m15:00:19.254866 [info ] [MainThread]: 
+[0m15:00:19.254981 [info ] [MainThread]: Done. PASS=15 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=15
+[0m15:00:19.256577 [debug] [MainThread]: Resource report: {"command_name": "test", "command_success": true, "command_wall_clock_time": 1.9546789, "process_in_blocks": "0", "process_kernel_time": 0.251437, "process_mem_max_rss": "176652288", "process_out_blocks": "0", "process_user_time": 1.205864}
+[0m15:00:19.256750 [debug] [MainThread]: Command `dbt test` succeeded at 15:00:19.256716 after 1.95 seconds
+[0m15:00:19.256891 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10afd3d80>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10b0d6030>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10b0d60d0>]}
+[0m15:00:19.257027 [debug] [MainThread]: Flushing usage events
+[0m15:00:19.683612 [debug] [MainThread]: An error was encountered while trying to flush usage events
+[0m15:29:46.504976 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x1088b3b60>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x109b974d0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x109b97750>]}
+
+
+============================== 15:29:46.509196 | 04e16d39-678c-4024-8cad-a07e17f5d5fe ==============================
+[0m15:29:46.509196 [info ] [MainThread]: Running with dbt=1.11.12
+[0m15:29:46.509468 [debug] [MainThread]: running dbt with arguments {'partial_parse': 'True', 'warn_error': 'None', 'invocation_command': 'dbt test --profiles-dir profiles', 'profiles_dir': 'profiles', 'cache_selected_only': 'False', 'warn_error_options': 'WarnErrorOptionsV2(error=[], warn=[], silence=[])', 'debug': 'False', 'introspect': 'True', 'use_colors': 'True', 'printer_width': '80', 'use_experimental_parser': 'False', 'target_path': 'None', 'send_anonymous_usage_stats': 'True', 'static_parser': 'True', 'version_check': 'True', 'quiet': 'False', 'indirect_selection': 'eager', 'fail_fast': 'False', 'log_path': '/Users/josecosta/Documents/projects/data-platform/dbt/data_platform/logs', 'log_cache_events': 'False', 'no_print': 'None', 'write_json': 'True', 'log_format': 'default', 'empty': 'None'}
+[0m15:29:46.597514 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'project_id', 'label': '04e16d39-678c-4024-8cad-a07e17f5d5fe', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x108e70b00>]}
+[0m15:29:46.628069 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'adapter_info', 'label': '04e16d39-678c-4024-8cad-a07e17f5d5fe', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x109419bf0>]}
+[0m15:29:46.628380 [info ] [MainThread]: Registered adapter: trino=1.10.2
+[0m15:29:46.670792 [debug] [MainThread]: checksum: f368f5348cf42803b94ef7fb8257ecf3bf9a9a16dd9c8c51fe5172f2dbeb457f, vars: {}, profile: , target: , version: 1.11.12
+[0m15:29:46.735100 [debug] [MainThread]: Partial parsing enabled: 0 files deleted, 0 files added, 0 files changed.
+[0m15:29:46.735307 [debug] [MainThread]: Nothing changed, skipping partial parsing.
+[0m15:29:46.735427 [debug] [MainThread]: Partial parsing enabled, no changes found, skipping parsing
+[0m15:29:46.753100 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'load_project', 'label': '04e16d39-678c-4024-8cad-a07e17f5d5fe', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10a204450>]}
+[0m15:29:46.816259 [debug] [MainThread]: Wrote artifact WritableManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/manifest.json
+[0m15:29:46.817432 [debug] [MainThread]: Wrote artifact SemanticManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/semantic_manifest.json
+[0m15:29:46.886987 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'resource_counts', 'label': '04e16d39-678c-4024-8cad-a07e17f5d5fe', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ad708c0>]}
+[0m15:29:46.887229 [info ] [MainThread]: Found 2 models, 15 data tests, 2 sources, 497 macros
+[0m15:29:46.887363 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': '04e16d39-678c-4024-8cad-a07e17f5d5fe', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x109ed1c50>]}
+[0m15:29:46.888284 [info ] [MainThread]: 
+[0m15:29:46.888417 [info ] [MainThread]: Concurrency: 4 threads (target='dev')
+[0m15:29:46.888519 [info ] [MainThread]: 
+[0m15:29:46.888704 [debug] [MainThread]: Acquiring new trino connection 'master'
+[0m15:29:46.890423 [debug] [ThreadPool]: Acquiring new trino connection 'list_iceberg_staging'
+[0m15:29:46.935573 [debug] [ThreadPool]: Using trino connection "list_iceberg_staging"
+[0m15:29:46.935776 [debug] [ThreadPool]: On list_iceberg_staging: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "connection_name": "list_iceberg_staging"} */
+select
+      t.table_catalog as database,
+      t.table_name as name,
+      t.table_schema as schema,
+      case when mv.name is not null then 'materialized_view'
+           when t.table_type = 'BASE TABLE' then 'table'
+           when t.table_type = 'VIEW' then 'view'
+           else t.table_type
+      end as table_type
+    from "iceberg".INFORMATION_SCHEMA.tables t
+    left join (
+            select * from system.metadata.materialized_views
+            where catalog_name = 'iceberg'
+              and schema_name = 'staging') mv
+          on mv.catalog_name = t.table_catalog and mv.schema_name = t.table_schema and mv.name = t.table_name
+    where t.table_schema = 'staging'
+[0m15:29:46.935898 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m15:29:46.935994 [warn ] [ThreadPool]: [[33mWARNING[0m]: SSL certificate validation is disabled by default. It is legacy behavior which will be changed in future releases. It is strongly advised to enable `require_certificate_validation` flag or explicitly set `cert` configuration to `True` for security reasons. You may receive an error after that if your SSL setup is incorrect.
+You may opt into the new behavior sooner by setting `flags.require_certificate_validation` to `True` in `dbt_project.yml`.
+Visit https://docs.getdbt.com/reference/global-configs/behavior-changes for more information.
+[0m15:29:46.936166 [debug] [ThreadPool]: Sending event: {'category': 'dbt', 'action': 'BehaviorChangeEvent', 'label': '04e16d39-678c-4024-8cad-a07e17f5d5fe', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10a670600>]}
+[0m15:29:47.091751 [debug] [ThreadPool]: SQL status: SUCCESS in 0.156 seconds
+[0m15:29:47.092506 [debug] [ThreadPool]: On list_iceberg_staging: ROLLBACK
+[0m15:29:47.092654 [debug] [ThreadPool]: On list_iceberg_staging: Close
+[0m15:29:47.093245 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': '04e16d39-678c-4024-8cad-a07e17f5d5fe', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ad81490>]}
+[0m15:29:47.093479 [debug] [MainThread]: On master: COMMIT
+[0m15:29:47.096882 [debug] [Thread-3 (]: Began running node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:29:47.097115 [debug] [Thread-1 (]: Began running node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:29:47.097286 [debug] [Thread-2 (]: Began running node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:29:47.097459 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:29:47.097622 [info ] [Thread-3 (]: 3 of 15 START test accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet  [RUN]
+[0m15:29:47.097791 [info ] [Thread-1 (]: 1 of 15 START test accepted_values_stg_sales_customer_type__Member__Normal ..... [RUN]
+[0m15:29:47.097949 [info ] [Thread-2 (]: 2 of 15 START test accepted_values_stg_sales_gender__Male__Female .............. [RUN]
+[0m15:29:47.098124 [info ] [Thread-4 (]: 4 of 15 START test not_null_stg_customers__key_hash ............................ [RUN]
+[0m15:29:47.098413 [debug] [Thread-3 (]: Acquiring new trino connection 'test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97'
+[0m15:29:47.098569 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly list_iceberg_staging, now test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a)
+[0m15:29:47.098725 [debug] [Thread-2 (]: Acquiring new trino connection 'test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067'
+[0m15:29:47.098964 [debug] [Thread-4 (]: Acquiring new trino connection 'test.data_platform.not_null_stg_customers__key_hash.68611866ca'
+[0m15:29:47.099094 [debug] [Thread-3 (]: Began compiling node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:29:47.099219 [debug] [Thread-1 (]: Began compiling node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:29:47.099351 [debug] [Thread-2 (]: Began compiling node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:29:47.099482 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:29:47.104974 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m15:29:47.106812 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m15:29:47.108903 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m15:29:47.111813 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m15:29:47.112442 [debug] [Thread-3 (]: Began executing node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:29:47.112638 [debug] [Thread-2 (]: Began executing node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:29:47.119467 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m15:29:47.120296 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m15:29:47.120605 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:29:47.120751 [debug] [Thread-1 (]: Began executing node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:29:47.121543 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m15:29:47.122489 [debug] [Thread-3 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m15:29:47.123207 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m15:29:47.123950 [debug] [Thread-2 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m15:29:47.124158 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        payment_method as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by payment_method
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Cash','Credit card','Ewallet'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.124351 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        gender as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by gender
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Male','Female'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.124500 [debug] [Thread-3 (]: Opening a new connection, currently in state init
+[0m15:29:47.125055 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m15:29:47.125199 [debug] [Thread-2 (]: Opening a new connection, currently in state init
+[0m15:29:47.125525 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers__key_hash.68611866ca"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select _key_hash
+from "iceberg"."staging"."customers"
+where _key_hash is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.126273 [debug] [Thread-1 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m15:29:47.126685 [debug] [Thread-4 (]: Opening a new connection, currently in state init
+[0m15:29:47.127094 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        customer_type as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by customer_type
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Member','Normal'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.127512 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:29:47.329919 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.203 seconds
+[0m15:29:47.332713 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: ROLLBACK
+[0m15:29:47.333865 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: Close
+[0m15:29:47.335243 [info ] [Thread-4 (]: 4 of 15 PASS not_null_stg_customers__key_hash .................................. [[32mPASS[0m in 0.24s]
+[0m15:29:47.336328 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m15:29:47.337000 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:29:47.337687 [info ] [Thread-4 (]: 5 of 15 START test not_null_stg_customers_customer_id .......................... [RUN]
+[0m15:29:47.338731 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers__key_hash.68611866ca, now test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa)
+[0m15:29:47.339511 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:29:47.343728 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m15:29:47.345586 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.218 seconds
+[0m15:29:47.346515 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: ROLLBACK
+[0m15:29:47.346878 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: Close
+[0m15:29:47.347716 [info ] [Thread-1 (]: 1 of 15 PASS accepted_values_stg_sales_customer_type__Member__Normal ........... [[32mPASS[0m in 0.25s]
+[0m15:29:47.348681 [debug] [Thread-1 (]: Finished running node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m15:29:47.348924 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:29:47.349096 [debug] [Thread-1 (]: Began running node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:29:47.349723 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.224 seconds
+[0m15:29:47.351211 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m15:29:47.351787 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.227 seconds
+[0m15:29:47.351583 [info ] [Thread-1 (]: 6 of 15 START test not_null_stg_customers_email ................................ [RUN]
+[0m15:29:47.352472 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: ROLLBACK
+[0m15:29:47.353317 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: ROLLBACK
+[0m15:29:47.353528 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a, now test.data_platform.not_null_stg_customers_email.d7cf761533)
+[0m15:29:47.353700 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: Close
+[0m15:29:47.353914 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: Close
+[0m15:29:47.356568 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m15:29:47.356752 [debug] [Thread-1 (]: Began compiling node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:29:47.357070 [info ] [Thread-2 (]: 2 of 15 PASS accepted_values_stg_sales_gender__Male__Female .................... [[32mPASS[0m in 0.26s]
+[0m15:29:47.357532 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select customer_id
+from "iceberg"."staging"."customers"
+where customer_id is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.357312 [info ] [Thread-3 (]: 3 of 15 PASS accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet  [[32mPASS[0m in 0.26s]
+[0m15:29:47.359232 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m15:29:47.359478 [debug] [Thread-2 (]: Finished running node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m15:29:47.359625 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m15:29:47.359822 [debug] [Thread-3 (]: Finished running node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m15:29:47.359998 [debug] [Thread-2 (]: Began running node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:29:47.360545 [debug] [Thread-3 (]: Began running node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:29:47.360749 [info ] [Thread-2 (]: 7 of 15 START test not_null_stg_sales__key_hash ................................ [RUN]
+[0m15:29:47.361080 [debug] [Thread-1 (]: Began executing node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:29:47.360975 [info ] [Thread-3 (]: 8 of 15 START test not_null_stg_sales_customer_type ............................ [RUN]
+[0m15:29:47.361444 [debug] [Thread-2 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067, now test.data_platform.not_null_stg_sales__key_hash.56b249fabe)
+[0m15:29:47.362317 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m15:29:47.362521 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97, now test.data_platform.not_null_stg_sales_customer_type.ae0d184b28)
+[0m15:29:47.362702 [debug] [Thread-2 (]: Began compiling node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:29:47.363052 [debug] [Thread-3 (]: Began compiling node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:29:47.364752 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m15:29:47.366130 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m15:29:47.366887 [debug] [Thread-1 (]: Using trino connection "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m15:29:47.367289 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers_email.d7cf761533"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select email
+from "iceberg"."staging"."customers"
+where email is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.367480 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:29:47.368019 [debug] [Thread-2 (]: Began executing node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:29:47.368171 [debug] [Thread-3 (]: Began executing node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:29:47.369186 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m15:29:47.370268 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m15:29:47.371802 [debug] [Thread-3 (]: Using trino connection "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m15:29:47.372399 [debug] [Thread-2 (]: Using trino connection "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m15:29:47.372724 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select customer_type
+from "iceberg"."staging"."sales"
+where customer_type is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.373118 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select _key_hash
+from "iceberg"."staging"."sales"
+where _key_hash is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.373487 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m15:29:47.374177 [debug] [Thread-2 (]: Opening a new connection, currently in state closed
+[0m15:29:47.551039 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.191 seconds
+[0m15:29:47.552747 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: ROLLBACK
+[0m15:29:47.553214 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: Close
+[0m15:29:47.554912 [info ] [Thread-4 (]: 5 of 15 PASS not_null_stg_customers_customer_id ................................ [[32mPASS[0m in 0.22s]
+[0m15:29:47.556181 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m15:29:47.556790 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:29:47.557348 [info ] [Thread-4 (]: 9 of 15 START test not_null_stg_sales_gender ................................... [RUN]
+[0m15:29:47.558323 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa, now test.data_platform.not_null_stg_sales_gender.caef17b073)
+[0m15:29:47.558514 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:29:47.560345 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m15:29:47.560823 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:29:47.561662 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m15:29:47.562434 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m15:29:47.562589 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_gender.caef17b073"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select gender
+from "iceberg"."staging"."sales"
+where gender is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.563074 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m15:29:47.563495 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.196 seconds
+[0m15:29:47.565585 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: ROLLBACK
+[0m15:29:47.566211 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: Close
+[0m15:29:47.568115 [info ] [Thread-1 (]: 6 of 15 PASS not_null_stg_customers_email ...................................... [[32mPASS[0m in 0.21s]
+[0m15:29:47.569572 [debug] [Thread-1 (]: Finished running node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m15:29:47.570130 [debug] [Thread-1 (]: Began running node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:29:47.570523 [info ] [Thread-1 (]: 10 of 15 START test not_null_stg_sales_invoice_id .............................. [RUN]
+[0m15:29:47.571465 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers_email.d7cf761533, now test.data_platform.not_null_stg_sales_invoice_id.826c409c3f)
+[0m15:29:47.571927 [debug] [Thread-1 (]: Began compiling node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:29:47.574629 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m15:29:47.575613 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.202 seconds
+[0m15:29:47.575949 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.202 seconds
+[0m15:29:47.576659 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: ROLLBACK
+[0m15:29:47.577430 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: ROLLBACK
+[0m15:29:47.577999 [debug] [Thread-1 (]: Began executing node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:29:47.578137 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: Close
+[0m15:29:47.578323 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: Close
+[0m15:29:47.579309 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m15:29:47.579658 [info ] [Thread-3 (]: 8 of 15 PASS not_null_stg_sales_customer_type .................................. [[32mPASS[0m in 0.22s]
+[0m15:29:47.580223 [info ] [Thread-2 (]: 7 of 15 PASS not_null_stg_sales__key_hash ...................................... [[32mPASS[0m in 0.22s]
+[0m15:29:47.580748 [debug] [Thread-3 (]: Finished running node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m15:29:47.580969 [debug] [Thread-2 (]: Finished running node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m15:29:47.581152 [debug] [Thread-3 (]: Began running node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:29:47.581409 [debug] [Thread-2 (]: Began running node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:29:47.582005 [debug] [Thread-1 (]: Using trino connection "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m15:29:47.582181 [info ] [Thread-3 (]: 11 of 15 START test not_null_stg_sales_payment_method .......................... [RUN]
+[0m15:29:47.583052 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select invoice_id
+from "iceberg"."staging"."sales"
+where invoice_id is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.582696 [info ] [Thread-2 (]: 12 of 15 START test not_null_stg_sales_quantity ................................ [RUN]
+[0m15:29:47.583546 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_customer_type.ae0d184b28, now test.data_platform.not_null_stg_sales_payment_method.42777b78ba)
+[0m15:29:47.583768 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:29:47.584039 [debug] [Thread-2 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales__key_hash.56b249fabe, now test.data_platform.not_null_stg_sales_quantity.0198ea4c12)
+[0m15:29:47.584231 [debug] [Thread-3 (]: Began compiling node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:29:47.584722 [debug] [Thread-2 (]: Began compiling node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:29:47.587591 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m15:29:47.589386 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m15:29:47.590033 [debug] [Thread-3 (]: Began executing node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:29:47.591254 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m15:29:47.591468 [debug] [Thread-2 (]: Began executing node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:29:47.592770 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m15:29:47.594209 [debug] [Thread-3 (]: Using trino connection "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m15:29:47.594490 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select payment_method
+from "iceberg"."staging"."sales"
+where payment_method is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.595122 [debug] [Thread-2 (]: Using trino connection "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m15:29:47.595254 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m15:29:47.595477 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select quantity
+from "iceberg"."staging"."sales"
+where quantity is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.595924 [debug] [Thread-2 (]: Opening a new connection, currently in state closed
+[0m15:29:47.721311 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.158 seconds
+[0m15:29:47.722604 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: ROLLBACK
+[0m15:29:47.722840 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: Close
+[0m15:29:47.723159 [info ] [Thread-4 (]: 9 of 15 PASS not_null_stg_sales_gender ......................................... [[32mPASS[0m in 0.16s]
+[0m15:29:47.723386 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m15:29:47.723541 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:29:47.723673 [info ] [Thread-4 (]: 13 of 15 START test not_null_stg_sales_total ................................... [RUN]
+[0m15:29:47.723894 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_gender.caef17b073, now test.data_platform.not_null_stg_sales_total.e9941188b2)
+[0m15:29:47.724091 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:29:47.726313 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m15:29:47.726862 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:29:47.727829 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m15:29:47.729539 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m15:29:47.730061 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_total.e9941188b2"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select total
+from "iceberg"."staging"."sales"
+where total is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.730513 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m15:29:47.733624 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.138 seconds
+[0m15:29:47.735381 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: ROLLBACK
+[0m15:29:47.735887 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: Close
+[0m15:29:47.736662 [info ] [Thread-3 (]: 11 of 15 PASS not_null_stg_sales_payment_method ................................ [[32mPASS[0m in 0.15s]
+[0m15:29:47.737691 [debug] [Thread-3 (]: Finished running node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m15:29:47.738073 [debug] [Thread-3 (]: Began running node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:29:47.738804 [info ] [Thread-3 (]: 14 of 15 START test unique_stg_customers__key_hash ............................. [RUN]
+[0m15:29:47.739918 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_payment_method.42777b78ba, now test.data_platform.unique_stg_customers__key_hash.ffe16a0886)
+[0m15:29:47.740528 [debug] [Thread-3 (]: Began compiling node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:29:47.747000 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m15:29:47.750667 [debug] [Thread-3 (]: Began executing node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:29:47.752185 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m15:29:47.753389 [debug] [Thread-3 (]: Using trino connection "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m15:29:47.753610 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+select
+    _key_hash as unique_field,
+    count(*) as n_records
+
+from "iceberg"."staging"."customers"
+where _key_hash is not null
+group by _key_hash
+having count(*) > 1
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.753751 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m15:29:47.754805 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.171 seconds
+[0m15:29:47.756315 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: ROLLBACK
+[0m15:29:47.756877 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: Close
+[0m15:29:47.757641 [info ] [Thread-1 (]: 10 of 15 PASS not_null_stg_sales_invoice_id .................................... [[32mPASS[0m in 0.19s]
+[0m15:29:47.758404 [debug] [Thread-1 (]: Finished running node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m15:29:47.758740 [debug] [Thread-1 (]: Began running node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:29:47.759012 [info ] [Thread-1 (]: 15 of 15 START test unique_stg_sales__key_hash ................................. [RUN]
+[0m15:29:47.759426 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_invoice_id.826c409c3f, now test.data_platform.unique_stg_sales__key_hash.4346c96806)
+[0m15:29:47.759605 [debug] [Thread-1 (]: Began compiling node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:29:47.761833 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m15:29:47.762794 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.167 seconds
+[0m15:29:47.763596 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: ROLLBACK
+[0m15:29:47.763911 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: Close
+[0m15:29:47.764323 [info ] [Thread-2 (]: 12 of 15 PASS not_null_stg_sales_quantity ...................................... [[32mPASS[0m in 0.18s]
+[0m15:29:47.764634 [debug] [Thread-1 (]: Began executing node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:29:47.764838 [debug] [Thread-2 (]: Finished running node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m15:29:47.765773 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m15:29:47.766936 [debug] [Thread-1 (]: Using trino connection "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m15:29:47.767147 [debug] [Thread-1 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.unique_stg_sales__key_hash.4346c96806"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+select
+    _key_hash as unique_field,
+    count(*) as n_records
+
+from "iceberg"."staging"."sales"
+where _key_hash is not null
+group by _key_hash
+having count(*) > 1
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m15:29:47.767655 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m15:29:47.853232 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.123 seconds
+[0m15:29:47.854997 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: ROLLBACK
+[0m15:29:47.855726 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: Close
+[0m15:29:47.856799 [info ] [Thread-4 (]: 13 of 15 PASS not_null_stg_sales_total ......................................... [[32mPASS[0m in 0.13s]
+[0m15:29:47.857823 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m15:29:47.914196 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.160 seconds
+[0m15:29:47.915015 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: ROLLBACK
+[0m15:29:47.915194 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: Close
+[0m15:29:47.915497 [info ] [Thread-3 (]: 14 of 15 PASS unique_stg_customers__key_hash ................................... [[32mPASS[0m in 0.18s]
+[0m15:29:47.915720 [debug] [Thread-3 (]: Finished running node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m15:29:47.925637 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.158 seconds
+[0m15:29:47.926378 [debug] [Thread-1 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: ROLLBACK
+[0m15:29:47.926545 [debug] [Thread-1 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: Close
+[0m15:29:47.926823 [info ] [Thread-1 (]: 15 of 15 PASS unique_stg_sales__key_hash ....................................... [[32mPASS[0m in 0.17s]
+[0m15:29:47.927046 [debug] [Thread-1 (]: Finished running node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m15:29:47.927646 [debug] [MainThread]: On master: COMMIT
+[0m15:29:47.927800 [debug] [MainThread]: Connection 'master' was properly closed.
+[0m15:29:47.927904 [debug] [MainThread]: Connection 'test.data_platform.unique_stg_sales__key_hash.4346c96806' was properly closed.
+[0m15:29:47.927998 [debug] [MainThread]: Connection 'test.data_platform.unique_stg_customers__key_hash.ffe16a0886' was properly closed.
+[0m15:29:47.928088 [debug] [MainThread]: Connection 'test.data_platform.not_null_stg_sales_quantity.0198ea4c12' was properly closed.
+[0m15:29:47.928172 [debug] [MainThread]: Connection 'test.data_platform.not_null_stg_sales_total.e9941188b2' was properly closed.
+[0m15:29:47.928289 [info ] [MainThread]: 
+[0m15:29:47.928405 [info ] [MainThread]: Finished running 15 data tests in 0 hours 0 minutes and 1.04 seconds (1.04s).
+[0m15:29:47.929194 [debug] [MainThread]: Command end result
+[0m15:29:47.943659 [debug] [MainThread]: Wrote artifact WritableManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/manifest.json
+[0m15:29:47.944597 [debug] [MainThread]: Wrote artifact SemanticManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/semantic_manifest.json
+[0m15:29:47.947715 [debug] [MainThread]: Wrote artifact RunExecutionResult to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/run_results.json
+[0m15:29:47.947860 [info ] [MainThread]: 
+[0m15:29:47.948003 [info ] [MainThread]: [32mCompleted successfully[0m
+[0m15:29:47.948112 [info ] [MainThread]: 
+[0m15:29:47.948227 [info ] [MainThread]: Done. PASS=15 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=15
+[0m15:29:47.949822 [debug] [MainThread]: Resource report: {"command_name": "test", "command_success": true, "command_wall_clock_time": 1.4823017, "process_in_blocks": "0", "process_kernel_time": 0.199987, "process_mem_max_rss": "176308224", "process_out_blocks": "0", "process_user_time": 1.179852}
+[0m15:29:47.950001 [debug] [MainThread]: Command `dbt test` succeeded at 15:29:47.949967 after 1.48 seconds
+[0m15:29:47.950157 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ad8f070>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10a8cc910>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10a8ce850>]}
+[0m15:29:47.950292 [debug] [MainThread]: Flushing usage events
+[0m15:29:48.391641 [debug] [MainThread]: An error was encountered while trying to flush usage events
+[0m16:25:30.475447 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10c98fe00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10dc5f390>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10dc5f610>]}
+
+
+============================== 16:25:30.478064 | a06acc0e-47ed-40e6-95e3-31fa6af4656e ==============================
+[0m16:25:30.478064 [info ] [MainThread]: Running with dbt=1.11.12
+[0m16:25:30.478298 [debug] [MainThread]: running dbt with arguments {'use_colors': 'True', 'cache_selected_only': 'False', 'empty': 'None', 'printer_width': '80', 'no_print': 'None', 'write_json': 'True', 'log_path': '/Users/josecosta/Documents/projects/data-platform/dbt/data_platform/logs', 'warn_error': 'None', 'debug': 'False', 'log_format': 'default', 'use_experimental_parser': 'False', 'log_cache_events': 'False', 'profiles_dir': 'profiles', 'quiet': 'False', 'introspect': 'True', 'invocation_command': 'dbt test --profiles-dir profiles', 'partial_parse': 'True', 'target_path': 'None', 'indirect_selection': 'eager', 'fail_fast': 'False', 'warn_error_options': 'WarnErrorOptionsV2(error=[], warn=[], silence=[])', 'version_check': 'True', 'static_parser': 'True', 'send_anonymous_usage_stats': 'True'}
+[0m16:25:30.591003 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'project_id', 'label': 'a06acc0e-47ed-40e6-95e3-31fa6af4656e', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10cf50c30>]}
+[0m16:25:30.623703 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'adapter_info', 'label': 'a06acc0e-47ed-40e6-95e3-31fa6af4656e', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10d4f9bf0>]}
+[0m16:25:30.624088 [info ] [MainThread]: Registered adapter: trino=1.10.2
+[0m16:25:30.671843 [debug] [MainThread]: checksum: f368f5348cf42803b94ef7fb8257ecf3bf9a9a16dd9c8c51fe5172f2dbeb457f, vars: {}, profile: , target: , version: 1.11.12
+[0m16:25:30.743983 [debug] [MainThread]: Partial parsing enabled: 0 files deleted, 0 files added, 0 files changed.
+[0m16:25:30.744217 [debug] [MainThread]: Nothing changed, skipping partial parsing.
+[0m16:25:30.744342 [debug] [MainThread]: Partial parsing enabled, no changes found, skipping parsing
+[0m16:25:30.763628 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'load_project', 'label': 'a06acc0e-47ed-40e6-95e3-31fa6af4656e', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10e2e4450>]}
+[0m16:25:30.834470 [debug] [MainThread]: Wrote artifact WritableManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/manifest.json
+[0m16:25:30.835535 [debug] [MainThread]: Wrote artifact SemanticManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/semantic_manifest.json
+[0m16:25:30.908306 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'resource_counts', 'label': 'a06acc0e-47ed-40e6-95e3-31fa6af4656e', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ee4c8c0>]}
+[0m16:25:30.908556 [info ] [MainThread]: Found 2 models, 15 data tests, 2 sources, 497 macros
+[0m16:25:30.908682 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': 'a06acc0e-47ed-40e6-95e3-31fa6af4656e', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10dfadc50>]}
+[0m16:25:30.909583 [info ] [MainThread]: 
+[0m16:25:30.909716 [info ] [MainThread]: Concurrency: 4 threads (target='dev')
+[0m16:25:30.909824 [info ] [MainThread]: 
+[0m16:25:30.910020 [debug] [MainThread]: Acquiring new trino connection 'master'
+[0m16:25:30.911867 [debug] [ThreadPool]: Acquiring new trino connection 'list_iceberg_staging'
+[0m16:25:30.978999 [debug] [ThreadPool]: Using trino connection "list_iceberg_staging"
+[0m16:25:30.979211 [debug] [ThreadPool]: On list_iceberg_staging: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "connection_name": "list_iceberg_staging"} */
+select
+      t.table_catalog as database,
+      t.table_name as name,
+      t.table_schema as schema,
+      case when mv.name is not null then 'materialized_view'
+           when t.table_type = 'BASE TABLE' then 'table'
+           when t.table_type = 'VIEW' then 'view'
+           else t.table_type
+      end as table_type
+    from "iceberg".INFORMATION_SCHEMA.tables t
+    left join (
+            select * from system.metadata.materialized_views
+            where catalog_name = 'iceberg'
+              and schema_name = 'staging') mv
+          on mv.catalog_name = t.table_catalog and mv.schema_name = t.table_schema and mv.name = t.table_name
+    where t.table_schema = 'staging'
+[0m16:25:30.979340 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m16:25:30.979439 [warn ] [ThreadPool]: [[33mWARNING[0m]: SSL certificate validation is disabled by default. It is legacy behavior which will be changed in future releases. It is strongly advised to enable `require_certificate_validation` flag or explicitly set `cert` configuration to `True` for security reasons. You may receive an error after that if your SSL setup is incorrect.
+You may opt into the new behavior sooner by setting `flags.require_certificate_validation` to `True` in `dbt_project.yml`.
+Visit https://docs.getdbt.com/reference/global-configs/behavior-changes for more information.
+[0m16:25:30.979615 [debug] [ThreadPool]: Sending event: {'category': 'dbt', 'action': 'BehaviorChangeEvent', 'label': 'a06acc0e-47ed-40e6-95e3-31fa6af4656e', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10e750600>]}
+[0m16:25:31.141068 [debug] [ThreadPool]: SQL status: SUCCESS in 0.162 seconds
+[0m16:25:31.141809 [debug] [ThreadPool]: On list_iceberg_staging: ROLLBACK
+[0m16:25:31.141957 [debug] [ThreadPool]: On list_iceberg_staging: Close
+[0m16:25:31.142502 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': 'a06acc0e-47ed-40e6-95e3-31fa6af4656e', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ee65550>]}
+[0m16:25:31.142751 [debug] [MainThread]: On master: COMMIT
+[0m16:25:31.144638 [debug] [Thread-3 (]: Began running node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m16:25:31.144849 [debug] [Thread-1 (]: Began running node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m16:25:31.144978 [debug] [Thread-2 (]: Began running node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m16:25:31.145093 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m16:25:31.145228 [info ] [Thread-3 (]: 3 of 15 START test accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet  [RUN]
+[0m16:25:31.145393 [info ] [Thread-1 (]: 1 of 15 START test accepted_values_stg_sales_customer_type__Member__Normal ..... [RUN]
+[0m16:25:31.145525 [info ] [Thread-2 (]: 2 of 15 START test accepted_values_stg_sales_gender__Male__Female .............. [RUN]
+[0m16:25:31.145649 [info ] [Thread-4 (]: 4 of 15 START test not_null_stg_customers__key_hash ............................ [RUN]
+[0m16:25:31.145849 [debug] [Thread-3 (]: Acquiring new trino connection 'test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97'
+[0m16:25:31.145995 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly list_iceberg_staging, now test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a)
+[0m16:25:31.146155 [debug] [Thread-2 (]: Acquiring new trino connection 'test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067'
+[0m16:25:31.146309 [debug] [Thread-4 (]: Acquiring new trino connection 'test.data_platform.not_null_stg_customers__key_hash.68611866ca'
+[0m16:25:31.146444 [debug] [Thread-3 (]: Began compiling node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m16:25:31.146564 [debug] [Thread-1 (]: Began compiling node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m16:25:31.146674 [debug] [Thread-2 (]: Began compiling node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m16:25:31.146792 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m16:25:31.152782 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m16:25:31.154576 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m16:25:31.156315 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m16:25:31.159088 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m16:25:31.160288 [debug] [Thread-3 (]: Began executing node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m16:25:31.166408 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m16:25:31.166565 [debug] [Thread-1 (]: Began executing node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m16:25:31.167223 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m16:25:31.167376 [debug] [Thread-2 (]: Began executing node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m16:25:31.168122 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m16:25:31.168824 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m16:25:31.169636 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m16:25:31.171085 [debug] [Thread-1 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"
+[0m16:25:31.171948 [debug] [Thread-2 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"
+[0m16:25:31.172105 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        customer_type as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by customer_type
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Member','Normal'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.172972 [debug] [Thread-3 (]: Using trino connection "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"
+[0m16:25:31.173124 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        gender as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by gender
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Male','Female'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.173638 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_customers__key_hash.68611866ca"
+[0m16:25:31.173781 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m16:25:31.173936 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+with all_values as (
+
+    select
+        payment_method as value_field,
+        count(*) as n_records
+
+    from "iceberg"."staging"."sales"
+    group by payment_method
+
+)
+
+select *
+from all_values
+where value_field not in (
+    'Cash','Credit card','Ewallet'
+)
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.174067 [debug] [Thread-2 (]: Opening a new connection, currently in state init
+[0m16:25:31.174191 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers__key_hash.68611866ca"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select _key_hash
+from "iceberg"."staging"."customers"
+where _key_hash is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.174603 [debug] [Thread-3 (]: Opening a new connection, currently in state init
+[0m16:25:31.174978 [debug] [Thread-4 (]: Opening a new connection, currently in state init
+[0m16:25:31.361553 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.186 seconds
+[0m16:25:31.366472 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: ROLLBACK
+[0m16:25:31.366751 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers__key_hash.68611866ca: Close
+[0m16:25:31.367107 [info ] [Thread-4 (]: 4 of 15 PASS not_null_stg_customers__key_hash .................................. [[32mPASS[0m in 0.22s]
+[0m16:25:31.367348 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_customers__key_hash.68611866ca
+[0m16:25:31.367499 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m16:25:31.367630 [info ] [Thread-4 (]: 5 of 15 START test not_null_stg_customers_customer_id .......................... [RUN]
+[0m16:25:31.367795 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers__key_hash.68611866ca, now test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa)
+[0m16:25:31.367923 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m16:25:31.373182 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m16:25:31.374123 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m16:25:31.377541 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m16:25:31.378963 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"
+[0m16:25:31.379183 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select customer_id
+from "iceberg"."staging"."customers"
+where customer_id is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.379331 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m16:25:31.442037 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.267 seconds
+[0m16:25:31.443744 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: ROLLBACK
+[0m16:25:31.444225 [debug] [Thread-3 (]: On test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97: Close
+[0m16:25:31.445281 [info ] [Thread-3 (]: 3 of 15 PASS accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet  [[32mPASS[0m in 0.30s]
+[0m16:25:31.446311 [debug] [Thread-3 (]: Finished running node test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97
+[0m16:25:31.446821 [debug] [Thread-3 (]: Began running node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m16:25:31.447556 [info ] [Thread-3 (]: 6 of 15 START test not_null_stg_customers_email ................................ [RUN]
+[0m16:25:31.448484 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_payment_method__Cash__Credit_card__Ewallet.0d63439b97, now test.data_platform.not_null_stg_customers_email.d7cf761533)
+[0m16:25:31.449271 [debug] [Thread-3 (]: Began compiling node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m16:25:31.449825 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.276 seconds
+[0m16:25:31.452925 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m16:25:31.454814 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: ROLLBACK
+[0m16:25:31.455422 [debug] [Thread-1 (]: On test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a: Close
+[0m16:25:31.456346 [info ] [Thread-1 (]: 1 of 15 PASS accepted_values_stg_sales_customer_type__Member__Normal ........... [[32mPASS[0m in 0.31s]
+[0m16:25:31.456818 [debug] [Thread-3 (]: Began executing node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m16:25:31.457253 [debug] [Thread-1 (]: Finished running node test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a
+[0m16:25:31.459087 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m16:25:31.459452 [debug] [Thread-1 (]: Began running node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m16:25:31.460182 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.286 seconds
+[0m16:25:31.462186 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: ROLLBACK
+[0m16:25:31.460724 [info ] [Thread-1 (]: 7 of 15 START test not_null_stg_sales__key_hash ................................ [RUN]
+[0m16:25:31.462786 [debug] [Thread-2 (]: On test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067: Close
+[0m16:25:31.463845 [debug] [Thread-3 (]: Using trino connection "test.data_platform.not_null_stg_customers_email.d7cf761533"
+[0m16:25:31.464310 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_customer_type__Member__Normal.c70987f43a, now test.data_platform.not_null_stg_sales__key_hash.56b249fabe)
+[0m16:25:31.465542 [info ] [Thread-2 (]: 2 of 15 PASS accepted_values_stg_sales_gender__Male__Female .................... [[32mPASS[0m in 0.32s]
+[0m16:25:31.466060 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_customers_email.d7cf761533"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select email
+from "iceberg"."staging"."customers"
+where email is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.466748 [debug] [Thread-1 (]: Began compiling node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m16:25:31.467877 [debug] [Thread-2 (]: Finished running node test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067
+[0m16:25:31.468592 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m16:25:31.473818 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m16:25:31.474416 [debug] [Thread-2 (]: Began running node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m16:25:31.475037 [info ] [Thread-2 (]: 8 of 15 START test not_null_stg_sales_customer_type ............................ [RUN]
+[0m16:25:31.475588 [debug] [Thread-2 (]: Re-using an available connection from the pool (formerly test.data_platform.accepted_values_stg_sales_gender__Male__Female.c40bc0e067, now test.data_platform.not_null_stg_sales_customer_type.ae0d184b28)
+[0m16:25:31.475898 [debug] [Thread-2 (]: Began compiling node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m16:25:31.478241 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m16:25:31.478853 [debug] [Thread-1 (]: Began executing node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m16:25:31.480097 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m16:25:31.480578 [debug] [Thread-2 (]: Began executing node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m16:25:31.482245 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m16:25:31.483495 [debug] [Thread-1 (]: Using trino connection "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"
+[0m16:25:31.484205 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales__key_hash.56b249fabe"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select _key_hash
+from "iceberg"."staging"."sales"
+where _key_hash is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.484777 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m16:25:31.485552 [debug] [Thread-2 (]: Using trino connection "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"
+[0m16:25:31.486126 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_customer_type.ae0d184b28"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select customer_type
+from "iceberg"."staging"."sales"
+where customer_type is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.486448 [debug] [Thread-2 (]: Opening a new connection, currently in state closed
+[0m16:25:31.579910 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.200 seconds
+[0m16:25:31.581757 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: ROLLBACK
+[0m16:25:31.582277 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa: Close
+[0m16:25:31.583330 [info ] [Thread-4 (]: 5 of 15 PASS not_null_stg_customers_customer_id ................................ [[32mPASS[0m in 0.22s]
+[0m16:25:31.584320 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa
+[0m16:25:31.585034 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m16:25:31.585501 [info ] [Thread-4 (]: 9 of 15 START test not_null_stg_sales_gender ................................... [RUN]
+[0m16:25:31.586099 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers_customer_id.e2cfb1f9aa, now test.data_platform.not_null_stg_sales_gender.caef17b073)
+[0m16:25:31.586587 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m16:25:31.589913 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m16:25:31.591116 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m16:25:31.592206 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m16:25:31.593467 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_sales_gender.caef17b073"
+[0m16:25:31.593644 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_gender.caef17b073"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select gender
+from "iceberg"."staging"."sales"
+where gender is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.593771 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m16:25:31.688512 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.220 seconds
+[0m16:25:31.690400 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: ROLLBACK
+[0m16:25:31.690902 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_customers_email.d7cf761533: Close
+[0m16:25:31.691992 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.205 seconds
+[0m16:25:31.694404 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: ROLLBACK
+[0m16:25:31.692767 [info ] [Thread-3 (]: 6 of 15 PASS not_null_stg_customers_email ...................................... [[32mPASS[0m in 0.24s]
+[0m16:25:31.695089 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_customer_type.ae0d184b28: Close
+[0m16:25:31.696080 [debug] [Thread-3 (]: Finished running node test.data_platform.not_null_stg_customers_email.d7cf761533
+[0m16:25:31.697521 [info ] [Thread-2 (]: 8 of 15 PASS not_null_stg_sales_customer_type .................................. [[32mPASS[0m in 0.22s]
+[0m16:25:31.698177 [debug] [Thread-3 (]: Began running node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m16:25:31.699058 [debug] [Thread-2 (]: Finished running node test.data_platform.not_null_stg_sales_customer_type.ae0d184b28
+[0m16:25:31.700499 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.216 seconds
+[0m16:25:31.699658 [info ] [Thread-3 (]: 10 of 15 START test not_null_stg_sales_invoice_id .............................. [RUN]
+[0m16:25:31.700990 [debug] [Thread-2 (]: Began running node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m16:25:31.701743 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: ROLLBACK
+[0m16:25:31.701955 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_customers_email.d7cf761533, now test.data_platform.not_null_stg_sales_invoice_id.826c409c3f)
+[0m16:25:31.702109 [info ] [Thread-2 (]: 11 of 15 START test not_null_stg_sales_payment_method .......................... [RUN]
+[0m16:25:31.702373 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales__key_hash.56b249fabe: Close
+[0m16:25:31.702517 [debug] [Thread-3 (]: Began compiling node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m16:25:31.702659 [debug] [Thread-2 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_customer_type.ae0d184b28, now test.data_platform.not_null_stg_sales_payment_method.42777b78ba)
+[0m16:25:31.704559 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m16:25:31.705099 [info ] [Thread-1 (]: 7 of 15 PASS not_null_stg_sales__key_hash ...................................... [[32mPASS[0m in 0.24s]
+[0m16:25:31.705585 [debug] [Thread-2 (]: Began compiling node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m16:25:31.706243 [debug] [Thread-1 (]: Finished running node test.data_platform.not_null_stg_sales__key_hash.56b249fabe
+[0m16:25:31.709826 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m16:25:31.710340 [debug] [Thread-1 (]: Began running node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m16:25:31.710783 [debug] [Thread-3 (]: Began executing node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m16:25:31.712239 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m16:25:31.711004 [info ] [Thread-1 (]: 12 of 15 START test not_null_stg_sales_quantity ................................ [RUN]
+[0m16:25:31.712729 [debug] [Thread-1 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales__key_hash.56b249fabe, now test.data_platform.not_null_stg_sales_quantity.0198ea4c12)
+[0m16:25:31.712935 [debug] [Thread-1 (]: Began compiling node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m16:25:31.713135 [debug] [Thread-2 (]: Began executing node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m16:25:31.714765 [debug] [Thread-1 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m16:25:31.716102 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m16:25:31.716774 [debug] [Thread-3 (]: Using trino connection "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"
+[0m16:25:31.717171 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_invoice_id.826c409c3f"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select invoice_id
+from "iceberg"."staging"."sales"
+where invoice_id is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.717343 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m16:25:31.718853 [debug] [Thread-1 (]: Began executing node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m16:25:31.721307 [debug] [Thread-1 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m16:25:31.722862 [debug] [Thread-2 (]: Using trino connection "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"
+[0m16:25:31.723634 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_payment_method.42777b78ba"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select payment_method
+from "iceberg"."staging"."sales"
+where payment_method is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.723983 [debug] [Thread-2 (]: Opening a new connection, currently in state closed
+[0m16:25:31.725741 [debug] [Thread-1 (]: Using trino connection "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"
+[0m16:25:31.726903 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_quantity.0198ea4c12"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select quantity
+from "iceberg"."staging"."sales"
+where quantity is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.727599 [debug] [Thread-1 (]: Opening a new connection, currently in state closed
+[0m16:25:31.752423 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.159 seconds
+[0m16:25:31.754092 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: ROLLBACK
+[0m16:25:31.754551 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_gender.caef17b073: Close
+[0m16:25:31.755229 [info ] [Thread-4 (]: 9 of 15 PASS not_null_stg_sales_gender ......................................... [[32mPASS[0m in 0.17s]
+[0m16:25:31.755781 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_sales_gender.caef17b073
+[0m16:25:31.756162 [debug] [Thread-4 (]: Began running node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m16:25:31.756507 [info ] [Thread-4 (]: 13 of 15 START test not_null_stg_sales_total ................................... [RUN]
+[0m16:25:31.757028 [debug] [Thread-4 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_gender.caef17b073, now test.data_platform.not_null_stg_sales_total.e9941188b2)
+[0m16:25:31.757484 [debug] [Thread-4 (]: Began compiling node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m16:25:31.759993 [debug] [Thread-4 (]: Writing injected SQL for node "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m16:25:31.760998 [debug] [Thread-4 (]: Began executing node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m16:25:31.761986 [debug] [Thread-4 (]: Writing runtime sql for node "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m16:25:31.763044 [debug] [Thread-4 (]: Using trino connection "test.data_platform.not_null_stg_sales_total.e9941188b2"
+[0m16:25:31.763250 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.not_null_stg_sales_total.e9941188b2"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+
+
+select total
+from "iceberg"."staging"."sales"
+where total is null
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.763398 [debug] [Thread-4 (]: Opening a new connection, currently in state closed
+[0m16:25:31.891591 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.174 seconds
+[0m16:25:31.893076 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: ROLLBACK
+[0m16:25:31.893760 [debug] [Thread-3 (]: On test.data_platform.not_null_stg_sales_invoice_id.826c409c3f: Close
+[0m16:25:31.894593 [info ] [Thread-3 (]: 10 of 15 PASS not_null_stg_sales_invoice_id .................................... [[32mPASS[0m in 0.19s]
+[0m16:25:31.895631 [debug] [Thread-3 (]: Finished running node test.data_platform.not_null_stg_sales_invoice_id.826c409c3f
+[0m16:25:31.896997 [debug] [Thread-3 (]: Began running node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m16:25:31.897674 [info ] [Thread-3 (]: 14 of 15 START test unique_stg_customers__key_hash ............................. [RUN]
+[0m16:25:31.898442 [debug] [Thread-3 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_invoice_id.826c409c3f, now test.data_platform.unique_stg_customers__key_hash.ffe16a0886)
+[0m16:25:31.898849 [debug] [Thread-3 (]: Began compiling node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m16:25:31.903789 [debug] [Thread-3 (]: Writing injected SQL for node "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m16:25:31.904672 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.181 seconds
+[0m16:25:31.905533 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: ROLLBACK
+[0m16:25:31.905702 [debug] [Thread-2 (]: On test.data_platform.not_null_stg_sales_payment_method.42777b78ba: Close
+[0m16:25:31.906031 [info ] [Thread-2 (]: 11 of 15 PASS not_null_stg_sales_payment_method ................................ [[32mPASS[0m in 0.20s]
+[0m16:25:31.906299 [debug] [Thread-2 (]: Finished running node test.data_platform.not_null_stg_sales_payment_method.42777b78ba
+[0m16:25:31.906452 [debug] [Thread-2 (]: Began running node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m16:25:31.906739 [debug] [Thread-3 (]: Began executing node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m16:25:31.907107 [info ] [Thread-2 (]: 15 of 15 START test unique_stg_sales__key_hash ................................. [RUN]
+[0m16:25:31.909359 [debug] [Thread-3 (]: Writing runtime sql for node "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m16:25:31.909627 [debug] [Thread-2 (]: Re-using an available connection from the pool (formerly test.data_platform.not_null_stg_sales_payment_method.42777b78ba, now test.data_platform.unique_stg_sales__key_hash.4346c96806)
+[0m16:25:31.910040 [debug] [Thread-1 (]: SQL status: SUCCESS in 0.183 seconds
+[0m16:25:31.910526 [debug] [Thread-2 (]: Began compiling node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m16:25:31.911481 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: ROLLBACK
+[0m16:25:31.913854 [debug] [Thread-2 (]: Writing injected SQL for node "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m16:25:31.914249 [debug] [Thread-1 (]: On test.data_platform.not_null_stg_sales_quantity.0198ea4c12: Close
+[0m16:25:31.915026 [debug] [Thread-3 (]: Using trino connection "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"
+[0m16:25:31.915866 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.unique_stg_customers__key_hash.ffe16a0886"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+select
+    _key_hash as unique_field,
+    count(*) as n_records
+
+from "iceberg"."staging"."customers"
+where _key_hash is not null
+group by _key_hash
+having count(*) > 1
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.915550 [info ] [Thread-1 (]: 12 of 15 PASS not_null_stg_sales_quantity ...................................... [[32mPASS[0m in 0.20s]
+[0m16:25:31.916492 [debug] [Thread-3 (]: Opening a new connection, currently in state closed
+[0m16:25:31.917105 [debug] [Thread-1 (]: Finished running node test.data_platform.not_null_stg_sales_quantity.0198ea4c12
+[0m16:25:31.917915 [debug] [Thread-2 (]: Began executing node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m16:25:31.919621 [debug] [Thread-2 (]: Writing runtime sql for node "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m16:25:31.919973 [debug] [Thread-4 (]: SQL status: SUCCESS in 0.157 seconds
+[0m16:25:31.920898 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: ROLLBACK
+[0m16:25:31.921128 [debug] [Thread-4 (]: On test.data_platform.not_null_stg_sales_total.e9941188b2: Close
+[0m16:25:31.922614 [debug] [Thread-2 (]: Using trino connection "test.data_platform.unique_stg_sales__key_hash.4346c96806"
+[0m16:25:31.921536 [info ] [Thread-4 (]: 13 of 15 PASS not_null_stg_sales_total ......................................... [[32mPASS[0m in 0.16s]
+[0m16:25:31.922886 [debug] [Thread-2 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: /* {"app": "dbt", "dbt_version": "1.11.12", "profile_name": "data_platform", "target_name": "dev", "node_id": "test.data_platform.unique_stg_sales__key_hash.4346c96806"} */
+
+    
+    select
+      count(*) as failures,
+      count(*) != 0 as should_warn,
+      count(*) != 0 as should_error
+    from (
+      
+    
+  
+    
+    
+
+select
+    _key_hash as unique_field,
+    count(*) as n_records
+
+from "iceberg"."staging"."sales"
+where _key_hash is not null
+group by _key_hash
+having count(*) > 1
+
+
+
+  
+  
+      
+    ) dbt_internal_test
+[0m16:25:31.923158 [debug] [Thread-4 (]: Finished running node test.data_platform.not_null_stg_sales_total.e9941188b2
+[0m16:25:31.923363 [debug] [Thread-2 (]: Opening a new connection, currently in state closed
+[0m16:25:32.072755 [debug] [Thread-2 (]: SQL status: SUCCESS in 0.149 seconds
+[0m16:25:32.073872 [debug] [Thread-2 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: ROLLBACK
+[0m16:25:32.074141 [debug] [Thread-3 (]: SQL status: SUCCESS in 0.158 seconds
+[0m16:25:32.074280 [debug] [Thread-2 (]: On test.data_platform.unique_stg_sales__key_hash.4346c96806: Close
+[0m16:25:32.074942 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: ROLLBACK
+[0m16:25:32.075448 [debug] [Thread-3 (]: On test.data_platform.unique_stg_customers__key_hash.ffe16a0886: Close
+[0m16:25:32.075305 [info ] [Thread-2 (]: 15 of 15 PASS unique_stg_sales__key_hash ....................................... [[32mPASS[0m in 0.17s]
+[0m16:25:32.075883 [info ] [Thread-3 (]: 14 of 15 PASS unique_stg_customers__key_hash ................................... [[32mPASS[0m in 0.18s]
+[0m16:25:32.076090 [debug] [Thread-2 (]: Finished running node test.data_platform.unique_stg_sales__key_hash.4346c96806
+[0m16:25:32.076266 [debug] [Thread-3 (]: Finished running node test.data_platform.unique_stg_customers__key_hash.ffe16a0886
+[0m16:25:32.076891 [debug] [MainThread]: On master: COMMIT
+[0m16:25:32.077039 [debug] [MainThread]: Connection 'master' was properly closed.
+[0m16:25:32.077141 [debug] [MainThread]: Connection 'test.data_platform.not_null_stg_sales_quantity.0198ea4c12' was properly closed.
+[0m16:25:32.077233 [debug] [MainThread]: Connection 'test.data_platform.unique_stg_customers__key_hash.ffe16a0886' was properly closed.
+[0m16:25:32.077323 [debug] [MainThread]: Connection 'test.data_platform.unique_stg_sales__key_hash.4346c96806' was properly closed.
+[0m16:25:32.077411 [debug] [MainThread]: Connection 'test.data_platform.not_null_stg_sales_total.e9941188b2' was properly closed.
+[0m16:25:32.077524 [info ] [MainThread]: 
+[0m16:25:32.077636 [info ] [MainThread]: Finished running 15 data tests in 0 hours 0 minutes and 1.17 seconds (1.17s).
+[0m16:25:32.078412 [debug] [MainThread]: Command end result
+[0m16:25:32.093284 [debug] [MainThread]: Wrote artifact WritableManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/manifest.json
+[0m16:25:32.094433 [debug] [MainThread]: Wrote artifact SemanticManifest to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/semantic_manifest.json
+[0m16:25:32.097837 [debug] [MainThread]: Wrote artifact RunExecutionResult to /Users/josecosta/Documents/projects/data-platform/dbt/data_platform/target/run_results.json
+[0m16:25:32.098014 [info ] [MainThread]: 
+[0m16:25:32.098172 [info ] [MainThread]: [32mCompleted successfully[0m
+[0m16:25:32.098286 [info ] [MainThread]: 
+[0m16:25:32.098403 [info ] [MainThread]: Done. PASS=15 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=15
+[0m16:25:32.099983 [debug] [MainThread]: Resource report: {"command_name": "test", "command_success": true, "command_wall_clock_time": 1.6695641, "process_in_blocks": "0", "process_kernel_time": 0.241576, "process_mem_max_rss": "173932544", "process_out_blocks": "0", "process_user_time": 1.225386}
+[0m16:25:32.100161 [debug] [MainThread]: Command `dbt test` succeeded at 16:25:32.100126 after 1.67 seconds
+[0m16:25:32.100304 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10ee73ee0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10e6d2530>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x10e6d0a50>]}
+[0m16:25:32.100443 [debug] [MainThread]: Flushing usage events
+[0m16:25:32.552377 [debug] [MainThread]: An error was encountered while trying to flush usage events

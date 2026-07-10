@@ -1,5 +1,5 @@
 -- Platform metadata schema: source_system, data_feed, schema_registry,
--- model_feed, model_feed_source, run_audit_log.
+-- model_feed, model_feed_source, data_feed_run, data_model_run.
 -- See Roadmap.md "Metadata Schema" for the design rationale.
 
 create or replace function set_updated_at()
@@ -52,7 +52,7 @@ create table data_feed (
     -- infrastructure), 'spark' opt-in for feeds whose volume actually
     -- needs distributed execution (see Learnings.md, Phase 6)
     processing_engine         text not null default 'polars' check (processing_engine in ('polars', 'spark')),
-    -- denormalized watermark state for the orchestrator; run_audit_log is the full audit trail
+    -- denormalized watermark state for the orchestrator; data_feed_run is the full run history
     last_watermark_value      text,
     last_run_id               uuid,
     is_active                 boolean not null default true,
@@ -105,7 +105,7 @@ create table model_feed (
     updates_enabled               boolean not null default true,
     deletions_enabled             boolean not null default false,
     watermark_column              text,
-    -- denormalized watermark state for the orchestrator; run_audit_log is the full audit trail
+    -- denormalized watermark state for the orchestrator; data_model_run is the full run history
     last_watermark_value          text,
     last_run_id                   uuid,
     is_active                     boolean not null default true,
@@ -121,6 +121,14 @@ create trigger trg_model_feed_updated_at
 
 -- ---------------------------------------------------------------------------
 -- model_feed_source (bridge table for facts joining >1 staging source)
+-- NOT used for tracking which feed(s) a staging build draws from -- that's
+-- data_model_run.uses_feeds (a plain comma-separated column), deliberately
+-- separate. model_feed itself is Kimball-specific (model_type constrained
+-- to fact/dimension, requires scd_type/surrogate_key_column/business_key_
+-- columns/tracked_columns), and staging isn't a fact or a dimension, so it
+-- doesn't have a model_feed row to bridge from in the first place. Don't
+-- "fix" data_model_run to route through here -- that was considered and
+-- rejected, see Learnings.md.
 -- ---------------------------------------------------------------------------
 create table model_feed_source (
     model_feed_id   uuid not null references model_feed(id),
@@ -130,33 +138,114 @@ create table model_feed_source (
 );
 
 -- ---------------------------------------------------------------------------
--- run_audit_log (per-layer run/audit history — idempotency + re-run support)
+-- data_feed_run (one row per data_feed per job run — extraction + contract
+-- validation concern: landing -> raw -> clean. See Roadmap.md "Metadata
+-- Schema" and Learnings.md for why this replaced a per-layer audit log.)
 -- ---------------------------------------------------------------------------
-create table run_audit_log (
-    run_id                uuid primary key default gen_random_uuid(),
-    layer                 text not null check (layer in ('landing', 'raw', 'clean', 'staging', 'model', 'serve')),
-    feed_type             text not null check (feed_type in ('data_feed', 'model_feed')),
-    data_feed_id          uuid references data_feed(id),
-    model_feed_id         uuid references model_feed(id),
-    parent_run_id         uuid references run_audit_log(run_id),
-    watermark_value_start text,
-    watermark_value_end   text,
-    output_path           text,
-    status                text not null default 'running' check (status in ('running', 'success', 'failed', 'skipped')),
-    started_at            timestamptz not null default now(),
-    ended_at              timestamptz,
-    rows_read             bigint,
-    rows_inserted         bigint,
-    rows_updated          bigint,
-    rows_deleted          bigint,
-    error_message         text,
-    dagster_run_id        text,
-    created_at            timestamptz not null default now(),
-    constraint chk_run_audit_log_feed_ref check (
-        (feed_type = 'data_feed' and data_feed_id is not null and model_feed_id is null)
-        or (feed_type = 'model_feed' and model_feed_id is not null and data_feed_id is null)
-    )
+create table data_feed_run (
+    run_id                          uuid primary key default gen_random_uuid(),
+    data_feed_id                    uuid not null references data_feed(id),
+    dagster_run_id                  text not null,
+    job_started_timestamp           timestamptz not null default now(),
+    job_ended_timestamp             timestamptz,
+    job_successful                  boolean,
+
+    is_landing_successful           boolean,
+    landing_end_timestamp           timestamptz,
+    landing_error_message           text,
+    landing_rows_read               bigint,
+    landing_rows_inserted           bigint,
+    landing_rows_updated            bigint,
+    landing_rows_deleted            bigint,
+    landing_output_path             text,
+    landing_watermark_value_start   text,
+    landing_watermark_value_end     text,
+
+    is_raw_successful               boolean,
+    raw_end_timestamp               timestamptz,
+    raw_error_message               text,
+    raw_rows_read                   bigint,
+    raw_rows_inserted               bigint,
+    raw_rows_updated                bigint,
+    raw_rows_deleted                bigint,
+    raw_output_path                 text,
+    raw_watermark_value_start       text,
+    raw_watermark_value_end         text,
+
+    is_clean_successful             boolean,
+    clean_end_timestamp             timestamptz,
+    clean_error_message             text,
+    clean_rows_read                 bigint,
+    clean_rows_inserted             bigint,
+    clean_rows_updated              bigint,
+    clean_rows_deleted              bigint,
+    clean_output_path               text,
+    clean_watermark_value_start     text,
+    clean_watermark_value_end       text,
+
+    created_at                      timestamptz not null default now(),
+    unique (data_feed_id, dagster_run_id)
 );
 
-create index idx_run_audit_log_data_feed on run_audit_log (layer, feed_type, data_feed_id, started_at desc);
-create index idx_run_audit_log_model_feed on run_audit_log (layer, feed_type, model_feed_id, started_at desc);
+create index idx_data_feed_run_feed on data_feed_run (data_feed_id, job_started_timestamp desc);
+create index idx_data_feed_run_dagster_run on data_feed_run (dagster_run_id);
+
+-- ---------------------------------------------------------------------------
+-- data_model_run (one row per model unit per job run — warehouse-building
+-- concern: staging -> model -> serve. Not FK'd to model_feed: staging is
+-- built per data_feed today with no model_feed involved at all, and
+-- model/serve don't exist yet (Phase 7/8). `model_key` names the model
+-- unit being built (e.g. 'customers' today, matching stg_customers; will
+-- align with model_feed.code once Phase 7 introduces real rows).
+-- `uses_feeds` is a comma-separated list of data_feed codes this model
+-- unit draws from — one feed per staging model today, built to support a
+-- future fact model joining multiple staging sources.
+-- ---------------------------------------------------------------------------
+create table data_model_run (
+    run_id                          uuid primary key default gen_random_uuid(),
+    model_key                       text not null,
+    uses_feeds                      text not null,
+    dagster_run_id                  text not null,
+    job_started_timestamp           timestamptz not null default now(),
+    job_ended_timestamp             timestamptz,
+    job_successful                  boolean,
+
+    is_staging_successful           boolean,
+    staging_end_timestamp           timestamptz,
+    staging_error_message           text,
+    staging_rows_read               bigint,
+    staging_rows_inserted           bigint,
+    staging_rows_updated            bigint,
+    staging_rows_deleted            bigint,
+    staging_output_path             text,
+    staging_watermark_value_start   text,
+    staging_watermark_value_end     text,
+
+    is_model_successful             boolean,
+    model_end_timestamp             timestamptz,
+    model_error_message             text,
+    model_rows_read                 bigint,
+    model_rows_inserted             bigint,
+    model_rows_updated              bigint,
+    model_rows_deleted              bigint,
+    model_output_path               text,
+    model_watermark_value_start     text,
+    model_watermark_value_end       text,
+
+    is_serve_successful             boolean,
+    serve_end_timestamp             timestamptz,
+    serve_error_message             text,
+    serve_rows_read                 bigint,
+    serve_rows_inserted             bigint,
+    serve_rows_updated              bigint,
+    serve_rows_deleted              bigint,
+    serve_output_path               text,
+    serve_watermark_value_start     text,
+    serve_watermark_value_end       text,
+
+    created_at                      timestamptz not null default now(),
+    unique (model_key, dagster_run_id)
+);
+
+create index idx_data_model_run_model_key on data_model_run (model_key, job_started_timestamp desc);
+create index idx_data_model_run_dagster_run on data_model_run (dagster_run_id);

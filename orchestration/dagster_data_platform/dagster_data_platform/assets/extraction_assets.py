@@ -40,10 +40,9 @@ def landing_customers(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[list[dict]]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
-    with postgres_metadata.log_ingestion_step(
-        layer="landing",
-        feed_type="data_feed",
+    with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
         now = datetime.now(timezone.utc)
@@ -63,10 +62,9 @@ def raw_customers(
     landing_customers: list[dict],
 ) -> Output[list[dict]]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
-    with postgres_metadata.log_ingestion_step(
-        layer="raw",
-        feed_type="data_feed",
+    with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
         # Stub: passes the landing payload through unchanged. Phase 6
@@ -85,10 +83,9 @@ def clean_customers(
     raw_customers: list[dict],
 ) -> Output[None]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
-    with postgres_metadata.log_ingestion_step(
-        layer="clean",
-        feed_type="data_feed",
+    with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        stage="clean",
         dagster_run_id=context.run_id,
     ) as log:
         # Same real path as clean_sales — PyIceberg for the atomic

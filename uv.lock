@@ -972,6 +972,11 @@ dependencies = [
     { name = "streamlit" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "pandas", specifier = ">=2.2" },
@@ -979,6 +984,9 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "streamlit", specifier = ">=1.40" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]
 
 [[package]]
 name = "frozenlist"

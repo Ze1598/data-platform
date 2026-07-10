@@ -61,11 +61,13 @@ def _build_dbt_assets_for_feed(feed_code: str):
     def _dbt_assets_for_feed(
         context: AssetExecutionContext, dbt: DbtCliResource, postgres_metadata: PostgresMetadataResource
     ):
-        data_feed = postgres_metadata.get_data_feed(feed_code)
-        with postgres_metadata.log_ingestion_step(
-            layer="staging",
-            feed_type="data_feed",
-            data_feed_id=str(data_feed["id"]),
+        # No get_data_feed() lookup needed here (unlike extraction_assets.py) --
+        # log_data_model_stage() only needs the feed *code*, which is already
+        # in scope, not its data_feed row.
+        with postgres_metadata.log_data_model_stage(
+            model_key=feed_code,
+            uses_feeds=feed_code,
+            stage="staging",
             dagster_run_id=context.run_id,
         ) as log:
             invocation = dbt.cli(["build"], context=context)

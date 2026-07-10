@@ -86,10 +86,12 @@ test module="":
             just processing::test
             just dbt::test
             just orchestration::test
+            just frontend::test
             just tests-integration::test
             ;;
         processing|raw_to_clean) just processing::test ;;
         dagster|orchestration) just orchestration::test ;;
+        frontend) just frontend::test ;;
         integration) just tests-integration::test ;;
         *) just dbt::test "{{module}}" ;;
     esac
