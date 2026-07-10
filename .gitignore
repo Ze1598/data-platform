@@ -8,6 +8,7 @@ __pycache__/
 data-lake/
 dbt/data_platform/target/
 dbt/data_platform/dbt_packages/
+dbt/data_platform/logs/
 
 # DAGSTER_HOME runtime state (telemetry, compute logs, IO manager pickled
 # storage, log queue) — only dagster.yaml itself is source, everything
