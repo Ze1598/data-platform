@@ -34,12 +34,14 @@ OUTPUT_DIR = REPO_ROOT / "dbt" / "data_platform" / "models" / "serve" / "generat
 
 def _render_view(*, model_code: str, feed_tag: str, filter_to_current: bool) -> str:
     # materialized='view' comes from dbt_project.yml's `serve:` block, not
-    # repeated here -- only tags need to be per-file (each view inherits its
-    # source data_feed's tag so the existing per-feed @dbt_assets pick it up
-    # automatically, see dbt_assets.py).
+    # repeated here. schema='serve' IS repeated here (matching model/*.sql's
+    # own per-file config(schema='model', ...) pattern, not a project-level
+    # default) -- without it, generate_schema_name.sql falls back to the
+    # target's default schema (staging), landing every generated view in
+    # the wrong namespace even though it builds and tests clean.
     where_clause = "\nwhere _valid_to is null" if filter_to_current else ""
     return (
-        f"{{{{ config(tags=['{feed_tag}']) }}}}\n\n"
+        f"{{{{ config(schema='serve', tags=['{feed_tag}']) }}}}\n\n"
         f"select * from {{{{ ref('{model_code}') }}}}{where_clause}\n"
     )
 

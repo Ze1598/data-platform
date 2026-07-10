@@ -58,6 +58,9 @@ start:
         echo ">>> dagster dev hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- killing, re-sweeping, and retrying" >&2
         just orchestration::kill
         just _ensure-venv-visible
+        # Widened on macOS specifically -- see verify-pipeline's identical
+        # comment for the full reasoning (iCloud sync cycle timing).
+        [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
     done
     if [ "$dagster_up" != true ]; then
         echo ">>> dagster dev failed 3 times with the .pth/UF_HIDDEN signature -- giving up" >&2
@@ -222,7 +225,13 @@ verify-pipeline:
         fi
         echo ">>> dagster job launch hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
         just _ensure-venv-visible
-        sleep 1
+        # Widened on macOS specifically: the underlying cause (Learnings.md
+        # -- iCloud Desktop & Documents Folders sync interfering with uv's
+        # editable installs, astral-sh/uv#9902) runs on roughly a 10s
+        # break/recover cycle, not sub-second -- a 1s gap was retrying
+        # inside the same bad window instead of waiting past it. No reason
+        # to wait this long on a platform where the bug can't occur.
+        [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
     done
     echo "$launch_output"
     if [ "$launch_ok" != true ]; then
@@ -290,7 +299,9 @@ test:
         fi
         echo ">>> pytest hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
         just _ensure-venv-visible
-        sleep 1
+        # Widened on macOS specifically -- see verify-pipeline's identical
+        # comment for the full reasoning (iCloud sync cycle timing).
+        [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
     done
     echo "$test_output"
     if [ "$test_ok" != true ]; then

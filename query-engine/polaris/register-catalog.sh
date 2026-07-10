@@ -38,7 +38,9 @@ for attempt in 1 2 3; do
     fi
     echo ">>> polaris_client.bootstrap hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
     just _ensure-venv-visible
-    sleep 1
+    # Widened on macOS specifically -- see orchestration/module.just's
+    # verify-pipeline for the full reasoning (iCloud sync cycle timing).
+    [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
 done
 echo "$bootstrap_output"
 if [ "$bootstrap_ok" != true ]; then

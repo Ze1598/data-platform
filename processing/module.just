@@ -28,7 +28,9 @@ test:
         fi
         echo ">>> pytest hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
         just _ensure-venv-visible
-        sleep 1
+        # Widened on macOS specifically -- see orchestration::verify-pipeline's
+        # identical comment for the full reasoning (iCloud sync cycle timing).
+        [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
     done
     echo "$test_output"
     if [ "$test_ok" != true ]; then
