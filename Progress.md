@@ -160,13 +160,17 @@ Notes / deviations:
 ---
 
 ## Phase 8 — Serve layer
-- [ ] Python codegen step reads `model_feed` and renders `_latest.sql`/`_historical.sql` templates
-- [ ] Generated views land in `dbt/models/serve/generated/`
-- [ ] Codegen wired as a Dagster asset upstream of `dbt build`, downstream of model-layer assets
-- [ ] Type 1 tables correctly collapse "latest" and "historical" to the same view
-- [ ] **Verify**: `dbt build` + `dbt test` green for generated serve views
+- [x] Python codegen step reads `model_feed` and renders `_latest.sql`/`_historical.sql` templates
+- [x] Generated views land in `dbt/models/serve/generated/`
+- [x] Codegen wired as a build-time script (not a Dagster asset — see deviation below), upstream of `dbt build`
+- [x] Type 1 tables correctly collapse "latest" and "historical" to the same view
+- [x] **Verify**: `dbt build` + `dbt test` green for generated serve views, plus a direct Trino check that they actually landed in `iceberg.serve.*` and the `fct_sales`/`dim_branch` join example works
 
 Notes / deviations:
+- **Codegen is a build-time script, not a Dagster op** — the Roadmap's original phrasing didn't survive contact with a constraint Phase 5 already found: `dagster-dbt`'s `@dbt_assets` reads `target/manifest.json` at Python-import time, before any run executes, so a codegen step running *inside* a pipeline run would generate the serve `.sql` files too late — the asset graph and the Docker image's baked manifest would already be fixed without them. Implemented as `scripts/generate_serve_views.py` (same shape as `seed_metadata_db.py`), run as the first step of `orchestration::start` (after metadata is seeded, before the image is built) — same category as `dbt parse` itself, not a pipeline node.
+- **`model_feed.code` for the Type 2 dimension renamed** from `dim_customer` to `dim_customer_snapshot` to match the actual dbt snapshot object name exactly — lets the codegen do a single uniform `ref(model_feed.code)` for every row with no per-row naming-convention logic. Confirmed negligible blast radius (only referenced in `seed_metadata_db.py` itself).
+- **Real bug, caught late**: codegen initially set `+materialized: view` in `dbt_project.yml`'s `serve:` block but never set `schema='serve'` on the generated views themselves — `dbt build`/`dbt test` both passed clean regardless, since dbt doesn't care which schema things land in as long as `ref()`s resolve. All 6 views silently landed in `staging` instead of `serve`. Only caught by directly querying `iceberg.serve.*` via Trino post-build and finding it empty. Fixed by setting `schema='serve'` per-file in the codegen's `config()` output, matching `models/model/*.sql`'s existing per-file pattern. Lesson for future phases: a green `dbt build`/`dbt test` confirms the DAG resolved, not that objects landed in the intended namespace.
+- **This phase's actual implementation was fast; verifying it wasn't.** Most of the session went into a `.pth`/`UF_HIDDEN` investigation unrelated to the serve layer itself (Docker Desktop's VirtioFS file-sharing scope, and ultimately a confirmed root cause: this repo lives inside an iCloud-synced `~/Documents`, a documented upstream `uv` bug — [astral-sh/uv#9902](https://github.com/astral-sh/uv/issues/9902)). Full story, including the eventual clean verification (Low Power Mode empirically resolved it for one full run) and the codegen schema bug, in Learnings.md.
 
 ---
 

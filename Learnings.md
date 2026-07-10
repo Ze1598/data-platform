@@ -1,446 +1,385 @@
 # Lessons Learned
 
-Obscure, hard-won fixes and the reasoning behind them — the stuff that isn't obvious from reading the manifests/config alone. Organized by phase/component. See [Progress.md](Progress.md) for the full per-phase change log this is distilled from.
+Obscure, hard-won problems hit while building this platform, and how they were actually resolved — the stuff that isn't obvious from reading the docs or the manifests. Organized by system/component, not build order. Each entry: what broke (symptom/error), why, how it was fixed, and any residual caveat worth knowing.
+
+If you landed here from a search engine: welcome. Every entry below was reproduced and fixed for real against a live system, not guessed from a forum post.
 
 ---
 
-## Phase 1 — Metadata + CRUD (Streamlit / Postgres)
+## Apache Polaris (Iceberg REST catalog)
 
-**`try` / `except` / `elif` is invalid Python syntax.**
-A `try/except` block can only be followed by `else`/`finally`, never `elif`. Caught by a straightforward syntax error at runtime. Fix: nest the conditional inside the `else` block.
+### `FILE` storage type is effectively unusable on Polaris ≥1.6.0
 
-**`uv sync` at the workspace root silently skips member dependencies.**
-The root `pyproject.toml` has no dependencies of its own (`package = false`, pure workspace container). Plain `uv sync` only syncs the root project, so `frontend/`'s dependencies (streamlit, sqlalchemy, psycopg) never got installed — and `uv run streamlit` silently fell back to a *global* streamlit install on the machine instead of erroring, masking the problem until a `ModuleNotFoundError: sqlalchemy` surfaced deeper in the app. Fix: `uv sync --all-packages` to install every workspace member. Symptom to watch for: check `ps aux` for the actual interpreter path if something "works" unexpectedly — a global install can silently paper over a broken project venv.
+**Symptom**: `IllegalStateException: Severe production readiness issues detected, startup aborted!` at Polaris startup, or — once past that — every catalog operation against a `FILE`-type catalog fails with `File IO implementation ... is considered insecure and must not be used`, even after explicitly allow-listing `FILE` storage.
 
-**SQLAlchemy `text()` mishandles a Postgres `::type` cast glued directly to a named bind parameter.**
-`:connection_config::jsonb` in a raw SQL string doesn't parse as "bind param `connection_config`, then cast" — SQLAlchemy's bind-parameter regex gets confused by the second colon and passes something malformed straight to the driver, producing a `psycopg.errors.SyntaxError`. Fix: use `cast(:connection_config as jsonb)` instead — unambiguous, no adjacency issue.
+**What was tried**: `SUPPORTED_CATALOG_STORAGE_TYPES` needs **JSON array syntax** in the env var, not a comma-separated string (`POLARIS_FEATURES__SUPPORTED_CATALOG_STORAGE_TYPES_='["S3","GCS","AZURE","FILE"]'` — a plain comma-separated value throws a Jackson `JsonParseException`). Even with that fixed, a separate request-time check (`ALLOW_INSECURE_STORAGE_TYPES`) still rejects every operation. The production-readiness abort can be bypassed with `POLARIS_READINESS_IGNORE_SEVERE_ISSUES=true`, but that disables *all* severe checks, not just this one. Confirmed via `kubectl exec ... printenv` that every relevant env var was actually reaching the pod correctly, and cross-referenced the exact `apache-polaris-1.6.0` tagged source (not `main`) — `ALLOW_INSECURE_STORAGE_TYPES` still silently failed to apply for reasons never fully identified.
 
-**`st.dataframe` renders via canvas (glide-data-grid), not DOM text.**
-Two consequences: (1) UUID columns come back from psycopg as `uuid.UUID` Python objects, which the canvas renderer serializes as unreadable byte-index dicts (`{"0":29,"1":10,...}`) instead of text — fix: stringify UUID columns before handing the DataFrame to `st.dataframe`. (2) Any browser-automation test script that scrapes `page.inner_text()` to verify table contents will silently fail to see anything in the grid — the content isn't in the DOM. Verify data-grid content by querying the database directly instead, not by scraping the rendered table.
+**Resolution**: abandoned `FILE` storage entirely, pivoted to MinIO (S3-compatible) — Polaris's non-defense-gated path. If you're evaluating Polaris for a local/dev setup and considering `FILE` storage to avoid standing up an object store: don't, on any Polaris version in the 1.6.x line at least. Budget for MinIO (or real S3/ADLS) from the start.
 
----
+### Quarkus/SmallRye env-var naming for quoted config map keys
 
-## Phase 2 — kind cluster + local storage
+**Symptom**: a Polaris feature-flag env var (e.g. `polaris.features."SOME_KEY"`) has no effect no matter what value is set.
 
-**A `PersistentVolumeClaim` doesn't fit "many pods across many namespaces need the same directory."**
-A PVC binds 1:1 to exactly one PV, and PVCs are namespace-scoped — a PVC created in namespace A can't be mounted by a pod in namespace B. For genuinely shared storage across namespaces on a single-node kind cluster, skip the PVC abstraction and mount `hostPath` directly in each pod spec that needs it. (A real single-consumer case — like Postgres's own data directory — is still a normal PVC via `volumeClaimTemplates`; this only applies to the shared-across-many-consumers case.)
+**Cause**: a quoted map key (needed because the key itself contains dots/underscores) maps to an env var with a **doubled underscore** where the dot-then-quote or quote-then-dot collide: `polaris.features."SUPPORTED_CATALOG_STORAGE_TYPES"` → `POLARIS_FEATURES__SUPPORTED_CATALOG_STORAGE_TYPES_` (note both the double underscore after `FEATURES` and the trailing underscore). Easy to get wrong by pattern-matching a simpler, unquoted property name.
 
-**Once Postgres moves in-cluster, host-side tools need a NodePort + kind `extraPortMappings`, not just a Service.**
-A plain `ClusterIP` Service is only reachable from inside the cluster. To keep `localhost:5432` working for tools still running directly on the Mac (the Streamlit app via `uv run`, a local `psql`), the Postgres Service needs `type: NodePort` with a fixed `nodePort`, and the kind cluster config needs a matching `extraPortMappings` entry (`hostPort: 5432` → `containerPort: <nodePort>`). This has to be set at `kind create cluster` time — changing it later means recreating the cluster.
+**Resolution**: verified against multiple real properties (`SUPPORTED_CATALOG_STORAGE_TYPES`, `ALLOW_INSECURE_STORAGE_TYPES`, `DROP_WITH_PURGE_ENABLED`) — the doubled-underscore pattern held consistently. If a Polaris (or any Quarkus/SmallRye-config-based service's) env var seems to have zero effect, check whether the underlying property is a quoted map key first.
 
-**Regenerate the init-scripts ConfigMap from the SQL files directly, don't duplicate SQL into a YAML manifest.**
-`kubectl create configmap postgres-init-scripts --from-file=metadata/db/init/ --dry-run=client -o yaml | kubectl apply -f -` is idempotent and keeps `01_platform_metadata.sql`/`02_polaris_db.sql` as the single source of truth. Note this only affects *fresh* Postgres initialization (an already-initialized data directory won't re-run init scripts just because the ConfigMap changed) — a new SQL file added later needs to be applied manually (`kubectl exec ... psql -c "..."`) against an already-running instance, in addition to updating the ConfigMap for future fresh installs.
+### Polaris schema bootstrap is a separate, mandatory step from realm bootstrap
 
----
+**Symptom**: `relation "polaris_schema.entities" does not exist` on the very first request to an otherwise cleanly-started Polaris server.
 
-## Phase 3 — Apache Polaris + Trino + MinIO (the hard one)
+**Cause**: setting `POLARIS_BOOTSTRAP_CREDENTIALS` on the main server container self-bootstraps the *realm and root credential record* — but does **not** create the underlying database schema tables. The server starts up looking healthy either way.
 
-This phase had by far the most obscure, layered issues. Grouped by root cause, in the order they were actually hit.
+**Resolution**: run `apache/polaris-admin-tool:latest bootstrap -r <realm> -c <realm>,<clientId>,<clientSecret>` as a one-off job (a Kubernetes `Job` works well) before the main server serves any real request. No error at server startup hints this step is missing — it only surfaces on the first actual query.
 
-### Polaris's `FILE` storage type — ultimately abandoned
+### Polaris catalog `storageConfigInfo` can only be set at creation time
 
-- Setting `SUPPORTED_CATALOG_STORAGE_TYPES` to include `FILE` via env var requires **JSON array syntax**, not a comma-separated string: `POLARIS_FEATURES__SUPPORTED_CATALOG_STORAGE_TYPES_='["S3","GCS","AZURE","FILE"]'`. A comma-separated value produces a Jackson `JsonParseException` at startup.
-- Even with `FILE` in the supported-types list, a **separate request-time check** (`ALLOW_INSECURE_STORAGE_TYPES`) rejects every catalog operation with "File IO implementation ... is considered insecure and must not be used."
-- Polaris's **production-readiness check** for insecure storage types is a hard startup-abort (`IllegalStateException: Severe production readiness issues detected, startup aborted!`), not just a logged warning — bypassable globally via `POLARIS_READINESS_IGNORE_SEVERE_ISSUES=true`, but this bypasses *all* severe checks, not just this one.
-- Even after clearing all of the above (env vars confirmed correctly populating Polaris's internal config, verified via debug logging and by cross-referencing the exact `apache-polaris-1.6.0` tagged source, not just the `main` branch), the `ALLOW_INSECURE_STORAGE_TYPES` check still silently failed to apply — root cause never fully identified. **Decision: abandon `FILE` storage entirely and pivot to MinIO (S3-compatible) instead**, which is Polaris's non-defense-gated path. Don't sink more time into `FILE` storage on Polaris ≥1.6.0.
+**Symptom**: `PUT /api/management/v1/catalogs/<name>` to change `pathStyleAccess`/`stsUnavailable`/`roleArn` returns `200 OK`, but a follow-up `GET` shows the old values unchanged.
 
-### Quarkus / SmallRye Config env var naming, for any future Polaris config tuning
+**Cause**: confirmed via the official `polaris` CLI's own `catalogs update --help` — the `update` command doesn't even expose `--path-style-access`/`--role-arn`/`--no-sts` (only `--region`, under AWS S3 options). This isn't a client bug on your end — there's no supported way to update `storageConfigInfo` on an existing catalog, CLI or raw REST.
 
-A property like `polaris.features."SOME_KEY"` (a quoted map key, because of the embedded underscores/dots) maps to the env var `POLARIS_FEATURES__SOME_KEY_` — dots and quote characters both become underscores, so a quoted map key produces a *double* underscore where the dot-then-quote or quote-then-dot collide. Verified against multiple real properties (`SUPPORTED_CATALOG_STORAGE_TYPES`, `ALLOW_INSECURE_STORAGE_TYPES`) — the pattern held consistently once the JSON-vs-plain-string value format was also correct.
+**Resolution**: if a catalog's storage config needs to change, **delete and recreate it**. (A catalog with existing namespaces/tables can't be deleted until they're dropped first.) Distinct from the catalog `properties` map below, which genuinely *can* be updated post-creation.
 
-### Polaris schema bootstrap is a separate, mandatory step
+### Polaris `S3` storage type against MinIO (or any non-AWS S3-compatible store)
 
-Setting `POLARIS_BOOTSTRAP_CREDENTIALS` on the main server container self-bootstraps the *realm and root credential record* — but does **not** create the underlying database schema tables. Querying Polaris before running the schema bootstrap fails with `relation "polaris_schema.entities" does not exist`. The schema itself has to be created via a separate one-off run of `apache/polaris-admin-tool:latest bootstrap -r <realm> -c <realm>,<clientId>,<clientSecret>` (a Kubernetes `Job`, in our case) before the main server can serve any real request, even though the server itself starts up cleanly without it.
+**Symptom, in order encountered**:
+1. `StsException: The security token included in the request is invalid` on catalog operations.
+2. `Forbidden: Principal 'root' ... not authorized for op CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION`.
+3. After fixing #2: `IllegalArgumentException: Credential vending was requested for table ..., but no credentials are available`.
+4. `301 The bucket you are attempting to access must be addressed using the specified endpoint` — the actual blocker, and the one that cost the most time.
 
-### Polaris catalog `storageConfigInfo` — create-time only
+**Causes and fixes, one per symptom**:
+1. MinIO has no real IAM/STS. Set `roleArn` in `storageConfigInfo` to any syntactically valid dummy ARN (`arn:aws:iam::000000000000:role/minio-polaris-role`), and set `stsUnavailable: true` — without it, Polaris attempts a real `AssumeRole` call against the dummy ARN and fails.
+2. Looked like a deliberate CVE-hardening lockdown at first; it's actually a missing RBAC grant. See the dedicated RBAC entry below.
+3. Once `vended-credentials-enabled=true` is re-enabled after the RBAC fix, it still fails for an unrelated reason: `stsUnavailable: true` means Polaris genuinely has no real temporary credentials to vend — there's nothing to hand out. Keep `vended-credentials-enabled=false` on the Trino (or PyIceberg) side and give the client static credentials directly. This is correct, permanent config for an STS-less backend like MinIO — not a workaround pending a future fix.
+4. **The real blocker**: Polaris's own **server-side** `S3FileIO` client (used to validate/finalize table commits, independent of anything the query engine does) wasn't picking up the catalog's `s3.endpoint` property at all, and defaulted to real AWS S3. Confirmed via live MinIO traffic capture (`mc admin trace -v` from a throwaway in-cluster pod) that the failing request never reached MinIO — ruling out a MinIO-side or Trino-side cause definitively rather than guessing. **Fix**: set `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_ENDPOINT_URL_S3` (AWS SDK Java v2's env var for a custom S3 endpoint, supported since SDK 2.28.1) **directly on the Polaris deployment itself** — a completely separate credential/endpoint path from whatever the query engine's own catalog properties say.
 
-Fields like `pathStyleAccess` and `stsUnavailable` only reliably apply when set on catalog **creation** (`POST /api/management/v1/catalogs`). A `PUT` update to an existing catalog returns `200 OK` but silently drops those fields — confirmed by re-fetching the catalog afterward and seeing `pathStyleAccess: false` regardless of what was sent. If a storage config needs to change, **delete and recreate the catalog**, don't try to update it in place. (Also: a catalog with existing namespaces/tables can't be deleted — `DROP SCHEMA` everything in it first.)
+**Dead end worth flagging**: a suspected Trino bug (`trinodb/trino#25187`, path-style-access not honored with Iceberg REST + S3) looked plausible for a while and led to switching Trino to the legacy Hadoop-S3A filesystem config. Confirmed a red herring later — switching back to the modern `fs.native-s3` + `s3.*` properties worked fine once the real (Polaris-side) fix above was in place.
 
-**Update, Phase 4**: this looked at the time like the same class of bug as the `DROP_WITH_PURGE_ENABLED` saga below (a hand-rolled `curl PUT` not round-tripping the request correctly), but it isn't — checked via `polaris catalogs update --help` on the official CLI, and `update` simply doesn't expose `--path-style-access`, `--role-arn`, `--no-sts`, etc. at all (only `--region` under "AWS S3 Storage Options"; `create` exposes the full set). Even the maintained client doesn't offer a supported way to change `storageConfigInfo` on an existing catalog. So this one workaround (**delete-and-recreate for storage config changes**) is real and stays — it's not the same bug as the properties-map issue below, and there's no evidence it's fixable by using the right tool instead of raw REST.
+### RBAC `Forbidden` errors are a missing grant, not a feature lockdown
 
-### Polaris `S3` storage type against MinIO (non-AWS S3-compatible storage)
+**Symptom**: `Forbidden: Principal 'root' ... not authorized for op DROP_TABLE_WITH_PURGE` (or `CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION`) even for the root/`service_admin` principal.
 
-- Requires a `roleArn` in `storageConfigInfo` even though MinIO has no real IAM/STS — any syntactically valid dummy ARN works (`arn:aws:iam::000000000000:role/minio-polaris-role`).
-- Requires `stsUnavailable: true` — without it, Polaris attempts a real STS `AssumeRole` call against the dummy ARN and fails with `StsException: The security token included in the request is invalid.`
-- Polaris's credential-vending path for staged table creation (Trino-side `iceberg.rest-catalog.vended-credentials-enabled=true`) is rejected outright — `Forbidden: Principal 'root' ... not authorized for op CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION` — even for the root/`service_admin` principal, on Polaris 1.6.0. At the time this was believed to be a permission tightened by a recent CVE fix around credential vending, not a config mistake. **Workaround**: set `vended-credentials-enabled=false` on Trino's catalog config and give Trino the object store's static credentials directly instead of relying on Polaris to vend them. **Update, Phase 4 cleanup**: the `Forbidden ... not authorized` part *was* a genuine, fixable RBAC gap, not a CVE lockdown — see the dedicated section below. But re-enabling `vended-credentials-enabled=true` after fixing that still doesn't work, for an unrelated and more fundamental reason: `IllegalArgumentException: Credential vending was requested for table ..., but no credentials are available`, on *every* table load, not just staged creates. Root cause: the catalog's `stsUnavailable: true` (required because MinIO has no real STS, see above) means Polaris genuinely has no real temporary credentials to hand out — vending has nothing to vend. `vended-credentials-enabled=false` stays as **permanent, correct config for this storage backend**, not a workaround pending a fix.
-- **The actual root cause of the core blocker, and the one that cost the most time**: Polaris's own **server-side** `S3FileIO` client (used to validate/finalize table commits — a step independent of anything Trino does) was not picking up the catalog's `s3.endpoint` property at all, and defaulted to real AWS S3, failing with `301 The bucket you are attempting to access must be addressed using the specified endpoint`. This was *not* visible as a Trino-side or MinIO-side problem — confirmed by (a) reading Polaris's own log output showing it loading `S3FileIO` right before the failure, and (b) capturing live MinIO request traffic (`mc admin trace -v`) during a reproduction and confirming the failing request never reached MinIO at all. Fix: set `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_ENDPOINT_URL_S3` (the AWS SDK Java v2 env var for a custom S3 endpoint override, supported since SDK 2.28.1) **directly on the Polaris deployment itself** — a completely separate credential/endpoint path from whatever Trino's catalog properties say.
-- A suspected Trino bug (`trinodb/trino#25187` — path-style-access not honored with Iceberg REST + S3) looked like the cause for a while and led to switching Trino's catalog config from the modern `fs.native-s3` to the legacy Hadoop-S3A filesystem (`fs.hadoop.enabled` + `hive.s3.*` properties). This was confirmed a red herring in Phase 4 cleanup: switched back to `fs.native-s3` + `s3.*` properties, tested read/create/insert/select plus a full `dbt build`, all green. The real fix was always Polaris-side (above) — the legacy filesystem config is no longer needed and has been removed from `query-engine/trino/values.yaml`.
+**Cause**: easy to assume this is a deliberate CVE-hardening lockdown given the principal is already root — it isn't. Traced by reading the exact `apache-polaris-1.6.0`-tagged authorization source: `RbacOperationSemantics.java` registers `DROP_TABLE_WITH_PURGE` as needing `TABLE_DROP` **and** `TABLE_WRITE_DATA` (dropping a table *without* purge only needs `TABLE_DROP`; dropping a *view* only needs `VIEW_DROP` — no data-write privilege at all). `PolarisAuthorizerImpl.java`'s `SUPER_PRIVILEGES` map shows only `CATALOG_MANAGE_CONTENT` or `TABLE_WRITE_DATA` itself satisfy that requirement — notably **not** `CATALOG_MANAGE_METADATA`, which is what a default `catalog_admin` role actually has.
 
-### The RBAC privilege gap behind both `DROP_TABLE_WITH_PURGE` and `CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION` (Phase 4 cleanup)
+**Resolution**: grant `TABLE_WRITE_DATA` directly to the catalog role (`polaris privileges catalog grant --catalog <name> --catalog-role catalog_admin TABLE_WRITE_DATA`) — narrower and more correct than granting the broad `CATALOG_MANAGE_CONTENT`, which also happens to fix it but grants far more than needed (full namespace/table create/drop, not just data-write). A default `catalog_admin` role having only `CATALOG_MANAGE_ACCESS`/`CATALOG_MANAGE_METADATA` (neither implies `TABLE_WRITE_DATA`) is worth remembering for any fresh Polaris catalog role setup.
 
-Two things assumed in Phase 3 to be deliberate, unfixable CVE-hardening lockdowns — `Forbidden ... not authorized for op CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION` (staged table creation) and, separately, `Forbidden ... not authorized for op DROP_TABLE_WITH_PURGE` (real table purge, hit again in Phase 4 when the catalog-level `drop-with-purge.enabled` fix above turned out not to be sufficient on its own for actual tables, only for the dbt temp *view*) — turned out to share one root cause: a missing RBAC grant, not a security wall.
+**Takeaway**: an Iceberg REST `ForbiddenException` naming a specific op is Polaris's RBAC authorizer, not a hardcoded feature wall — check `RbacOperationSemantics`/`PolarisAuthorizerImpl` for the *specific* privilege before assuming an operation is permanently unavailable.
 
-Traced by reading the exact `apache-polaris-1.6.0`-tagged authorization source rather than guessing from the error text:
-- `RbacOperationSemantics.java` registers the privilege(s) each operation needs: `register(DROP_TABLE_WITHOUT_PURGE, TABLE_DROP)` vs `register(DROP_TABLE_WITH_PURGE, EnumSet.of(TABLE_DROP, TABLE_WRITE_DATA))` — purging a table needs `TABLE_WRITE_DATA` *in addition to* `TABLE_DROP`. Dropping a *view* only needs `VIEW_DROP` (`register(DROP_VIEW, VIEW_DROP)`) — no data-write privilege at all, which is exactly why dbt's temp-view drop worked immediately after the catalog-property fix while a real table purge still didn't. `CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION` needs `EnumSet.of(TABLE_CREATE, TABLE_WRITE_DATA)` — the same missing privilege.
-- `PolarisAuthorizerImpl.java`'s `SUPER_PRIVILEGES` map defines which broader privileges satisfy `TABLE_WRITE_DATA`: only `CATALOG_MANAGE_CONTENT` or `TABLE_WRITE_DATA` itself (`SUPER_PRIVILEGES.putAll(TABLE_WRITE_DATA, List.of(CATALOG_MANAGE_CONTENT, TABLE_WRITE_DATA))`) — notably **not** `CATALOG_MANAGE_METADATA`. Checked our `catalog_admin` catalog role's actual grants (`polaris privileges list --catalog data_platform --catalog-role catalog_admin`): only `CATALOG_MANAGE_ACCESS` and `CATALOG_MANAGE_METADATA` — metadata management, never content/data management. That's the whole gap.
+### `DROP_WITH_PURGE_ENABLED`: REST `PUT` silently no-ops, the CLI actually works
 
-**First fix attempt**: `polaris privileges catalog grant --catalog data_platform --catalog-role catalog_admin CATALOG_MANAGE_CONTENT` (via the CLI — same reasoning as the properties-update case above applies to grants too). Verified via `privileges list` afterward, then confirmed against real operations:
-- `DROP TABLE ... purge` on the previously-unpurgeable orphaned `iceberg.clean.customers5` test table (Progress.md Phase 3) — succeeded, table gone.
-- `CREATE_TABLE_STAGED_WITH_WRITE_DELEGATION` — re-tested with `vended-credentials-enabled=true`: the `Forbidden` authorization error is gone, confirming the RBAC fix is real. (It now fails for the separate `stsUnavailable` reason described above, so `vended-credentials-enabled` stays `false` regardless — but that's a different, legitimate limitation, not this one.)
+**Symptom**: `Unable to purge entity ... set the Polaris configuration DROP_WITH_PURGE_ENABLED or the catalog configuration polaris.config.drop-with-purge.enabled`. Setting the realm-level env var flags (`POLARIS_FEATURES_DROP_WITH_PURGE_ENABLED=true` and the realm-override variant) has zero effect. A hand-rolled `curl -X PUT /api/management/v1/catalogs/<name>` to set the catalog-level property `polaris.config.drop-with-purge.enabled` returns `200 OK`, but a follow-up `GET` shows the property was never actually added.
 
-**Narrowed the grant**: `CATALOG_MANAGE_CONTENT` is broad — the whole content-management surface (namespace create/drop, table create/drop, structure changes), when the actual gap was a single missing privilege, `TABLE_WRITE_DATA` itself, which is directly grantable and is exactly what both operations' `RbacOperationSemantics` registration requires (`TABLE_DROP` and `TABLE_CREATE` were already satisfied via `CATALOG_MANAGE_METADATA`). Revoked `CATALOG_MANAGE_CONTENT`, granted `TABLE_WRITE_DATA` directly, re-tested a fresh `CREATE TABLE` + `DROP TABLE ... purge` cycle — both succeeded under the narrower grant alone. This is the correct long-term shape for `catalog_admin`: the least privilege that actually covers the operations this platform performs, not the broadest privilege that happens to include it. `register-catalog.sh` now grants `TABLE_WRITE_DATA` directly as part of catalog bootstrap, so this is reproducible from a fresh realm, not a one-off manual fix.
+**Why the realm-level env vars don't help**: `polaris.features."DROP_WITH_PURGE_ENABLED"` is a realm-wide *default* — the first mechanism named in the error — but a catalog that already exists with its own override isn't governed by it.
 
-**Takeaway**: an Iceberg REST `ForbiddenException` reading "not authorized for op X" is Polaris's RBAC authorizer, not a hardcoded feature lockdown — it's worth checking `RbacOperationSemantics`/`PolarisAuthorizerImpl` for the *specific* privilege an operation needs (not just granting the nearest broad one that works) before assuming an operation is permanently unavailable to root. `catalog_admin` having only `CATALOG_MANAGE_ACCESS`/`CATALOG_MANAGE_METADATA` by default (neither implies `TABLE_WRITE_DATA`) is itself worth remembering for any future catalog role setup.
+**Why the raw `curl PUT` silently no-ops**: almost certainly a client-request-shape problem, not a Polaris server bug. The official CLI does its own get-then-merge-then-`PUT` under the hood, including `currentEntityVersion` for optimistic concurrency — a hand-rolled request has to reproduce that exactly, and a naive one won't.
 
-### `register-catalog.sh`'s dead `s3.*` catalog properties
-
-The original script sent `s3.endpoint`, `s3.path-style-access`, `s3.access-key-id`, `s3.secret-access-key`, `s3.region` as catalog **properties** (the generic client-visible key/value map) alongside the real `storageConfigInfo` block. Checked the live catalog via `catalogs get`: none of these ever persisted — Polaris silently ignores property keys it doesn't recognize rather than storing them. They were never doing anything; Polaris's own S3 access has always come entirely from `storageConfigInfo` (`roleArn`/`pathStyleAccess`/`stsUnavailable`) plus the `AWS_ENDPOINT_URL_S3`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` env vars on the Polaris deployment itself. Removed them from the rewritten script — beyond being dead weight, storing a secret (`s3.secret-access-key`) in a catalog property is exactly what the Polaris CLI's own `--property` help text warns against ("client-visible defaults... do not put passwords, tokens, access keys, or other secrets in them"), so this was worth fixing even though it happened to be inert.
-
-### `register-catalog.sh`, rewritten: idempotent, does the full bootstrap
-
-The script now: checks whether the catalog exists and branches to create-or-update accordingly, and grants `catalog_admin` the `TABLE_WRITE_DATA` privilege from the RBAC finding above as part of the same run. First rewrite used the CLI exclusively (no manual OAuth token fetch — the CLI handles `--client-id`/`--client-secret` itself); superseded shortly after by the `polaris_client` module below, which the script now just invokes. Verified by running it twice against the live realm (idempotent path: "already exists" branch, both the property update and the privilege grant no-op cleanly on already-current state) and by exercising the `create` branch end-to-end against a disposable test catalog + throwaway MinIO bucket before trusting it against the real one. The whole catalog + RBAC setup is now reproducible from a fresh realm in one script, not something that requires remembering a follow-up manual grant.
-
-### `apache-polaris` ships a real Python SDK, not just the CLI — `polaris_client` module
-
-Every Polaris interaction this project has needed so far (catalog get/create/update, privilege grant/revoke/list) went through the `polaris` CLI via `uvx --from apache-polaris`. That's fine for a human running one-off commands, but it doesn't give Dagster (Phase 5+) anything to import — shelling out to a CLI subprocess from an orchestrator, parsing text output, is a materially worse pattern than a typed client. Checked whether `apache-polaris` (the same PyPI package the CLI comes from) exposes anything better before building one from scratch: it does. `apache_polaris.sdk.management` is a full generated client (`PolarisDefaultApi`, plus typed request/response models — `Catalog`, `CreateCatalogRequest`, `UpdateCatalogRequest`, `CatalogGrant`, etc.) — the actual foundation the CLI itself is built on (confirmed by reading `apache_polaris.cli.command.catalogs`/`privileges` and `apache_polaris.cli.api_client_builder` directly).
-
-Built `query-engine/polaris_client/` as a new uv workspace member (`polaris_client` package) wrapping `PolarisDefaultApi` with exactly the operations this project has used so far — not the full Management API surface, not anything from later phases:
-- `catalog_exists` / `get_catalog` / `create_s3_catalog` / `set_catalog_property` / `delete_catalog`
-- `list_catalog_role_privileges` / `grant_catalog_privilege` / `revoke_catalog_privilege`
-
-Deliberately mirrors the CLI's own request-construction patterns instead of reinventing them — in particular `set_catalog_property` reproduces the CLI's get-then-merge-then-`UpdateCatalogRequest(current_entity_version=..., properties=...)` sequence exactly (see `apache_polaris.cli.command.catalogs.CatalogsCommand.execute`, `Subcommands.UPDATE` branch), since that's precisely the construction a hand-rolled `curl PUT` got wrong twice already in this project (see above). Auth (`_fetch_token`/`_build_api_client`) mirrors `apache_polaris.cli.api_client_builder.ApiClientBuilder` the same way.
-
-`register-catalog.sh` now delegates to `polaris_client.bootstrap` (`uv run python -m polaris_client.bootstrap`) instead of driving the CLI directly — the script itself is now just an entrypoint. **Verified with a full live smoke test** (not mocks — matches how everything else in this project has been verified) against a disposable catalog + throwaway MinIO bucket, exercising every method: create → exists-check → get → property update (confirmed merge, not replace) → privilege grant → privilege list → privilege revoke → delete → exists-check. All eight steps passed against the real Polaris deployment before trusting the module for the real `data_platform` catalog.
-
-### `DROP_WITH_PURGE_ENABLED`: the full story — REST API vs CLI, what we tried, what finally worked
-
-This was the Phase 4 blocker that nearly ended the whole Polaris decision (see Progress.md) — dbt-trino's `merge` incremental strategy creates and drops a temp view (`customers__dbt_tmp`) on *every single run*, so this wasn't a cosmetic gap, it was a hard requirement.
-
-**The feature we were trying to enable**: allow `DROP TABLE/VIEW ... purge` to actually delete the underlying files, not just deregister the entity. Polaris rejects this by default with an actionable error naming two config mechanisms in one message:
-
-> `Unable to purge entity ... set the Polaris configuration DROP_WITH_PURGE_ENABLED or the catalog configuration polaris.config.drop-with-purge.enabled`
-
-**Attempt 1 — realm-level feature flag via environment variables (REST/config layer, not REST API at all).** Set directly on the Polaris container as Quarkus config:
-- `POLARIS_FEATURES_DROP_WITH_PURGE_ENABLED=true` (the plain, statically-defined property — not a quoted map key, so no double-underscore pattern)
-- `POLARIS_FEATURES_REALM_OVERRIDES__POLARIS__OVERRIDES__DROP_WITH_PURGE_ENABLED_=true` (a second code path — realm-level *override*, checked before the default)
-
-Both confirmed reaching the running pod (`kubectl exec ... printenv`), both had zero effect on the actual error. **Root cause of the whole detour**: this was the wrong config layer entirely. `polaris.features."DROP_WITH_PURGE_ENABLED"` is a realm-wide default; it's the *first* mechanism named in the error, but not the one that governs a catalog that already exists with its own override.
-
-**Attempt 2 — catalog-level property via hand-rolled `curl -X PUT` (REST API, Management API surface, not the Iceberg REST protocol Trino speaks).** The second named mechanism, `polaris.config.drop-with-purge.enabled`, is a **per-catalog property** stored on the catalog entity itself — it overrides the realm default and takes precedence. Tried adding it to the catalog's `properties` map via `PUT /api/management/v1/catalogs/data_platform`. The request returned `200 OK`; a follow-up `GET` on both the Polaris Management API and the Iceberg REST `/v1/config` endpoint showed the property was never actually added — ground truth, not just distrust of the `200` response. At the time this looked like confirmation of a genuine Polaris server bug (matching the `storageConfigInfo` PUT behavior above), and was treated as a dead end.
-
-**What actually fixed it — the Polaris CLI, not raw REST.** Installed the official `apache-polaris` PyPI package (matches the deployed `1.6.0` server version) via `uvx --from apache-polaris polaris` — no permanent install needed. Auth needs `--host`/`--port`, not `--base-url` (the latter 404s on the token endpoint against this server). Then:
+**Resolution**: use the official CLI, not raw REST, for catalog property updates:
 ```bash
-uvx --from apache-polaris polaris --host localhost --port <pf-port> \
-  --client-id root --client-secret s3cr3t \
-  catalogs update --set-property polaris.config.drop-with-purge.enabled=true data_platform
+uvx --from apache-polaris polaris --host localhost --port <port> \
+  --client-id root --client-secret <secret> \
+  catalogs update --set-property polaris.config.drop-with-purge.enabled=true <catalog>
 ```
-Verified via `catalogs get data_platform`: the property was present and `entityVersion` had incremented (2 → 3). Re-ran `dbt build` immediately after — the temp view created *and dropped* cleanly, no error. Confirmed durable across a Polaris pod restart (the catalog entity lives in Postgres via `relational-jdbc`, not pod state).
+(Auth needs `--host`/`--port`, not `--base-url` — the latter 404s on the token endpoint.) Confirmed durable across a Polaris pod restart, since the catalog entity lives in Postgres via `relational-jdbc`, not pod state.
 
-**Why the CLI succeeded where raw `curl PUT` failed**: almost certainly a client-request-shape problem on our end, not a Polaris server bug — the CLI does its own get-then-merge-then-put under the hood (including `currentEntityVersion` for optimistic concurrency), which a hand-rolled request has to get exactly right and ours evidently didn't. This is the concrete case, distinct from the `storageConfigInfo` situation above: **catalog `properties` (the generic client-visible key/value map) genuinely can be updated post-creation, just not via a naively-constructed raw REST call** — `storageConfigInfo` (the nested S3/Azure/GCS-specific config), by contrast, isn't exposed for update by the CLI at all (checked via `catalogs update --help` — no `--path-style-access`/`--role-arn`/`--no-sts`, only `--region`), so that one workaround (delete-and-recreate) stays legitimate.
+**General rule for this class of problem**: catalog **`properties`** (the generic client-visible key/value map) genuinely can be updated post-creation, just not via a naively-constructed raw REST call — use the CLI. **`storageConfigInfo`** (the nested S3/Azure/GCS-specific config), by contrast, isn't exposed for update by the CLI at all — delete-and-recreate is the only path (see the entry above). `POST` (creation) with a complete, correct body is reliable by hand; `PUT` (update) is not.
 
-**The broader REST-API-vs-CLI framing** (relevant background surfaced via [apache/polaris#358](https://github.com/apache/polaris/issues/358), a thread mentioning this exact ambiguity): the Iceberg REST Catalog spec is intentionally scoped to namespaces/tables only — "catalog" as an administrative concept is Polaris-specific and lives entirely in Polaris's own Management API, not the standardized protocol Trino/dbt speak. Raw `curl` against that Management API does work in principle (demonstrated directly in that thread for catalog *creation*) — the practical lesson from our own experience is narrower and more concrete: **`POST` (creation) with a complete, correct body is reliable by hand; `PUT` (update) is not, and the officially maintained CLI is worth using for updates specifically because it removes an entire class of "did this silently no-op" doubt.**
+### `apache-polaris` ships a real Python SDK, not just the CLI
 
-**Practical rule going forward**: create catalogs via a well-formed `POST` (as `register-catalog.sh` does, now with `polaris.config.drop-with-purge.enabled` baked into the creation properties so fresh clusters don't need any follow-up step); update an *existing* catalog's `properties` via the CLI (`catalogs update --set-property` / `--remove-property`); if `storageConfigInfo` needs to change, delete and recreate — there's no supported update path for that, CLI or otherwise.
-
-### Useful diagnostic techniques discovered along the way (reusable beyond this project)
-
-- **When docs and observed behavior disagree, read the actual source at the exact deployed version tag**, not `main`/`latest` docs. Confirmed via `git tag`-pinned raw GitHub URLs (e.g. `apache-polaris-1.6.0`) rather than trusting a docs page that might describe a different version.
-- **When a config change "does nothing," verify it actually reached the running process** before assuming the config key is wrong — `kubectl exec ... printenv | grep ...` to confirm the env var is actually set on the live pod, rather than just re-reading the manifest.
-- **Live traffic capture is the fastest way to prove "is component X actually receiving this request at all"**, cutting through speculation about which of several services in a chain is misbehaving. `mc admin trace -v` (run as a throwaway pod inside the cluster, talking to the in-cluster MinIO service) was the single most useful diagnostic step in this whole phase — it converted "maybe Trino, maybe Polaris, maybe MinIO" into "definitely Polaris, and MinIO never even saw the request."
+If you're scripting or automating anything against Polaris beyond one-off CLI commands: the `apache-polaris` PyPI package (the same one the `polaris` CLI comes from) exposes `apache_polaris.sdk.management` — a full generated client (`PolarisDefaultApi`, typed request/response models) that the CLI itself is built on. Shelling out to the CLI as a subprocess and parsing text output is a materially worse pattern than importing this directly. Worth mirroring the CLI's own request-construction logic (`apache_polaris.cli.command.catalogs`/`privileges`, `apache_polaris.cli.api_client_builder`) rather than reinventing it — in particular, property updates need the same get-then-merge-then-`UpdateCatalogRequest(current_entity_version=..., properties=...)` sequence described above.
 
 ---
 
-## Phase 5 — Dagster wiring (stubbed extraction)
+## Trino + Iceberg + object storage
 
-### `uv sync --all-packages` can leave a workspace member genuinely broken, not just "not yet synced"
+### Iceberg's optimistic concurrency protects single commits, not multi-statement sequences
 
-Hit this four separate times across Phase 5 work (`polaris_client`, `dagster_data_platform` twice more, always a different package each time — `babel`, then later `typing_extensions`): `uv sync --all-packages` reports success and the package shows as installed (`uv pip show` succeeds), but `import <package>` fails with `ModuleNotFoundError` anyway. Confirmed it's not a transient/first-run or import-order thing: the actual symptom was a `dist-info` directory with no `RECORD` file and no actual package directory alongside it — a genuinely corrupted install. **Fix that reliably works**: `uv cache clean` *and* delete `.venv` entirely, then `uv sync --all-packages` from scratch. Deleting just `.venv` without clearing the cache stopped the specific symptom often enough to look like a fix but let it recur with a different package shortly after — `uv`'s hardlinked package cache (`~/.cache/uv`), not the venv itself, appears to be where the actual corruption lives on this machine. If a fresh import fails right after scaffolding a workspace member, don't chase it as a code bug — clear the cache and rebuild the venv first, and see if it's still there.
+If your pipeline does two separate writes (e.g. `DELETE` then `INSERT`, or two separate Iceberg commits) against the same table where overlapping runs are possible: Iceberg's concurrency model is optimistic-concurrency-via-atomic-metadata-pointer-swap. A **single** commit (a Trino `MERGE`, a PyIceberg `overwrite()`) is genuinely safe under concurrent writers — conflicting commits get `CommitFailedException` rather than silent corruption, and non-conflicting ones auto-retry (4 attempts with exponential backoff by default). A **two-statement sequence** is not protected by that mechanism at all — nothing stops a second writer's statements from interleaving with the first's. If you need atomicity across what would otherwise be two separate writes, route through a single `MERGE`/`overwrite()` call instead of `DELETE` + `INSERT`.
 
-### dagster-dbt / dagster-k8s / dagster-postgres version scheme is not the same as dagster's
+### Trino/dbt-trino implicit namespace creation isn't atomic under concurrent sessions
 
-`dagster`/`dagster-webserver` are on a `1.x` scheme (`1.13.12` at time of writing); the integration libraries (`dagster-dbt`, `dagster-k8s`, `dagster-postgres`) are on a parallel `0.29.x` scheme that tracks dagster's releases but isn't numerically aligned. Pinning `dagster-dbt>=1.9` (copying the pattern used for `dbt-core`/`dbt-trino`, which genuinely are on a `1.x` scheme) fails dependency resolution outright — check PyPI for the actual latest version of each package rather than assuming a shared version scheme across a vendor's own package family.
+**Symptom**: `TrinoQueryError: Cannot create namespace <name>. Namespace already exists`, thrown from inside one of two concurrently-running dbt invocations, immediately after the *other* one's log shows it just created that same namespace.
 
-### `DbtProject` needs its own `profiles_dir` — `DbtCliResource`'s isn't enough
+**Cause**: unlike PyIceberg's `catalog.create_namespace_if_not_exists()` (which is safe under this exact race — confirmed by direct testing), Trino/dbt-trino's implicit schema auto-creation throws a hard error on the loser of a race between two sessions both hitting a not-yet-existing namespace at nearly the same moment, rather than silently no-op'ing.
 
-Our `profiles.yml` lives in `dbt/data_platform/profiles/`, not the project root, so `DbtCliResource(project_dir=..., profiles_dir=...)` in `definitions.py` was set correctly from the start — but `DbtProject(project_dir=...)` in `dbt_assets.py` (used for `prepare_if_dev()`, which regenerates the manifest) defaults its *own* `profiles_dir` to `project_dir` unless told otherwise, and never shares the one passed to `DbtCliResource`. This only surfaced under a real `dagster dev` — `prepare_if_dev()` is a documented no-op outside that specific dev-CLI context, so `dagster asset materialize`/`dagster job launch` one-shot commands never exercised the regeneration path at all (they silently used whatever `target/manifest.json` already existed on disk from earlier local `dbt build` runs). Fix: pass the same `profiles_dir=_DBT_PROJECT_DIR / "profiles"` to both `DbtProject` and `DbtCliResource`.
+**Resolution**: don't rely on implicit creation for any namespace multiple independent, concurrently-running processes might write to. Pre-create every such namespace once, deterministically, as part of one-time bootstrap (e.g. via PyIceberg's safe `create_namespace_if_not_exists`), before any concurrent runtime code can race to create it itself.
 
-### `dagster asset materialize` never touches the run launcher — use `dagster job launch`
+### dbt-trino's `accepted_values` test doesn't coerce against a native boolean column
 
-`dagster asset materialize --select "*"` executes every step in-process on whatever machine runs the command — confirmed by watching it spawn local PIDs and seeing zero pods in `kubectl get pods -n orchestration` during a run that completed successfully. It's a dev convenience command, not a real "submit a run" path. `dagster job launch -j '__ASSET_JOB' -m ...` (or the webserver's "Materialize" button, which does the same GraphQL mutation) goes through `instance.submit_run`, which does respect the configured run launcher.
+**Symptom**: `TrinoUserError(TYPE_MISMATCH: ... boolean and varchar(4))` running `accepted_values: [true, false]` against a genuinely `boolean`-typed column.
 
-### The default `run_coordinator` queues runs — nothing launches them without the daemon running
+**Cause**: the generic test compares the column against string-typed literal values without coercing to the column's actual type.
 
-A run submitted via `dagster job launch` from a bare one-shot CLI invocation (no `dagster dev`/`dagster-daemon` running) sits in `QUEUED` forever, with only a `PIPELINE_ENQUEUED` event and no pod ever created. Dagster's default `QueuedRunCoordinator` hands runs to a queue; only the **daemon** process (`QueuedRunCoordinatorDaemon`, one of several daemons `dagster dev` starts alongside the webserver) actually polls that queue and calls `run_launcher.launch_run()`. A run genuinely won't launch — not "launch slowly" — without something running the daemon.
+**Resolution**: drop the test on native boolean columns — a boolean column's own type already rejects anything but `true`/`false`/`null`, so `accepted_values` adds nothing `not_null` doesn't already cover for that column.
 
-### `K8sRunLauncher` needs Postgres-backed instance storage, not the default local one
+### dbt's default `generate_schema_name` macro concatenates, it doesn't replace
 
-The whole point of `K8sRunLauncher` is that a launched run executes in a **different process, in a different location** (a pod inside the kind cluster) than whatever submitted it (`dagster dev` running on the host laptop). Dagster's default instance storage is a local SQLite file under `DAGSTER_HOME` — completely unreachable from inside the launched pod, so that pod's run process couldn't report status/events back to the same place the local `dagster dev` process reads from. Fixed by pointing `storage: postgres:` in `dagster.yaml` at the same shared Postgres instance already used for `platform_metadata`/`polaris_db` (`dagster_db`, a third logical database in it) — `dagster-postgres` auto-creates/migrates its schema on first connection, no manual DDL needed beyond `CREATE DATABASE dagster_db`.
+**Symptom**: a model configured with `schema='model'` lands in a schema literally named `staging_model` (or `<target-schema>_model`), not `model`.
 
-### `K8sRunLauncher` needs *two* copies of `dagster.yaml` with different resolved hostnames — same content, different environment
+**Cause**: dbt's built-in `generate_schema_name` macro appends a model's custom `schema` config onto the target's default schema by default, rather than using it verbatim — surprising if you expect `schema=` to mean "use exactly this schema."
 
-The launched pod (in-cluster) and the local `dagster dev` process (on the host, talking to Postgres via the NodePort) need to reach the *same* Postgres instance through *different* hostnames — `localhost` only works from the host laptop; the pod needs `postgres.metadata.svc.cluster.local`. Solved with one `dagster.yaml` template using `hostname: {env: POSTGRES_HOST}`, reused in two places that each provide a different value for that one env var: `orchestration/dagster_home/dagster.yaml` (local, `POSTGRES_HOST` exported in the shell before `dagster dev`) and a `dagster-instance` ConfigMap in the `orchestration` namespace containing byte-identical content, mounted automatically into every launched pod by `K8sRunLauncher`'s `instance_config_map` config — with `POSTGRES_HOST=postgres.metadata.svc.cluster.local` injected via the launcher's own `env_vars` config (which supports bare `KEY` entries too, for passing the *launching* process's own env var value straight through — used here for `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_PORT`, which are the same in both places). `instance_config_map` is a required config field (not optional) — without it, a launched pod has no instance config at all and can't start.
-
-### `K8sRunLauncher.service_account_name` — required by the constructor despite the config schema marking it optional
-
-Omitting `service_account_name` from `dagster.yaml`'s `run_launcher.config` fails at instance-load time with `TypeError: K8sRunLauncher.__init__() missing 1 required positional argument: 'service_account_name'` — even though `DagsterK8sJobConfig.config_type_run_launcher()`'s actual `Field` for it is `is_required=False`. A real mismatch between the declared config schema and the Python constructor in this dagster-k8s version. Fix: always set it explicitly (`service_account_name: default` is fine when the launched pod only needs to reach Postgres/Trino, not the k8s API itself — that's a separate concern from `load_incluster_config`, which governs how the *launcher* authenticates, not what the *launched pod* runs as).
-
-### The manifest must be pre-built into the image — `prepare_if_dev()` is a no-op everywhere except `dagster dev`
-
-Since the launched pod never runs via the `dagster dev` CLI, `DbtProject.prepare_if_dev()` does nothing inside it, and `dbt_assets` expects `target/manifest.json` to already exist. Fixed with a build-time `RUN dbt parse --profiles-dir profiles` in `orchestration/Dockerfile` — `dbt parse` doesn't need a live Trino connection, only a syntactically valid `profiles.yml`, so it's safe to run without the target warehouse being reachable during the image build.
-
-### Connecting the stub asset chain to dbt's source via `DagsterDbtTranslator`
-
-By default, `dagster-dbt` gives the dbt source `clean.customers` its own asset key (something like `AssetKey(["clean", "customers"])`), completely disconnected from our own `clean_customers` stub asset (`extraction_assets.py`) that actually populates that Iceberg table — the two would coincidentally execute in the right order within one job but wouldn't show up as one connected lineage graph, and selecting just the dbt asset wouldn't pull in its real upstream. Fixed with a small `DagsterDbtTranslator` subclass overriding `get_asset_key()`: when `dbt_resource_props` describes the `clean.customers` source specifically, return `AssetKey("clean_customers")` — the exact key our stub's `@asset`-decorated function already produces. Confirmed via `defs.resolve_asset_graph()` showing a single connected chain, `landing_customers -> raw_customers -> clean_customers -> stg_customers`, not two.
-
-### Verification
-
-Full chain (`landing_customers -> raw_customers -> clean_customers -> stg_customers`) materialized successfully three ways before considering this done: (1) in-process locally with the default ephemeral instance, to validate the logic itself; (2) via `dagster job launch` against the Postgres-backed instance, confirming `K8sRunLauncher` genuinely creates a Kubernetes `Job` in the `orchestration` namespace (`kubectl get pods` showed a real pod, not just a log line claiming one was created) and that pod runs to `Completed`; (3) a final clean run after fixing the `profiles_dir` bug, confirming `DagsterRunStatus.SUCCESS`, all four `run_audit_log` rows (`landing`/`raw`/`clean`/`staging`) with correct `status` and row counts, and `iceberg.staging.customers` reflecting the stub's data.
-
-### Cross-run concurrency: Dagster concurrency pools, not a hand-rolled lock table
-
-Prompted by a legitimate question: our `clean_customers` stub does `DELETE` then `INSERT` as two separate Iceberg commits (not one atomic operation), and the dbt staging `MERGE` reads `clean.customers` — so two overlapping runs of the same feed (two users, or a schedule overlapping a manual trigger) could genuinely race: one run's `DELETE` landing between another run's `DELETE` and `INSERT`, or a staging merge reading a torn/mid-write view of `clean`. Checked Iceberg's actual concurrency model before answering: it's optimistic concurrency control via atomic metadata-pointer swap — a *single* commit (like the dbt `MERGE`) is safe (conflicting concurrent commits get `CommitFailedException`, not silent corruption; non-conflicting ones auto-retry, 4 attempts with exponential backoff by default), but a two-statement sequence like our stub's `DELETE`+`INSERT` is not protected by that mechanism at all — nothing stops a second run's statements from interleaving with the first's.
-
-The instinct was to build a custom table + polling/locking mechanism on top of `run_audit_log`. Pushed back on that specifically: Dagster already has this, called **concurrency pools** — `pool="some-key"` on any `@asset`/`@dbt_assets`, with a per-pool slot limit, backed by the instance's own storage (our Postgres `dagster_db`), so it's durable across daemon restarts, not an in-memory lock. One caveat worth knowing: pool slots aren't auto-released if a run crashes or is cancelled unless `run_monitoring.free_slots_after_run_end_seconds` is set — with a limit of 1, a single stale claim would otherwise block every future run of that feed forever. Set to 300s.
-
-Implementation: `FEED_POOL = f"feed:{FEED_CODE}"` (`extraction_assets.py`), applied via the `pool=` kwarg to all four assets that touch the customers feed's data (`landing_customers`, `raw_customers`, `clean_customers`, `data_platform_dbt_assets`) — deliberately including the stub steps too, not just the two that are actually racy, so the whole feed pipeline is one serialized unit and nobody has to keep re-deriving which specific steps are safe as the pipeline grows. `concurrency.pools.default_limit: 1` in `dagster.yaml` (applies to every pool unless a specific one is overridden via `dagster instance concurrency set <pool> <n>` — deliberate default given every pool in this project is a "one feed at a time" gate). **Known scaling boundary, not yet hit**: `data_platform_dbt_assets` is currently one `@dbt_assets` function running `dbt build` across the whole project; once a second feed's dbt models share it, pooling the *whole function* under one feed's key would wrongly serialize unrelated feeds too — the fix when that's needed is per-feed `@dbt_assets` functions with scoped `select=`, each with its own pool, not a design problem to solve now.
-
-Also collapsed the repeated `start_run`/`try`/`finish_run` boilerplate (four near-identical copies across `extraction_assets.py` and `dbt_assets.py`) into one reusable `PostgresMetadataResource.log_ingestion_step()` context manager — `set_counts()` inside the `with` block, automatic `success`/`failed` finalization (re-raises after logging, never swallows an exception) on exit.
-
-**Verified concretely, not just configured and assumed**: launched two runs of the same feed back-to-back (two backgrounded `dagster job launch` calls). Confirmed via `kubectl get pods` that only one pod was ever running at a time, and via `instance.get_run_by_id(...).status` that the second run sat in `QUEUED` while the first was `STARTED` — then, after the first finished, the second started automatically with no manual intervention. `run_audit_log` timestamps confirm zero overlap: the second run's `landing` step started 10+ seconds after the first run's `staging` step finished. Both runs completed `SUCCESS`, all 8 `run_audit_log` rows correct.
-
----
-
-## Phase 6 — Spark Operator + real raw→clean
-
-### Scope change from the original Roadmap: Polars as the default processing engine, Spark opt-in
-
-Original plan was Spark (`spark-operator`) for all raw→clean processing. Revised: **Polars by default** (runs inline inside the same Dagster op/pod — no separate CR, no cluster orchestration overhead), **Spark opt-in per feed** (a real `SparkApplication` CR via `spark-operator`, for when volume actually demands distributed execution). Selection is metadata-driven (`data_feed.processing_engine`), matching how every other per-feed behavior in this project already works. Consequence worth calling out: the Polars default path needs *zero* new cluster infrastructure — no `spark-operator` deployment required to get it working — so it's the one being built and proven first, with Spark support added as a separable follow-up rather than both engines built simultaneously.
-
-Read/write goes through **PyIceberg directly**, not Polars' own `write_iceberg()`/`sink_iceberg()` — checked Polars' current docs first: real recent progress (1.39 added `sink_iceberg()`, a full streaming read/write roundtrip; `scan_iceberg()` now takes catalog-backed identifiers), but `write_iceberg()` is still formally marked unstable as of the latest release. PyIceberg is Apache Iceberg's own reference Python implementation, not a convenience wrapper — explicit separation of concerns (PyIceberg owns the catalog/storage boundary, Polars owns in-memory transformation), same instinct as building `polaris_client` as an explicit SDK wrapper rather than trusting a higher-level shortcut. Real correctness bonus, not just a style preference: PyIceberg's `table.overwrite(arrow_table)` is a single atomic Iceberg commit — unlike the Phase 5 stub's `DELETE` then `INSERT` (the exact two-statement race the concurrency-pools work above exists to guard against). Routing the real clean-layer write through `overwrite()` makes the "clean is a full snapshot per run" design actually safe, not just pool-protected.
-
-### PyIceberg proof against the real Polaris+MinIO catalog — what broke and why
-
-Ran a standalone proof (catalog load → list namespaces/tables → create table → append → overwrite → read back → verify → drop) against the live `data_platform` catalog before writing any of the real asset/schema-validation code, same reasoning as the Phase 3 manual-MERGE proof and the `polaris_client` smoke test. Three real issues hit, none of them "PyIceberg is broken" — all either an already-known class of problem recurring through a new client, or a genuine mistake in the proof script itself:
-
-1. **`IllegalArgumentException: Credential vending was requested for table ..., but no credentials are available`** — identical failure mode to Trino's Phase 3 `vended-credentials-enabled=true` issue, just via a different client. PyIceberg's REST catalog defaults to sending `X-Iceberg-Access-Delegation: vended-credentials`, which Polaris can't satisfy against a `stsUnavailable` MinIO-backed catalog (same root cause as Trino's, see Phase 3 notes above — no real STS behind it). Fix: `"header.X-Iceberg-Access-Delegation": ""` in the catalog config, falling back to the static `s3.access-key-id`/`s3.secret-access-key` properties instead — same shape of fix as Trino's `vended-credentials-enabled=false`.
-2. **Schema mismatch, `required` vs `optional`** — declared the test table's fields as `required=True`; Polars' `.to_arrow()` produces nullable columns by default. Changed to `required=False` — also the more realistic choice for a clean layer anyway (no reason to enforce NOT NULL this early).
-3. **Schema mismatch, `timestamp` vs `fixed[8]`** — not a PyIceberg or Polars bug, a mistake in the proof script: used `pl.datetime(2026, 1, 1)` (a **Polars expression**, meant for use inside `select`/`with_columns`) as a literal value in a plain Python list. Serializes to a meaningless fixed-size-binary(8) column instead of a real timestamp. Fix: use `datetime.datetime(...)` from the standard library for actual literal values; reserve `pl.datetime()` for expression contexts.
-
-### `processing/raw_to_clean/` — the real module, built on the proof
-
-`load_iceberg_catalog()`, `validate_schema()`, and `write_clean_snapshot()` moved out of the throwaway proof script into a proper uv workspace member, imported by `orchestration` as a workspace path dependency (`raw-to-clean = { workspace = true }`), same pattern as `polaris_client`. `write_clean_snapshot()` creates the Iceberg table from `schema_registry.column_definitions` on first run, `table.overwrite(df.to_arrow())` on every run after — one atomic commit per run, the correctness property the proof specifically set out to establish.
-
-Two more real schema issues surfaced moving from the proof script to the real write path (`write_clean_snapshot()` against actual generated data, not proof-script literals):
-
-1. **Same `required` vs `optional` mismatch, but now driven by `schema_registry`'s `nullable` flag** — `_schema_from_column_definitions()` originally mapped `nullable: false` straight to Iceberg `required=True`. Same failure as the proof: Polars' `.to_arrow()` always produces nullable Arrow fields, so every write from this path failed regardless of what the metadata said. **Resolved this as a real design decision, not a workaround**: Iceberg table fields are now always `required=False`; `nullable: false` is enforced instead where it actually belongs — as a genuine data-quality check in `validate_schema()`, which runs *before* `write_clean_snapshot()` is ever called. Two different concerns (storage-level constraint vs. pipeline-level data quality) that don't need to be the same mechanism, and only one of them actually works cleanly with Polars' output.
-2. **`TimestampType` vs `TimestamptzType`** — new, not hit in the proof (which used naive `datetime.datetime(2026, 1, 1)`). Every real timestamp this pipeline generates comes from `datetime.now(timezone.utc)` (tz-aware); Polars' `.to_arrow()` represents that as a tz-aware Arrow timestamp, and PyIceberg's schema check treats `TimestampType` (naive) and `TimestamptzType` (aware) as strictly incompatible, not just a formatting difference. Fixed by mapping schema_registry's `"timestamp"` to `TimestamptzType` unconditionally, since every timestamp in this pipeline is and should be tz-aware — not worth introducing a separate `"timestamptz"` vocabulary term into `schema_registry` for a distinction this project never actually needs.
-
-### `raw_to_clean.validate_schema()` — verified it actually rejects bad data, not just accepts good data
-
-Ran it directly (not through the full Dagster pipeline) against the real `sales` feed's live `schema_registry` entry with three deliberately broken inputs: a DataFrame missing most required columns, a DataFrame with `quantity` as a string instead of `long`, and a DataFrame with a `null` in `invoice_id` (marked non-nullable). All three raised `SchemaValidationError` with a specific, correct message naming the actual violation; valid data passed cleanly. Testing only the happy path here would have meant never actually confirming the validation logic does anything — the whole point of building it.
-
-### `data_platform_dbt_assets` split into one `@dbt_assets` function per feed — the boundary flagged in Phase 5, now actually hit
-
-Phase 5's Learnings.md flagged this in advance: one `@dbt_assets` function running `dbt build` across the whole project would have to sit under a single concurrency pool, wrongly serializing every feed's staging merge against every other feed's the moment a second feed got a dbt model. Adding `stg_sales.sql` alongside `stg_customers.sql` hit that boundary immediately. Fixed with a factory function (`_build_dbt_assets_for_feed(feed_code)`) producing one `@dbt_assets`-decorated function per feed, each with `select=f"tag:{feed_code}"` and `pool=f"feed:{feed_code}"` — models tagged via `tags=['customers']`/`tags=['sales']` in their `config()` block. `dbt.cli(["build"], context=context)` derives the matching `dbt --select` automatically from the decorator's `select=` and Dagster's own active selection — no need to pass `--select` twice. Verified both feeds run correctly in the same overall run *concurrently* (different pool keys, no cross-feed blocking) via `run_audit_log` timestamps, and that each feed's dbt invocation only touched its own model (`dbt build --select tag:sales` created exactly `staging.sales`, not `staging.customers`).
-
-### Three environment/tooling issues, none of them application bugs, all worth knowing about for next time
-
-1. **A global `dbt` shadowed the project's venv `dbt` inside Dagster's subprocess-launched dbt CLI call** — `Could not find adapter type trino!` even though `dbt debug` worked perfectly when run directly. Root cause: `.venv/bin` was never on `$PATH` in the shell driving `dagster asset materialize`; `which dbt` resolved to a global Python framework install lacking the `dbt-trino` adapter. `dagster_dbt`'s `DbtCliResource` invokes `dbt` by relying on `$PATH`, so Dagster's own subprocess inherited the wrong one. This is the exact class of issue Phase 1's Learnings.md already named ("check the actual interpreter path if something works unexpectedly — a global install can silently paper over a broken project venv") — recurring in a new shape. Fix: explicitly prepend `.venv/bin` to `$PATH` before running any Dagster CLI command locally, not just relying on `uv run`.
-2. **The long-running `dagster dev` daemon holds a stale in-memory copy of `dagster.yaml`** — added `POLARIS_HOST`/`MINIO_HOST`/etc. to the `run_launcher.env_vars` config, confirmed the file was correct, submitted a run, and the launched pod still didn't have those env vars (`kubectl get job ... -o jsonpath='{.spec.template.spec.containers[0].env}'` showed only the old Postgres/Trino ones). The *submit* step re-reads current code each time (`dagster job launch` visibly starts a fresh code server per invocation), but the actual `launch_run` call is performed by the **daemon** (`QueuedRunCoordinatorDaemon`), a separate, already-running process that loaded its instance config once at its own startup, hours earlier. Editing `dagster.yaml` while `dagster dev` is running does not hot-reload the run launcher config — the whole `dagster dev` process needs restarting. Cheap to verify directly rather than guess: check the actual pod spec's env list, not just re-read the config file and assume it applied.
-3. **`uv cache clean` hung indefinitely (18+ minutes, not just slow)** — a new, more severe variant of the recurring corrupted-install pattern below. Root cause: I'd launched two overlapping `uv cache clean`/`uv sync` fix attempts in the background without realizing it, and they deadlocked contending for the same `~/.cache/uv/.lock` advisory lock. `kill -9`-ing all stray `uv`-related processes (verified via `ps aux`, not assumed) and running one attempt at a time — without a redundant `uv cache clean` — resolved it immediately. Lesson: never background more than one fix attempt for the same corrupted-install problem; check `ps aux` for existing attempts before starting a new one.
-
-### The recurring corrupted-install `.pth` issue — a reliable workaround, since the root cause still isn't fully pinned down
-
-Hit *again* multiple times this phase, on top of the four times already documented in Phase 5 (different packages each time: `raw_to_clean` on a freshly-added workspace member, then intermittently on already-working members after unrelated commands). The established fix (delete `.venv`, resync) still works, but doesn't explain why it recurs, and it's expensive to pay for every time. Found a much cheaper, equally reliable workaround for one-off commands: pass the workspace member's source directory explicitly via `PYTHONPATH` (e.g. `PYTHONPATH=processing/raw_to_clean:query-engine/polaris_client python3 ...`) — this bypasses whatever's making Python's automatic `.pth`-file processing at interpreter startup unreliable on this machine, without needing a full venv rebuild. Use this first for a quick one-off script or test; reserve the full `.venv` rebuild for when `dagster dev`/the webserver itself needs to be healthy.
-
-### The UTC/timezone bug, in full: two feeds, two code paths, one silent inconsistency
-
-`clean.customers.updated_at` was `timestamp(6)` — no timezone. `clean.sales.sale_timestamp` was correctly `timestamp(6) with time zone`. Both columns are populated from `datetime.now(timezone.utc)` in Python — same intent, different outcome, because the two feeds were on genuinely different code paths: `clean_sales` used the new `raw_to_clean`/PyIceberg path (Phase 6, `TimestamptzType()`); `clean_customers` was still on the Phase 5 Trino `DELETE`+`INSERT` stub, formatting the timestamp into a raw SQL `TIMESTAMP` literal (`%Y-%m-%d %H:%M:%S.%f`, no offset) against a table whose column had been created without `WITH TIME ZONE` back in Phase 3/4 — before this project had any tz-aware writer to compare it against.
-
-**The fix wasn't a type cast, it was closing the gap that caused it**: migrated `clean_customers` onto the exact same `raw_to_clean.write_clean_snapshot()` path `clean_sales` already used. One code path, one correct behavior, not two paths that happen to agree. `TrinoResource` became fully unused as a result and was deleted rather than left as dead code.
-
-**Two schema-changing side effects, both required, both non-obvious**:
-1. `clean_customers` had never gone through `schema_registry` validation at all (only `sales` had an entry) — needed a real `schema_registry` row for `customers` before the migrated code could run.
-2. Fixing the *writer* wasn't sufficient by itself. `clean.customers` and `staging.customers` were **pre-existing tables** from earlier sessions, still carrying the old naive column type. dbt's incremental `MERGE` (the normal path once a staging table already exists) merges *row data* into an existing table — it does not retroactively change that table's column types. Confirmed concretely: after fixing the writer and re-materializing, `clean.customers.updated_at` was correctly `with time zone`, but `staging.customers` was untouched, *still* naive on both `updated_at` and `_loaded_at` — because `stg_customers` took the `MERGE` branch against the old table, not a fresh `CREATE TABLE AS SELECT`. Had to explicitly `DROP TABLE` both `clean.customers` and `staging.customers` and let them get recreated from scratch before the fix actually took effect end-to-end. **The general lesson**: fixing a bug in a *writer* only fixes what that writer touches going forward — an already-materialized table with the old, wrong schema silently keeps its old schema until something forces a genuine table recreation, not just an incremental update. This is exactly the kind of thing that's easy to think is fixed (the code looks right, the writer's logic is right) while the actual deployed state still isn't.
-
-### `scripts/seed_metadata_db.py` — metadata seed rows were never actually reproducible
-
-`source_system`/`data_feed`/`schema_registry` rows for both `customers` and `sales` had only ever been created via ad hoc `psql` commands typed by hand across Phase 4-6 — never captured as code. Didn't matter while the cluster stayed up continuously; matters a lot now that the cluster gets stopped between phases (see the process-hygiene note below) — a fresh or restarted cluster would have working tables but no feed configuration pointing at them. Added `scripts/seed_metadata_db.py`, idempotent (`ON CONFLICT DO NOTHING` against each table's real unique constraint — `code` for `source_system`/`data_feed`, `(data_feed_id, version)` for `schema_registry`), covering everything seeded so far. New workspace member (`scripts/`), matching what the original Roadmap's repo structure already named but never built.
-
-### First regression test: `tests/integration/`
-
-Built directly off the UTC bug above, and off why `DebugReference.md` files exist in the first place — this project needs actual regression tests, not just documented manual-verification recipes, and the two-feed setup (`customers`, `sales`) exists specifically to make that possible (one feed alone can't prove a check is metadata-driven rather than hardcoded). `test_utc_consistency.py`: queries `schema_registry` for every currently active feed with a `data_type: "timestamp"` column, and asserts the corresponding `clean.<feed>` and `staging.<staging_table_name>` columns are genuinely `with time zone` in Trino — covers both failure modes actually hit (a wrong writer, and a stale pre-existing table a fixed writer doesn't retroactively correct). Deliberately metadata-driven, not a hardcoded two-feed check, so a third feed gets covered automatically. New workspace member (`tests/integration/`), matching the Roadmap's original repo structure. Ran it against the live, now-fixed platform — both tests pass.
-
-### Standing rule going forward: kill everything spun up for a phase, restart fresh next time
-
-After repeatedly hitting stray/competing background processes this session (a stale `dagster dev` daemon holding outdated config after a `dagster.yaml` edit; two overlapping `uv cache clean` invocations deadlocking each other) — explicit user instruction: kill every dev-loop process (`dagster dev` and its whole process tree, `kubectl port-forward`s) and stop the kind cluster's Docker container (`docker stop`, not delete — preserves all state) once a phase's work is verified and done, restart fresh for the next one. Applies equally any time code needs testing again mid-session, not just at phase boundaries. Saved as a standing memory note, not just a one-off instruction.
-
----
-
-## Phase 6 (continued) — Full cluster nuke-and-rebuild as the actual regression-testing methodology
-
-Not a new Roadmap phase — this is validation/hardening work on top of Phase 6, done before starting Phase 7 (Model layer).
-
-Two tech-debt/hygiene decisions converged into a new standing practice: (1) migration-style SQL files (`04_processing_engine.sql`, an incremental `ALTER TABLE`) were rejected as tech debt in a project with no production data to preserve — schema changes go directly into the original table definition (`01_platform_metadata.sql`) instead; (2) validating that change meant proving the *whole platform*, not just Postgres, bootstraps correctly from absolute zero. `kind delete cluster` → full manual rebuild (Postgres → MinIO → Polaris → catalog registration → Trino → metadata seed → orchestration image → `dagster dev` → full pipeline) surfaced two real, previously-hidden bugs that incremental testing across Phases 3-6 had never exercised, because every prior test run reused a cluster with leftover state from earlier phases. **This is now the project's standing regression-testing methodology, not a one-off validation** — every real behavior change should be verified against a genuinely fresh cluster, not an incrementally-patched one, because incrementally-patched state silently hides exactly this class of bug.
-
-### Bug 1: `write_clean_snapshot()` assumed the `clean` namespace already existed
-
-`NoSuchNamespaceError: Namespace does not exist: clean` on the very first fresh-cluster pipeline run. Every prior test this session had silently relied on `clean` already existing as a namespace, left over from Phase 3's original manual Trino-based table creation — never hit until a genuinely fresh catalog had no such leftover. `catalog.create_table()` requires the namespace to exist first; it does not create one implicitly. Fixed in `processing/raw_to_clean/raw_to_clean/write.py` by calling `catalog.create_namespace_if_not_exists(namespace)` before `create_table()`. Confirmed fixed — didn't recur on the next attempt, and this call proved safe under concurrent invocation too (see Bug 2 below, where the equivalent race against `staging` was *not* safe).
-
-### Bug 2: `staging` namespace creation raced between two concurrently-executing dbt asset functions
-
-Second fresh-cluster run failed differently: `TrinoQueryError: Cannot create namespace staging. Namespace already exists`, thrown *inside* `dbt_customers_assets`'s `dbt build --select tag:customers` step, immediately after the log showed `dbt_sales_assets` had just created `staging.sales`. Root cause: `dbt_customers_assets` and `dbt_sales_assets` run in separate, non-blocking concurrency pools (`feed:customers` / `feed:sales` — the whole point of the Phase 6 per-feed pool split), so on a fresh catalog with no `staging` namespace yet, both dbt invocations raced to implicitly create the same shared `staging` schema at nearly the same moment. Unlike PyIceberg's `create_namespace_if_not_exists` (proven safe under this exact race by Bug 1's fix), Trino/dbt-trino's implicit schema-auto-creation isn't atomic/idempotent under concurrent callers — it throws a hard error on the loser of the race instead of silently no-op'ing.
-
-This is a shared-infrastructure concern crossing feed boundaries (unlike per-feed tables), so the fix doesn't belong in per-run code at all: **pre-create every namespace a run-time path might implicitly create — `clean` and `staging` — once, deterministically, as part of catalog bootstrap**, so no concurrent runtime code ever needs to create them. Implemented in `query-engine/polaris_client/polaris_client/bootstrap.py` (the existing one-time "make the catalog ready" script, already run via `register-catalog.sh`): after the Management-API catalog/privilege setup, it now also opens a PyIceberg REST catalog client (via `raw_to_clean.load_iceberg_catalog`, reusing the already-proven-correct namespace-creation call) and calls `create_namespace_if_not_exists` for `REQUIRED_NAMESPACES = ["clean", "staging"]`. `polaris_client` gained a workspace dependency on `raw_to_clean` for this — a deliberate crossing of the "Management API vs Iceberg REST API" boundary those two modules otherwise keep separate, justified because both are legitimately "make the catalog ready for use" bootstrap concerns, not runtime/day-to-day code. Confirmed fixed: re-ran `register-catalog.sh` (both namespaces created cleanly), rebuilt+reloaded the orchestration image, and a subsequent full pipeline run completed with `RUN_SUCCESS` and all 8 `run_audit_log` rows (`landing`/`raw`/`clean`/`staging` × 2 feeds) showing `status = success` — no race, first attempt.
-
-### Validation this cycle also exercised
-
-`tests/integration` (the UTC-consistency regression suite) re-run against the freshly rebuilt cluster and still passed (`2 passed`), confirming the suite itself is genuinely reproducible from a fresh cluster, not dependent on accumulated state either.
-
-### Known gap, closed in the next segment
-
-`scripts/bootstrap_kind.sh` at the time only covered cluster + namespaces + Postgres — the rest of this cycle's rebuild (MinIO, Polaris, catalog registration, Trino, metadata seed, orchestration image/ConfigMap) had to be driven by hand from each module's `DebugReference.md`, one command at a time. See "`just`-based operational tooling" below for how this got closed.
-
----
-
-## `just`-based operational tooling: the nuke-and-rebuild cycle as one command
-
-The gap flagged above (full rebuild only existed as hand-transcribed `DebugReference.md` steps) is now closed with a `just`-based command surface: `just start`/`kill`/`nuke`/`smoketest`/`test`, each fanning out to one `module.just` per module (`platform/module.just`, `metadata/module.just`, `query-engine/{minio,polaris,trino}/module.just` + a `query-engine/module.just` composite, `orchestration/module.just`, `processing/module.just`, `dbt/module.just`, `frontend/module.just`, `tests/integration/module.just`). Full design rationale in the plan file's "Addendum: `just`-based operational tooling" section. Two mechanical things worth knowing about `just` (1.43.1) specifically: `mod name 'PATH'` loads a submodule from an explicit path (used so every module's `.just` file lives inside that module's own directory), and submodule recipes run with CWD set to the directory containing that module's source file, which eliminates almost all the `cd "$(dirname ...)"` boilerplate the old hand-written scripts needed.
-
-`just smoketest` (`nuke` → `start` → live pipeline verification → full test suite) is deliberately not just `tests/integration` plus a rebuild — it also runs `orchestration::verify-pipeline`, a real `dagster job launch` + `run_audit_log` check, because that narrow regression suite alone would **not** have caught either bug found in the "Phase 6 (continued)" section above. Verified this by actually running `just smoketest` end to end from a real `kind delete cluster`, which is exactly how it caught two more real bugs immediately:
-
-1. **`kubectl get jobs ... -o jsonpath='{.items[-1].metadata.name}'` crashes on an empty job list.** `verify-pipeline`'s "find the newly-launched run's Job" logic used `[-1]` indexing to grab the most recent Job, which throws `array index out of bounds` the moment zero Jobs exist yet — exactly the state right after `dagster job launch` returns (it only submits to the queue; the daemon launches the actual Job a moment later, see Phase 5/6 notes above on why `dagster job launch` doesn't block on completion). Fixed by switching to a plain space-separated before/after set-difference (`kubectl get jobs -o jsonpath='{.items[*].metadata.name}'`, iterate, compare against a `before` snapshot) — no indexing into a list that might be empty.
-2. **`pkill -f` (SIGTERM) doesn't reliably kill `dagster dev` once its backing Postgres/k8s cluster is already gone.** Hit this for real during cleanup after a successful `smoketest`: `just kill` reported success (`pkill` exit code 0) but two `dagster dev` processes sat alive for 10+ seconds afterward, unresponsive to further SIGTERMs — plausibly stuck in a blocking call (DB reconnect attempt, k8s API retry) that never reaches Python's signal handler. Confirmed via a synthetic reproduction (a `sleep` process with `trap "" TERM` and a matching `argv[0]`) that the fix — SIGTERM, poll for up to 10s, escalate to `pkill -9` if still alive — actually works, and that the fast path (a normal, responsive process) still exits in under a second rather than always paying the 10s wait.
-
-Also surfaced, not a bug in the new tooling but a pre-existing environmental quirk worth knowing about: the kind container came back up on its own at least twice this session shortly after a clean `docker stop`, with `RestartCount: 0` (ruling out Docker's own `on-failure` restart policy) and no stray host process found looping to restart it — looks like a Docker Desktop for Mac VM-level behavior, not something `platform/module.just` can control. `platform::start` already defensively waits for real node readiness regardless of what `docker inspect` reports the container's state as, so this doesn't cause incorrect behavior, just means `docker stop`-as-pause isn't perfectly durable on this machine — worth a `docker ps` sanity check if a session picks back up and the cluster is unexpectedly warm.
-
-New real test suites added as part of this same effort (per the "write real starter tests now, not just scaffolding" decision): `processing/raw_to_clean/tests/test_schema_validation.py` (codifies the ad hoc `validate_schema()` verification already described in Phase 6 above as a committed pytest suite), `orchestration/dagster_data_platform/tests/test_dbt_assets.py` (unit tests `DataPlatformDbtTranslator.get_asset_key()`), and `dbt/data_platform/models/staging/schema.yml` (real `not_null`/`unique`/`accepted_values` schema tests for both feeds — the `accepted_values` sets were pulled directly from `sales_assets.py`'s actual generator, not guessed, to avoid a flaky test). All three now run as part of `just test` / `just smoketest`.
-
----
-
-## `run_audit_log` replaced with `data_feed_run` + `data_model_run` (wide, per-concern tables)
-
-Prompted by wanting real performance tracking, not just an audit trail. `run_audit_log` was a "long" table — one row per `(layer, run)`, so a full run for one feed produced 4 rows (landing/raw/clean/staging), self-joined via `parent_run_id`. Redesigned as a "wide" shape instead: one row per feed per job run, with `is_<stage>_successful`/`<stage>_end_timestamp`/`<stage>_error_message` (plus row counts/output path/watermark values) repeated per stage, and overall `job_started_timestamp`/`job_ended_timestamp`/`job_successful`.
-
-**This became two tables, not one**, mapping onto a real architectural split articulated during design: *"one looks at extracting data from the source and validating that it extracted successfully respecting the contracts, the other builds the domain-specific processes to deliver the data model required."*
-
-- **`data_feed_run`** (landing/raw/clean) — the extraction-and-contract-validation concern, one row per `(data_feed_id, dagster_run_id)`.
-- **`data_model_run`** (staging/model/serve) — the warehouse-building concern, one row per `(model_key, dagster_run_id)`. `staging` moves here even though it's currently built per-`data_feed` (`stg_customers`/`stg_sales`, no `model_feed` rows exist yet — Phase 7 not built) — this table isn't FK'd to `model_feed`, it identifies what it's building via a `model_key` text column (today just the feed code) plus a `uses_feeds` comma-separated text column naming which `data_feed`(s) it draws from, built for the not-yet-real case of a fact table joining multiple staging sources.
-
-**Replaced `run_audit_log` outright**, not added alongside it, despite `run_audit_log` also being documented as backing idempotency/re-run logic (Roadmap.md, Phase 9) — a full-repo search confirmed nothing actually reads it for that today (`last_watermark_value`/`last_run_id` on `data_feed`/`model_feed` are denormalized-but-never-wired columns; Phase 9 re-run support is still an open, unimplemented Roadmap item), so there was no live behavior to preserve, just documentation to update.
-
-**The write-API shape had to change, not just the table.** The old `log_ingestion_step()` context manager did one `INSERT ... RETURNING run_id` per call (one row per stage). The new `log_data_feed_stage()`/`log_data_model_stage()` context managers (`PostgresMetadataResource`) instead **ensure** a wide row exists via `INSERT ... ON CONFLICT (feed_key, dagster_run_id) DO UPDATE SET <pk-col> = excluded.<pk-col> RETURNING run_id` (only the first stage of a feed's run actually creates the row; later stages find it via the conflict branch), then **update just that stage's column group** on exit. `job_ended_timestamp`/`job_successful` roll up on every stage completion (`job_ended_timestamp = now()`, `job_successful = coalesce(job_successful, true) AND <this stage succeeded>`) rather than needing special-cased "is this the last stage" logic — this correctly lands on the true final state whether the chain completes normally or fails partway through, since Dagster's default behavior skips downstream assets after a failure, so "whichever stage most recently ran" is always the right answer. Column names are built via f-string (`f"{stage}_end_timestamp"` etc.) — safe because `stage` is asserted against a fixed tuple (`_DATA_FEED_STAGES`/`_DATA_MODEL_STAGES`) before ever reaching the SQL string, never caller-supplied.
-
-**Verified end-to-end**, including the failure path, which the old design's manual verifications never specifically exercised: deliberately corrupted `schema_registry`'s `customer_id` column to `data_type: "string"` (actual data is `long`), re-ran the pipeline, and confirmed exactly the expected shape — `customers`' `data_feed_run` row: `is_landing_successful=true`, `is_raw_successful=true`, `is_clean_successful=false`, `clean_error_message` holding the real validation error verbatim, `job_successful=false`, `job_ended_timestamp` correctly set to the failure point (not left null). `sales`' row, unaffected, showed all-`true`/`job_successful=true` in the same run — confirming failure isolation between feeds. And critically: **no `data_model_run` row was created for `customers` at all** in that run, since `clean_customers` failing meant `dbt_customers_assets` (the downstream staging step) never got a chance to run — the "row only created on first stage touch" design correctly produces *no row* rather than a row with a misleading default, for a stage that was never attempted.
-
-**A real, unrelated bug this surfaced along the way**: `orchestration::start`'s readiness check only waited for the webserver's HTTP port (`curl localhost:3000`) to respond, not for the **daemon** (a separate thread pool within the same `dagster dev` process) to finish its own startup — initializing `dagster_db`'s schema and registering heartbeats for all 7 daemon types. `verify-pipeline` runs immediately after `start` returns, and raced ahead of daemon readiness: hit `"Retrying failed database creation"` and `"Another QUEUED_RUN_COORDINATOR daemon is still sending heartbeats"` warnings, and the run's k8s Job never actually got created (`DagsterK8sAPIRetryLimitExceeded`, connection refused against a port that turned out to be a red herring — the daemon's own startup race was the real cause, not a stale kubeconfig). Fixed by polling `dagster_db.daemon_heartbeats` for all 7 daemon types to report in before `orchestration::start` returns, instead of trusting the webserver's readiness as a proxy for the whole process being ready. Re-ran the full `just smoketest` after the fix — clean nuke, rebuild, pipeline verification, and full test suite all green on the first attempt.
-
-### Tech-debt cleanup pass — a full-project audit, some of it walked back on closer inspection
-
-Prompted by a "what's left?" ask. Two findings from an earlier round (postgres_metadata_resource.py's `assert stage in ...` and the duplicated `_ensure_*`/`_finish_*` methods) were genuinely fixable and got fixed:
-
-1. **`assert` → `if: raise ValueError`** for `stage` validation. `assert` statements are stripped entirely under `python -O`; using one to guard a value that's about to be f-string'd into a SQL column name (`f"{stage}_end_timestamp"`) was fragile practice for something load-bearing against SQL injection, even though nothing in this project runs with `-O` today.
-2. **Deduplicated `_ensure_data_feed_run`/`_finish_data_feed_stage`/`log_data_feed_stage` and their `data_model_run` twins** into shared generic helpers (`_log_stage`, `_ensure_run`, `_finish_stage`), parameterized by table name, identity columns, and conflict-target columns. `log_data_feed_stage`/`log_data_model_stage` are now thin wrappers with no logic of their own. Halves the surface area that needs touching if the per-stage column set ever changes.
-
-A wider audit of the "base" metadata tables (`data_feed`, `model_feed`, `model_feed_source`, `schema_registry`) surfaced a pile of columns that are defined and seeded but never read by any pipeline code — `processing_engine`, `landing_path_template`/`raw_path_template`, `incremental_column`/`incremental_column_type`, `schedule_cron`, and `schema_registry`'s versioning columns (`version`/`is_current`/`effective_from`/`effective_to` — only ever exercised via a single seed-time `version=1` insert, never a real schema evolution). **Left all of these alone.** They're intentional, already-documented provisioning for specific numbered Roadmap phases (Spark opt-in, incremental extraction, scheduling, schema evolution) — not accidental cruft. Building out those features just to make a column "used" would be large, unrequested scope creep; dropping documented design elements unilaterally isn't a call to make without being asked.
-
-**One proposed fix got walked back after deeper analysis, not implemented as originally suggested.** The plan going in was: since `data_model_run.model_key`/`uses_feeds` (free text) look like they duplicate what `model_feed`/`model_feed_source` (a real bridge table) already exist to represent, seed real `model_feed` rows for `customers`/`sales` and make `data_model_run` FK to `model_feed` properly. Checking `model_feed`'s actual DDL first: `model_type` is `check (model_type in ('fact', 'dimension'))`, and the table requires `scd_type`/`surrogate_key_column`/`business_key_columns`/`tracked_columns` — all genuinely Kimball-SCD-specific. Staging isn't a fact or a dimension. Forcing a "staging" pseudo-row through `model_feed` would mean either weakening a real constraint or populating SCD columns that mean nothing for a passthrough — worse debt than the thing it was meant to fix. Left `data_model_run` as designed; added a comment on `model_feed_source` in the DDL explaining why it's deliberately not used here, so this doesn't get "fixed" again by someone who doesn't check the constraint first.
-
-**A second proposed fix also got walked back**: flagged `_ensure_run`'s `INSERT ... ON CONFLICT DO UPDATE` as "wasteful" for stages 2/3 of a feed's run (the row already exists by then). On reflection, replacing it with a SELECT-then-insert-if-missing would introduce a real TOCTOU race the current single-round-trip upsert doesn't have. Left as-is — it was already the correct pattern, not something to "optimize."
-
-**Also excluded, both undiagnosed at the time**: the recurring `.pth`/uv-workspace corruption bug (hit *again* mid-cleanup, same symptom, same `uv sync --reinstall-package` workaround) and the Docker Desktop kind-container auto-restart quirk. Neither had a real root cause identified yet, so "fixing" either then would have meant guessing at a workaround for a problem that wasn't actually understood. The `.pth` bug's real root cause was found in the very next session — see "The `.pth` bug, root-caused and actually fixed" below.
-
-**New real test coverage added as part of this pass**: `frontend/tests/test_metadata_db.py` — the frontend had zero test coverage before this. Tests `metadata_db.py`'s generic CRUD helpers (`fetch_table`/`insert_row`/`update_row`/`delete_row`/`fetch_lookup`) against the live Postgres (not mocks, same philosophy as `tests/integration`), round-tripping a test row through `source_system` with cleanup before and after so it's safe to re-run. Needed a `pythonpath = ["."]` in `frontend/pyproject.toml`'s `[tool.pytest.ini_options]` — unlike `raw_to_clean`/`dagster_data_platform` (real installed packages), `frontend` is `package = false` and `metadata_db.py` is a loose script file, so `tests/` (a sibling directory) can't import it without an explicit path. Wired into `frontend/module.just`'s new `test` recipe and the root `Justfile`'s dispatcher.
-
-**Verified**: full `just smoketest` after all of the above — genuine nuke, rebuild, pipeline verification (`2/2` + `2/2`), and the full test suite including the 5 new frontend tests, all green on the first attempt post-fix (after the `.pth` bug recurred once mid-pass and got the usual `uv sync --reinstall-package` treatment).
-
----
-
-## Three real root causes found and fixed: the `.pth` bug, a daemon startup race, and a process-leak that had been quietly poisoning every rebuild this session
-
-Prompted by "let's fix this pth bs problem" — actually root-caused instead of re-applying the workaround again. Investigating it head-on surfaced two *more* real bugs along the way, one of which turned out to be the actual explanation for several "flaky"-looking pipeline failures from earlier in this session that had been chalked up to timing.
-
-### The `.pth` bug, root-caused and actually fixed
-
-Caught it live, mid-broken, and traced it properly instead of reaching for `uv sync --reinstall-package` again:
-
-1. `sys.path` after `uv run python -c "import sys; print(sys.path)"` showed `site-packages` present but none of the paths its `.pth` files should have injected — meaning `.pth` processing itself wasn't running, not that individual files were malformed.
-2. Manually calling `site.addsitedir()` on `site-packages` directly added nothing either — ruling out anything specific to how `uv run` invokes Python.
-3. Listing `site-packages` showed **numbered duplicate `.pth` files** (`_editable_impl_polaris_client.pth`, ` 2.pth`, ` 3.pth`, all identical content/mtime) — and critically, this wasn't limited to workspace-member editable installs: regular third-party packages (`coloredlogs.pth`) had the same duplicates.
-4. Reading CPython 3.13's actual `site.py` (not relying on memory of an older version) found the real mechanism: `addpackage()` checks `st_flags & stat.UF_HIDDEN` and silently skips any `.pth` file with that macOS BSD flag set — a **security hardening added specifically to defend against hidden malicious `.pth` files** ([python/cpython#113659](https://github.com/python/cpython/issues/113659)). `ls -lO` on every `.pth` file in `site-packages` confirmed: **all of them** had `hidden` set, including the working ones.
-5. `chflags nohidden *.pth` made imports work immediately, with zero other changes — conclusively proving the mechanism (a first attempt at this with an unquoted glob silently failed on the filenames containing spaces, word-split by the shell — a reminder to `ls -lO` and verify rather than trust a glob's exit code).
-6. Root cause of *why* the flag gets set: `uv`'s default `link-mode` on macOS is `clone` (APFS `clonefile()`) — a from-scratch `.venv` rebuild with `UV_LINK_MODE=copy` produced zero hidden files and zero numbered duplicates on the first try, no `--reinstall-package` needed. `uv`'s clone-based install path evidently sets (or propagates, e.g. from a temp file used during atomic write-then-rename) the hidden flag on this machine; plain `copy` mode doesn't.
-7. **Permanent fix**: `link-mode = "copy"` in the root `pyproject.toml`'s `[tool.uv]` table. Confirmed via two more from-scratch `.venv` rebuilds (no env var, just the committed config) — clean every time.
-
-This had recurred at least 4-5 times across this whole project, each time "fixed" with the same reinstall workaround without anyone (including this assistant) tracing it to an actual cause. The combination that produced it — a very recent CPython security feature plus a pre-existing macOS-specific `uv` behavior — had never collided in a way that got investigated all the way through before.
-
-### The daemon schema-readiness race, take two
-
-`orchestration::start`'s existing readiness check (added earlier this session) waited for `dagster_db.daemon_heartbeats` to have 7 rows before returning. Turned out to be an incomplete proxy: `daemon_heartbeats` gets created early in dagster's ~22-table schema-creation batch, so it can already have rows while other tables (`jobs`, used by `SchedulerDaemon`, in particular) still don't exist — a daemon thread querying its own not-yet-created table hits `UndefinedTable` and enters a crash/restart loop, visible as different daemon threads repeatedly reporting "another daemon is still sending heartbeats" with a churning set of daemon IDs. Fixed by waiting for the full `information_schema.tables` count (22) *before* checking heartbeats, not instead of it — two-stage wait, schema-complete then daemon-registered.
-
-### The real culprit: orphaned `dagster._daemon`/`dagster_webserver` children, leaking across every nuke cycle this session
-
-This is the one that actually explains most of the "Could not find the newly-launched run Job" and daemon-id-churn failures attributed to the two races above. `orchestration::kill`'s pattern (`pkill -f "dagster dev -m dagster_data_platform.definitions"`) only ever matches the **top-level wrapper process**. `dagster dev` spawns `dagster._daemon run ...` and `dagster_webserver ...` as **separate child processes with their own command lines** — neither contains the substring "dagster dev" at all. `dagster dev`'s graceful-shutdown handshake (a `--shutdown-pipe` the parent uses to cleanly stop its children) only runs if the wrapper gets to react to SIGTERM; the SIGTERM→SIGKILL escalation added earlier this session (for the case where the wrapper itself doesn't respond) makes this *worse* for its children specifically — a SIGKILL never gives the wrapper a chance to signal them, so they're orphaned (reparented to pid 1) instead of shut down.
-
-Found by checking `top`/`ps` mid-investigation and noticing **three separate orphaned `dagster._daemon`/`dagster_webserver` process pairs**, all `PPID 1`, timestamped to three different `just smoketest` attempts earlier in this same session — every single nuke-and-rebuild cycle this session had been leaking a pair, and every leaked pair kept reconnecting to whatever was reachable at `localhost:5432` (the same NodePort across cluster recreations) and fighting the current run's legitimate daemon over heartbeat ownership, indefinitely, until killed by hand. This is almost certainly what several earlier "the daemon needs a moment" symptoms actually were.
-
-**Fixed**: `orchestration::kill` now matches two patterns — the wrapper's own invocation, and a path substring (`orchestration/dagster_home`) present in every child's command line via its `--instance-ref` JSON blob — so orphaned children get caught even with no live wrapper to match against. Manually killed all six leaked processes from earlier this session before retesting (`pkill -9 -f "orchestration/dagster_home"`).
-
-### Verified
-
-Full `just smoketest` from a genuine `kind delete cluster`, with all three fixes in place simultaneously — clean nuke, rebuild, pipeline verification (`2/2` `data_feed_run` + `2/2` `data_model_run`), full test suite, all green on the first attempt. Also hit one unrelated Docker BuildKit snapshot-cache corruption mid-investigation (`failed to prepare extraction snapshot ... parent snapshot ... not found`) from the sheer number of back-to-back image builds this session — fixed with `docker builder prune -f` (reclaimed ~20GB), not a code issue.
-
----
-
-## Phase 7 — Model layer (Kimball dims + facts): the design was already written, implementation surfaced the rest
-
-Roadmap.md's "Model Layer: SCD Design" section already documented the seven technical columns, hash-based change detection (reused identically from staging via the same `row_hash` macro), Type 1 vs Type 2 mechanics, and the deletion-synthesis approach in real detail before any of this was built — this phase was about implementing that design against the actual `customers`/`sales` data, and it surfaced two things the prose hadn't fully pinned down.
-
-**`sales` has no FK to `customers`.** Checked the actual columns before assuming a `dim_customer` → `fct_sales` join was possible: `customer_type`/`gender` in `stg_sales` are self-reported attributes of the transaction itself, not a join key — genuinely mirroring the real "supermarket sales" dataset this project's stub data is modeled on, which has no customer identifier either. Resolved by building `dim_branch` (Type 1) conformed out of `sales`' own `branch`/`city` columns instead — a standard Kimball pattern (a dimension extracted from the fact source itself, since branches are comparatively static reference data even though they only ever arrive attached to transactional rows) — and joining `fct_sales` to *that*. `dim_customer` (Type 2) stands alone today, not joined to any fact, but still fully exercises SCD2 mechanics on its own. Gives both a Type 1 and Type 2 dimension (the Roadmap's explicit verification requirement) plus a real fact-to-dimension join, just not the pairing originally assumed possible.
-
-**The fact joins to the dimension's `_key_hash`, not `_scd_id`.** Roadmap's prose says facts join to a dimension's `_scd_id` — correct for a Type 2 target (a new `_scd_id` per version, needed for point-in-time correctness), but `dim_branch` is Type 1 and never versions, so its `_scd_id` is structurally always null. `fct_sales` joins on `_key_hash` instead (the stable business-key hash, correct when there's only ever one current version to join to). The general principle in the Roadmap holds; it just needed the right column for *this* dimension's actual type.
-
-**The deletion-detection intermediate model can't read the dimension's own current state — resolved by comparing staging against clean instead.** Roadmap's prose ("finds business keys present in the model's current rows but absent from this run's full staging load") reads as comparing against the snapshot's own current rows, but `int_customers_with_deletes` sits *upstream* of `dim_customer_snapshot` in the dbt DAG — referencing the snapshot's own output from inside it would be a circular `ref()`, which dbt refuses to build. Resolved by comparing `stg_customers` (every business key ever seen — staging is cumulative, never shrinks) against `clean.customers` (this run's true full snapshot — clean genuinely is a fresh per-run load, unlike staging, per the Layer Model) instead: a key present in staging but missing from clean's current run is a deletion, carried forward with its last-known attributes and `is_deleted=true`. This avoids the cycle entirely, and — importantly — doesn't need to separately check "is this key already marked deleted" the way a snapshot-referencing version would have: a key deleted in a prior run keeps getting resynthesized with `is_deleted=true` every subsequent run, but since its `_attr_hash` (which folds in `is_deleted`) is identical to the last version's, the downstream snapshot's `check_cols` gate naturally produces zero new versions for it. Same idempotency mechanism already doing the work, not extra logic — **confirmed empirically, not just reasoned about**: after the deletion test below, a third unchanged run produced the same 2 Iceberg snapshots and 7 rows as the second, no growth.
-
-### Two infrastructure gaps this build surfaced, both fixed
-
-1. **A new Iceberg namespace (`model`) needed the same proactive fix as `staging` got in Phase 6.** `dim_customer_snapshot` (tagged `customers`) and `dim_branch`/`fct_sales` (tagged `sales`) run in separate concurrency pools, so both would race to implicitly create the `model` schema on a fresh catalog — the exact same race already found and fixed for `staging`. Added `model` to `polaris_client/bootstrap.py`'s `REQUIRED_NAMESPACES` proactively, before it could manifest as a failure, rather than rediscovering it through another failed rebuild.
-2. **`dbt`'s default `generate_schema_name` macro would have silently misplaced every model-layer table.** Without an override, a model with `schema='model'` config resolves to `<target_schema>_<custom_schema>` — `staging_model`, not `model` — since dbt's default behavior *appends* a custom schema onto the target's default rather than using it verbatim. Added a `generate_schema_name.sql` macro (dbt's own documented override pattern) so `schema='model'` means exactly `model`, matching the pre-created namespace and the Layer Model's intended clean separation. Only affects models with an explicit `schema` config — staging models don't set one, so they're unaffected.
-
-### A real bug, cleanly isolated by the per-stage `data_model_run` split done in the prior session
-
-First full-cluster test run: `data_feed_run` showed `2/2` successful (landing/raw/clean all fine), but `data_model_run` showed `0/2` — immediately narrowing the search to the dbt build itself rather than the extraction pipeline, exactly the diagnostic value the run-table redesign was for. Actual cause: `accepted_values` tests on `is_deleted` (`values: [true, false]`) failed with `TrinoUserError(TYPE_MISMATCH: ... boolean and varchar(4))` — dbt-trino's `accepted_values` test doesn't coerce literal `true`/`false` against a native boolean column. The models themselves built fine (`dim_branch` created successfully, 3 rows, before the *test* step failed) — only the redundant test was wrong. Dropped the `accepted_values` tests on all three `is_deleted` columns rather than working around the type mismatch: a boolean column's own type already rejects anything but `true`/`false`/`null`, so the test added nothing `not_null` didn't already cover.
-
-### `_dbt_assets_for_feed` had to split "did the build succeed" into two independent signals
-
-The old single-stage version raised on `not invocation.is_successful()` and logged one `"staging"` stage. Since Phase 7 tags model-layer objects the same way as their feed (no new Dagster wiring needed — `dbt build --select tag:customers` picks up `dim_customer_snapshot` automatically), the natural next step was reusing the same invocation for both `data_model_run` stages. Doing this **correctly** — not just mechanically — required moving from the single overall `is_successful()` flag to per-node status from `run_results.json`: a model-layer-only failure shouldn't mark `staging` as failed too (they're genuinely independent outcomes even though `dbt build` runs both in one DAG-ordered invocation). Generic dbt test unique_ids needed a substring check rather than a suffix match to classify correctly (`not_null_stg_customers_customer_id` contains `stg_customers` but doesn't *start* with it — the test-type prefix comes first).
-
-### Two more infrastructure gaps, unrelated to the model layer itself, found while testing
-
-1. **`bootstrap_kind.sh`'s readiness check didn't handle the API server not listening yet.** Hit the Docker Desktop auto-restart quirk (documented earlier this session, still undiagnosed at the OS level) again mid-session — the container came back up between checks, and `kubectl wait --for=condition=Ready` doesn't retry a bare connection-refused, it expects the API server already reachable to poll conditions at all and fails immediately if it isn't. Added a `kubectl cluster-info` poll loop before the existing node-readiness wait.
-2. **A stale pre-fix `.venv` needed one more manual full rebuild.** `link-mode = "copy"` (the permanent fix from the `.pth` investigation) only affects *new* writes — it doesn't retroactively fix files an incremental `uv sync` decides are already "up to date" and skips rewriting. This session's long-lived local `.venv` still had one leftover hidden `.pth` file from before the fix landed. `rm -rf .venv && uv sync --all-packages` resolved it for good (confirmed: zero hidden files, zero duplicates) — a one-time transition cost for an existing venv, not a sign the fix doesn't hold for fresh ones. Also hit the `share 2`-directory variant of the same duplicate-writing pattern during the cleanup (a directory with 65,535 entries, not just files) — further confirming this was never .pth-specific, it's `uv`'s clone-mode write path in general on this machine.
-
-### Verified: SCD2 update, deletion, and idempotency, empirically not just by design
-
-Deliberately edited `_BASE_CUSTOMERS` (temporarily) to rename `"Alice"` → `"Alice Updated"` and drop `"Eve"` entirely, rebuilt the image, re-ran:
-
+**Resolution**: override the macro with dbt's own documented pattern:
+```sql
+{% macro generate_schema_name(custom_schema_name, node) -%}
+    {%- if custom_schema_name is none -%}
+        {{ target.schema }}
+    {%- else -%}
+        {{ custom_schema_name | trim }}
+    {%- endif -%}
+{%- endmacro %}
 ```
-customer_id |     name      | is_deleted |  _valid_to (old)   | _valid_to (new)
-1           | Alice         | false      | <run-2 timestamp>  | —
-1           | Alice Updated | false      | —                  | NULL (current)
-2,3,4       | (unchanged)   | false      | —                  | NULL (single version each)
-5           | Eve           | false      | <run-2 timestamp>  | —
-5           | Eve           | true       | —                  | NULL (current)
-```
+Only affects models that set an explicit `schema` config.
 
-Exactly the predicted shape: Alice's old version closed and a new current version opened (real SCD2 update); Eve's old version closed and a new current version opened with `is_deleted=true`, name carried forward from her last known state (deletion synthesized as an update, indistinguishable downstream from any other attribute change, per Roadmap.md). A third run with the same (still-modified) code produced the same 2 Iceberg snapshots and 7 rows — zero growth, confirming the idempotency reasoning above empirically. Reverted the temporary edit afterward. Separately, `dim_branch` (Type 1) showed the same discipline on a genuinely unchanged rerun: 1 Iceberg snapshot before and after, 3 rows both times — true idempotency (zero writes), not just "same end result."
+### A passing `dbt build`/`dbt test` doesn't confirm objects landed in the intended schema
 
----
+**Symptom**: a model builds successfully and all its tests pass, but querying the schema you expected it to be in shows nothing there.
 
-## The `.pth`/`UF_HIDDEN` bug, continued: "root-caused and actually fixed" (line 353 above) was wrong — it's not fully fixable from inside this repo
+**Cause**: dbt resolves `ref()`s and runs tests against wherever a model actually landed — it doesn't care whether that matches your intended namespace. If a `schema=` config is missing (e.g. set at the wrong level, or only in project-level YAML but not in the model's own `config()`), everything still builds and tests green, just in the wrong place.
 
-Hit again during Phase 8 (serve layer), badly enough to block verification for most of a session. The `link-mode = "copy"` fix from earlier (see "The `.pth` bug, root-caused and actually fixed" above) is real and still correct — it stops `uv` from setting `UF_HIDDEN` on **newly-written** `.pth` files. But that was never the whole story: already-good `.pth` files kept getting the flag re-applied **hours-to-seconds later, with zero change to their mtime** — proving something other than `uv`'s write path was involved, which the original section's title overclaimed.
+**Resolution**: after any change to schema/materialization config, explicitly check `show tables from <intended_schema>` (or equivalent) — don't rely on a green test suite alone to confirm object placement.
 
-**What this session established, in the order it was found:**
+### Fixing a writer doesn't retroactively fix already-materialized tables
 
-1. **Docker Desktop's VirtioFS file-sharing was a real, partial contributing factor.** `ps aux` on the live `com.docker.virtualization` process showed `--virtiofs /Users --virtiofs /Volumes --virtiofs /private --virtiofs /tmp --virtiofs /var/folders` — Docker Desktop's default config exports the *entire* `/Users` tree into its VM at all times, unscoped to what any container/kind config actually mounts (this project's own `kind-cluster.yaml` only needs `./data-lake`). VirtioFS has a documented history of real metadata-corruption bugs under heavy disk I/O ([docker/for-mac#7494](https://github.com/docker/for-mac/issues/7494), [docker/for-mac#6690](https://github.com/docker/for-mac/issues/6690)) — plausible given corruption clustered around `just smoketest`'s heavy Docker-build/kind-churn windows. **Fix applied**: narrowed Docker Desktop's File Sharing (Settings → Resources → File Sharing) from `/Users` down to just the absolute path of this project's `data-lake/` — confirmed live via the same `ps aux` check (Docker Desktop hot-restarts its VM backend on save, no manual restart needed) and via `settings-store.json`'s `FilesharingDirectories`. **Result**: real but incomplete — a subsequent run went from *all five* relevant `.pth`-adjacent files getting hidden simultaneously down to *one*, but didn't eliminate the bug. Worth keeping regardless of the remaining bug — `.venv` has no legitimate reason to be in Docker's shared surface at all, and `docker build`'s context transfer (this project's actual Docker use) goes over the API socket, not a bind mount, so it was never needed.
-2. **Ruled out uv/Docker entirely as the remaining cause**: cleared the flag on the one file still getting hit (`_editable_impl_raw_to_clean.pth`), then did nothing but **read its contents in a loop** — no writes, no `uv`, no Docker activity at all. It came back hidden. A pure read/access pattern reproducing the bug rules out every write-path theory.
-3. **Leading hypothesis, not confirmed**: macOS's built-in **XProtect Remediator** (on-access malware scanning, not just periodic — see [eclecticlight.co, "macOS now scans for malware whenever it gets a chance"](https://eclecticlight.co/2022/08/30/macos-now-scans-for-malware-whenever-it-gets-a-chance/)) has a documented history of false positives specifically on developer/build-tool files ([eclecticlight.co, "How to deal with XProtect Remediator (XPR) problems"](https://eclecticlight.co/2024/02/09/how-to-deal-with-xprotect-remediator-xpr-problems/)). `uv`'s editable-install `.pth` files (`_editable_impl_*`) are structurally close to the exact attack pattern CPython's own `UF_HIDDEN`-skip defense exists to police (a file that injects a path/executes code at interpreter startup) — plausible enough to explain a read-triggered, macOS-only, `.pth`-specific false positive. **Not proven**: confirming which process actually calls `chflags` requires `fs_usage`/`dtrace`, which needs root; no passwordless `sudo` is configured in this environment, so live process-level capture was never completed. Ruled out separately: iCloud Drive's "Desktop & Documents Folders" sync (`readlink ~/Documents` returns nothing — it's a real local directory, not redirected into `~/Library/Mobile Documents/`, so this repo was never inside iCloud's sync scope to begin with).
-4. **Explicitly rejected as a fix**: switching the host `.venv`'s workspace members to non-editable installs (`uv sync --no-editable`) would remove the `.pth` files entirely, sidestepping the bug — but editable installs are the *correct*, standard pattern for active local development across the whole Python ecosystem (pip, uv, poetry all treat `-e`/editable as the dev-mode default; `--no-editable` is the *production/deployment* pattern, which is why `uv`'s own official Docker guidance recommends it only for a final production image stage, not local dev). Making this switch would trade away correct local-dev behavior (live source-reload) purely to avoid a macOS security tool's false positive — a workaround wearing a fix's clothes, not applied.
-5. **No supported exclusion mechanism exists.** Unlike third-party EDR/AV products, macOS doesn't expose a user-facing setting to exclude a path from XProtect on a normal (non-MDM-managed) Mac. The only channel is reporting it to Apple as a false positive, which doesn't help today.
+**Symptom**: after fixing a bug in code that writes a table's schema (e.g. a timestamp column written without timezone info), newly-written data is correct, but querying the table still shows the old, wrong column type.
 
-**What was actually implemented, given the real cause lives outside this repo's control**: retry logic scoped to the exact known failure signature (`ModuleNotFoundError` in the subprocess's output), at every site a fresh Python process reads the host `.venv` — `orchestration::start`'s `dagster dev` launch, `orchestration::verify-pipeline`'s `dagster job launch`, `orchestration::test`/`processing::test`'s `uv run pytest`, and `register-catalog.sh`'s `uv run python -m polaris_client.bootstrap`. This is a legitimate retry, not a workaround: every one of these failures happens at **code-location import time**, before any run is submitted, any test executes, or any bootstrap logic runs — so nothing is ever partially applied on failure, and a retry is exactly as safe as retrying a transient network blip. Deliberately scoped to the specific signature rather than "retry on any failure" — a genuinely different bug (real syntax error, real logic bug) still fails on the first attempt instead of being masked behind three wasted, expensive attempts (each involving a real Kubernetes/Docker round trip).
+**Cause**: an incremental `MERGE` (or any incremental/append strategy) merges *row data* into an existing table — it does not retroactively change that table's already-established column types. The table was created once, earlier, with the old (wrong) schema, and nothing about fixing the writer touches the table's existing DDL.
+
+**Resolution**: `DROP TABLE` and let it get recreated from scratch by the now-fixed writer. Fixing the writer's *logic* being correct doesn't mean the *deployed table* is correct — these are two different things that are easy to conflate, especially since the code now "looks right."
 
 ---
 
-**Verified**: all read/write operations succeeded against the live catalog — table created, `append()` (2 rows) confirmed via `table.scan().to_polars()`, `overwrite()` (3 different rows) confirmed to have fully replaced rather than appended (read-back showed exactly the 3 new rows, none of the original 2), 3 snapshots total (create + append + overwrite) confirming each write is its own atomic commit. Ran from the host with port-forwards to both Polaris and MinIO (not in-cluster) — acceptable for this proof since the actual protocol interactions (REST catalog calls, S3 API calls) are identical regardless of which hostnames resolve them; the real Dagster op will use in-cluster service DNS instead, already a solved translation (same pattern as `TRINO_HOST`/`POSTGRES_HOST` env vars elsewhere in this project).
+## PyIceberg
+
+### Credential vending fails against an STS-less catalog (MinIO or similar)
+
+**Symptom**: `IllegalArgumentException: Credential vending was requested for table ..., but no credentials are available`.
+
+**Cause**: PyIceberg's REST catalog client defaults to sending `X-Iceberg-Access-Delegation: vended-credentials`, which the catalog can't satisfy if it's backed by an S3-compatible store with no real STS (see the Polaris/MinIO entry above for why).
+
+**Resolution**: disable the header and fall back to static credentials: `"header.X-Iceberg-Access-Delegation": ""` in the catalog config, with `s3.access-key-id`/`s3.secret-access-key` properties set directly.
+
+### Polars `.to_arrow()` always produces nullable fields — declaring `required=True` breaks every write
+
+**Symptom**: schema-mismatch errors writing a Polars DataFrame (converted via `.to_arrow()`) into an Iceberg table whose fields were declared `required=True`/non-nullable.
+
+**Cause**: Polars' Arrow conversion always produces nullable columns, regardless of the DataFrame's own dtype nullability.
+
+**Resolution**: declare Iceberg table fields as `required=False` when writing from Polars. If a genuine NOT NULL constraint is needed, enforce it as an application-level data-quality check *before* the write, not as the Iceberg field's own `required` flag — these are two different concerns (storage-level constraint vs. pipeline-level validation), and only one of them works cleanly with Polars' output.
+
+### `TimestampType` (naive) and `TimestamptzType` (aware) are strictly incompatible, not just a formatting difference
+
+**Symptom**: schema-mismatch error writing a tz-aware Python `datetime` (e.g. from `datetime.now(timezone.utc)`) into a table whose Iceberg schema declares a naive `TimestampType`.
+
+**Cause**: Polars' `.to_arrow()` represents a tz-aware `datetime` as a tz-aware Arrow timestamp, and PyIceberg's schema validation treats `TimestampType` vs `TimestamptzType` as genuinely different, incompatible types — not something it'll coerce.
+
+**Resolution**: if every timestamp your pipeline produces is tz-aware (the common and generally correct case), map to `TimestamptzType` unconditionally rather than trying to support both.
+
+### A literal `datetime` value needs the stdlib, not a Polars expression function
+
+**Symptom**: a column that should be a timestamp instead serializes as a meaningless `fixed_size_binary(8)` field.
+
+**Cause**: `pl.datetime(2026, 1, 1)` is a **Polars expression constructor**, meant for use inside `select()`/`with_columns()` — using it as a plain literal value in a Python list (not inside a Polars expression context) doesn't do what it looks like it does.
+
+**Resolution**: use `datetime.datetime(...)` from the standard library for actual literal values; reserve `pl.datetime()` for expression contexts.
+
+---
+
+## Dagster + Kubernetes
+
+### `dagster asset materialize` never touches the configured run launcher
+
+**Symptom**: a `K8sRunLauncher` is configured, but `dagster asset materialize --select "*"` never creates any pods — `kubectl get pods` stays empty even though the command reports success.
+
+**Cause**: `dagster asset materialize` executes every step in-process, locally, on whatever machine runs the command. It's a dev convenience command, not a real "submit a run" path.
+
+**Resolution**: use `dagster job launch -j '__ASSET_JOB' -m <module>` (or the webserver's "Materialize" button, which triggers the same GraphQL mutation) — this goes through `instance.submit_run`, which respects the configured launcher.
+
+### A submitted run sits in `QUEUED` forever without the daemon running
+
+**Symptom**: `dagster job launch` reports success, but the run never progresses past `QUEUED` — no pod, no further events beyond `PIPELINE_ENQUEUED`.
+
+**Cause**: Dagster's default `QueuedRunCoordinator` hands runs to a queue; only the **daemon** process (one of several `dagster dev` starts alongside the webserver, or a standalone `dagster-daemon run`) actually polls that queue and calls `run_launcher.launch_run()`. Launching from a bare one-shot CLI invocation with no daemon running anywhere leaves nothing to ever pick the run up.
+
+**Resolution**: make sure a daemon process is actually running (via `dagster dev`, or `dagster-daemon run` in production) before submitting runs expecting them to execute.
+
+### `K8sRunLauncher` needs Postgres-backed (or equivalent shared) instance storage
+
+**Symptom**: a run launched via `K8sRunLauncher` creates a pod, but its status/events never show up wherever the submitting process is looking.
+
+**Cause**: the whole point of `K8sRunLauncher` is that the launched run executes in a **different process, in a different location** than whatever submitted it. Dagster's default instance storage is a local SQLite file — invisible from inside the launched pod.
+
+**Resolution**: point `storage:` in `dagster.yaml` at a shared Postgres instance reachable from both the submitting process and the launched pod. `dagster-postgres` auto-creates/migrates its own schema on first connection.
+
+### `K8sRunLauncher`'s launched pod and the local submitting process need different hostnames for the same shared service
+
+If the submitting process runs on a host machine (reaching Postgres via `localhost`/a NodePort) and the launched pod runs in-cluster (reaching the same Postgres via its in-cluster DNS name), a single static `dagster.yaml` can't serve both. Use a `dagster.yaml` template with `hostname: {env: POSTGRES_HOST}`, then provide two different values for that one env var: exported directly in the shell for the local process, and injected via `K8sRunLauncher`'s `env_vars` config (which supports bare `KEY` passthrough too, for values identical in both places) for the launched pod, mounted via `instance_config_map`. `instance_config_map` is a *required* config field, despite reading as though it might be optional — omitting it leaves a launched pod with no instance config at all.
+
+### `K8sRunLauncher.service_account_name` is required by the constructor despite the config schema marking it optional
+
+**Symptom**: `TypeError: K8sRunLauncher.__init__() missing 1 required positional argument: 'service_account_name'` at instance-load time, even though `is_required=False` in the actual config schema.
+
+**Resolution**: always set it explicitly in `dagster.yaml`'s `run_launcher.config` (e.g. `service_account_name: default`) — a real mismatch between the declared config schema and the constructor in at least this `dagster-k8s` version, not a config mistake.
+
+### `dagster-dbt`'s manifest must be pre-built into any image that isn't run via `dagster dev`
+
+**Symptom**: a launched pod fails because `target/manifest.json` doesn't exist, even though the same dbt project works fine locally.
+
+**Cause**: `DbtProject.prepare_if_dev()` (which regenerates the manifest) is a **documented no-op everywhere except under the `dagster dev` CLI specifically** — a launched pod never runs via that CLI.
+
+**Resolution**: bake the manifest into the image at build time — `RUN dbt parse --profiles-dir <dir>` in the Dockerfile. `dbt parse` doesn't need a live warehouse connection, only a syntactically valid `profiles.yml`, so it's safe during image build.
+
+### `DbtProject`'s `profiles_dir` doesn't inherit from `DbtCliResource`'s
+
+**Symptom**: `prepare_if_dev()`'s manifest regeneration fails (or uses the wrong profile) even though `DbtCliResource` was configured with the correct `profiles_dir`.
+
+**Cause**: if your `profiles.yml` lives somewhere other than the dbt project root, `DbtProject(project_dir=...)` defaults its *own* `profiles_dir` to `project_dir` unless told otherwise — it does not share whatever was passed to a separately-constructed `DbtCliResource`.
+
+**Resolution**: pass the same explicit `profiles_dir=` to both `DbtProject` and `DbtCliResource`.
+
+### dagster-dbt doesn't automatically connect a dbt source to the upstream asset that populates it
+
+**Symptom**: a dbt source and the (non-dbt) asset that actually writes that data show up as two disconnected nodes in the asset graph, rather than one connected lineage chain — selecting the dbt asset doesn't pull in its real upstream.
+
+**Cause**: by default, `dagster-dbt` assigns a dbt source its own auto-generated `AssetKey`, unrelated to whatever key your own upstream `@asset` happens to use.
+
+**Resolution**: subclass `DagsterDbtTranslator` and override `get_asset_key()` to return the exact same `AssetKey` your upstream asset already produces, when `dbt_resource_props` describes that specific source. Confirm via `defs.resolve_asset_graph()` that the result is one connected chain, not two.
+
+### One `@dbt_assets` function per independent unit of concurrency, not one for the whole project
+
+If you're using per-asset concurrency pools (`pool="some-key"`) to serialize related work while letting unrelated work run in parallel: a single `@dbt_assets` function running `dbt build` across an entire multi-feed/multi-domain project has to sit under **one** pool for the whole function. The moment a second, unrelated feed/domain gets its own dbt models in the same function, it gets wrongly serialized against the first. Use a factory function producing one `@dbt_assets`-decorated function per independent unit (scoped via `select=f"tag:{unit}"`, with its own `pool=f"...:{unit}"`) instead of one function for everything.
+
+### Use Dagster's own concurrency pools instead of a hand-rolled lock table
+
+If cross-run concurrency safety is a concern (e.g. two overlapping runs of the same pipeline racing on a shared resource): Dagster already has **concurrency pools** — `pool="some-key"` on any asset, with a per-pool slot limit, backed by the instance's own storage, durable across daemon restarts. No need to build a custom Postgres-backed lock/queue table on top of an audit-log table. One caveat: pool slots aren't automatically released if a run crashes or is cancelled unless `run_monitoring.free_slots_after_run_end_seconds` is set — with a limit of 1, a single stale claim otherwise blocks that pool forever.
+
+### A global `dbt` on `PATH` silently shadows the project's venv `dbt` inside Dagster's subprocess calls
+
+**Symptom**: `Could not find adapter type <adapter>!` from a Dagster-launched dbt invocation, even though `dbt debug` works perfectly when run directly in the same shell.
+
+**Cause**: `dagster_dbt`'s `DbtCliResource` invokes `dbt` by resolving it via `$PATH` in whatever process launched Dagster — if that shell never had the project's `.venv/bin` prepended to `PATH`, `which dbt` can resolve to an unrelated global install missing the needed adapter.
+
+**Resolution**: explicitly prepend `.venv/bin` to `$PATH` before running any Dagster CLI command locally — don't assume `uv run`-style invocation alone is enough once Dagster itself starts shelling out to subprocesses. More generally: if something "works" unexpectedly (or fails unexpectedly) despite looking correct in the venv, check the actual resolved interpreter/executable path, don't just re-read the config.
+
+### A long-running `dagster dev` process holds a stale in-memory copy of `dagster.yaml`
+
+**Symptom**: `dagster.yaml` is edited (e.g. adding env vars to `run_launcher.config`) and confirmed correct on disk, but a freshly-launched pod still doesn't have the new config.
+
+**Cause**: the *submission* step (`dagster job launch`) does re-read current code each time, but the actual `launch_run()` call is made by the **daemon**, a separate, already-running process that loaded its instance config once at its own startup. Editing `dagster.yaml` while `dagster dev` is running does not hot-reload the run launcher's config.
+
+**Resolution**: restart the whole `dagster dev` process after any `dagster.yaml` change that affects the run launcher. Verify by checking the actual launched pod's spec (`kubectl get job ... -o jsonpath='{.spec.template.spec.containers[0].env}'`), not just by re-reading the config file and assuming it applied.
+
+### `dagster dev`'s child processes (daemon, webserver) aren't killed by a `pkill` matching only the wrapper's command line
+
+**Symptom**: after killing `dagster dev`, orphaned `dagster._daemon`/`dagster_webserver` processes remain running — reparented to pid 1, still connected to shared Postgres, still writing heartbeats. On a subsequent fresh start, the new run's legitimate daemon fights the orphaned one(s) over heartbeat ownership (visible as a churn of different daemon IDs), and launched runs may never get their Kubernetes Job created at all.
+
+**Cause**: `dagster dev` spawns `dagster._daemon run ...` and `dagster_webserver ...` as **separate child processes with entirely different command lines** — neither contains the substring "dagster dev". `dagster dev`'s graceful-shutdown handshake (which normally cascades a clean stop to its children) only runs if the wrapper process gets a chance to react to `SIGTERM` — a `SIGKILL`, or anything that races ahead of the handshake, orphans the children instead of stopping them.
+
+**Resolution**: match on something present in *every* process in the tree, not just the wrapper's own invocation — e.g. a path substring that appears in every child's command line via its own arguments (such as an `--instance-ref` blob referencing a shared home directory path). Check for already-orphaned processes from prior sessions (`ps aux | grep <path-substring>`) before assuming a clean slate.
+
+### `kubectl get jobs -o jsonpath='{.items[-1]...}'` crashes on an empty list
+
+**Symptom**: `array index out of bounds` immediately after submitting a run, when polling for the newly-created Kubernetes Job.
+
+**Cause**: negative jsonpath indexing into `.items` throws instead of returning nothing when the list is empty — exactly the state right after a run submission returns (the daemon creates the actual Job a moment later, asynchronously).
+
+**Resolution**: use a plain space-separated before/after set-difference instead — snapshot `.items[*].metadata.name` before submitting, poll again after, and diff the two sets — rather than indexing into a list that might still be empty.
+
+### `pkill -f` (SIGTERM) doesn't reliably kill a process once its backing resources are already gone
+
+**Symptom**: a `pkill` call reports success (exit code 0), but the target process is still alive 10+ seconds later, unresponsive to further signals.
+
+**Cause**: plausibly a process stuck in a blocking call (a DB reconnect attempt, a Kubernetes API retry against an already-torn-down cluster) that never reaches its Python signal handler.
+
+**Resolution**: send `SIGTERM`, poll for up to some bounded time (e.g. 10s), escalate to `SIGKILL` only if still alive — don't assume a `pkill` exit code of 0 means the process actually died. A responsive process still exits in under a second either way, so this doesn't slow down the common case.
+
+---
+
+## dbt modeling patterns
+
+### Avoiding a circular `ref()` in a deletion-detection intermediate model
+
+If building a Type-2 SCD pattern where an intermediate model needs to detect "a business key that used to exist no longer does" (to synthesize a deletion): comparing against the SCD table's own current rows is tempting but creates a circular `ref()` if that intermediate model sits upstream of the SCD table in the DAG (which it will, if the SCD table's snapshot logic depends on the intermediate model's `is_deleted` flag). Resolve by comparing two genuinely *upstream* sources instead — e.g. a cumulative staging table (every key ever seen) against a fresh, non-cumulative full-load source (this run's true current state) — a key present in the former but absent from the latter is a deletion. This is also naturally idempotent without extra logic: a key already marked deleted keeps getting resynthesized identically every run, and if the downstream SCD mechanism gates new versions on an attribute-hash actually changing, an unchanged resynthesis produces zero new rows on its own.
+
+### Iceberg tables require microsecond timestamp precision — dbt's default `current_timestamp()` renders milliseconds
+
+If using dbt snapshots (or any model) against Iceberg tables: dbt's default `current_timestamp` macro renders `TIMESTAMP(3) WITH TIME ZONE` (millisecond precision). Iceberg's table spec only supports microsecond precision, so writes to `TIMESTAMP(3)` columns fail against Iceberg tables. Override `trino__current_timestamp()` to render `current_timestamp(6)` before any snapshot/timestamp-writing model runs against Iceberg.
+
+---
+
+## Python tooling on macOS: `uv`, editable installs, and iCloud sync
+
+### `uv`'s default macOS link mode can set the `UF_HIDDEN` flag on newly-written `.pth` files
+
+**Symptom**: `ModuleNotFoundError` for a package that's genuinely installed (`uv pip show` succeeds) — `sys.path` after `uv run python -c "import sys; print(sys.path)"` is missing the paths its `.pth` files should have injected. Listing `site-packages` may show numbered duplicate `.pth` files (`foo.pth`, ` 2.pth`, ` 3.pth`, identical content/mtime) — not limited to editable workspace installs, regular third-party packages can show the same pattern.
+
+**Root cause**: Python 3.13's `site.py` (`addpackage()`) checks the macOS `UF_HIDDEN` BSD file flag and **silently skips** any `.pth` file with it set — a security hardening added specifically to defend against hidden malicious `.pth` files ([python/cpython#113659](https://github.com/python/cpython/issues/113659); `.pth` files support an `import`-prefixed line that gets `exec()`'d directly at interpreter startup, a real code-injection vector if a malicious one is hidden from casual inspection). On at least some machines, `uv`'s default macOS `link-mode` (`clone`, using APFS `clonefile()`) sets this flag on newly-written `.pth` files as a side effect. Confirmed by testing: a from-scratch `.venv` rebuild with `UV_LINK_MODE=copy` produced zero hidden files and zero duplicates; the default `clone` mode reproduced the corruption reliably.
+
+**Fix**: set `link-mode = "copy"` in `[tool.uv]` (`pyproject.toml`). Confirmed clean across multiple from-scratch `.venv` rebuilds. Diagnostic command, if you suspect this: `ls -lO .venv/lib/python*/site-packages/*.pth` — a hidden file shows the word `hidden` in the flags column (distinct from a dot-prefixed filename, which is a completely different, unrelated concept).
+
+**Caveat**: this only prevents the flag being set on *new* writes — it doesn't retroactively fix a `.venv` that already has hidden files sitting in it from before the config change (an incremental `uv sync` may decide those files are already "up to date" and skip rewriting them). A full `rm -rf .venv && uv sync` is needed once, for any pre-existing venv.
+
+### The same `UF_HIDDEN`-on-`.pth`-files symptom can recur from a completely different cause: iCloud Drive sync
+
+**Symptom**: identical to the above (`ModuleNotFoundError`, `.pth` file has `UF_HIDDEN` set) — but recurring intermittently on already-correctly-written `.pth` files, with the file's modification time completely unchanged (proving nothing rewrote it — only the flag changed), on a roughly-cyclical schedule rather than tied to any `uv` write.
+
+**Root cause, if your project directory lives inside `~/Documents` (or `~/Desktop`) with iCloud Drive's "Desktop & Documents Folders" sync enabled**: this is a known, documented `uv` bug — [astral-sh/uv#9902](https://github.com/astral-sh/uv/issues/9902). macOS presents an iCloud-synced path as a normal local directory (via a File Provider extension on modern macOS — **not** a plain symlink, so `readlink` won't reveal it), but it's actually backed by `~/Library/Mobile Documents/com~apple~CloudDocs/...`, and iCloud's background sync/eviction cycle touches files in that tree on its own independent schedule. `uv`'s editable-install metadata assumptions break when the underlying file gets touched by something outside `uv`'s own knowledge. Multiple independent reporters confirm the exact same shape: works repeatedly, then breaks, on a roughly 10-second cycle. Confirmed for this project specifically by a controlled test: clearing the flag, then doing nothing but *reading* the file's contents in a loop (zero writes, zero `uv`/Docker activity) reproduced the flag being reapplied — ruling out every write-path theory.
+
+**Permanent fix**: move the project directory outside of iCloud's synced scope entirely (a plain `mv`, no symlink) — confirmed by multiple independent reports, and consistent with this project's own investigation, to resolve it completely. There's no supported way to exclude a single subfolder from Desktop & Documents Folders sync while keeping the rest of the tree synced.
+
+**If moving isn't immediately practical** (e.g. other tools/sessions are anchored to the current path): two things measurably help without fixing the underlying cause —
+- **Enabling macOS Low Power Mode** (believed to pause/throttle background sync activity) produced a fully clean run in direct testing, with zero corruption anywhere in a full rebuild-and-test cycle, after failing repeatedly beforehand.
+- **A retry wrapped around any fresh-Python-process invocation**, scoped specifically to this failure signature (checking subprocess output for `ModuleNotFoundError` before deciding to retry, so an unrelated real bug still fails immediately rather than being retried pointlessly), with the retry gap tuned to iCloud's own ~10-second cycle rather than a sub-second gap (which just retries inside the same bad window). This is a legitimate retry, not a fragile workaround, *if and only if* the retried operation fails at import/module-load time, before any real work starts — nothing partially applied, so a retry is as safe as retrying a transient network blip.
+
+**A tempting non-fix, explicitly rejected**: switching affected packages to non-editable installs (`uv sync --no-editable`) removes the `.pth` files entirely, sidestepping the bug — but editable installs are the *correct*, standard pattern for active local development across the whole Python ecosystem (pip, uv, poetry all default to editable for dev-mode installs; `--no-editable` is specifically the production/deployment pattern). Trading away correct local-dev behavior (live source-reload on save) to dodge a sync-tool interaction is worse than living with the interim mitigations above.
+
+**Something that looked related but wasn't**: Docker Desktop's default macOS file-sharing config (VirtioFS) exports a user's entire home directory into its VM at all times, and VirtioFS has its own documented history of real metadata-corruption bugs under heavy disk I/O ([docker/for-mac#7494](https://github.com/docker/for-mac/issues/7494)). Narrowing Docker Desktop's File Sharing scope to exclude the project directory measurably reduced (but didn't eliminate) the corruption in testing — a real, secondary contributor in a Docker-heavy workflow, worth knowing about, but not the actual root cause if the iCloud sync condition above also applies.
+
+### `uv sync` at a workspace root doesn't install member dependencies by default
+
+**Symptom**: `uv run <something>` appears to work, but fails deeper in with a `ModuleNotFoundError` for a dependency that's clearly listed in a workspace member's `pyproject.toml` — or worse, silently falls back to an unrelated **global** install of the same tool name, masking the problem entirely.
+
+**Cause**: a pure workspace-container root `pyproject.toml` (`package = false`, no dependencies of its own) means plain `uv sync` only syncs the root project — workspace members' own dependencies never get installed.
+
+**Resolution**: `uv sync --all-packages` to install every workspace member. If something "works" unexpectedly despite this, check the actual resolved interpreter/executable path (`ps aux`, `which`) — a global install on the machine can silently paper over a broken project venv rather than erroring.
+
+### `uv`'s package cache can produce genuinely corrupted installs, independent of the `.pth`/`UF_HIDDEN` issue
+
+**Symptom**: `uv sync` reports success, `uv pip show <package>` succeeds, but `import <package>` fails with `ModuleNotFoundError` anyway. Inspecting the package's `dist-info` directory shows no `RECORD` file and no actual package directory alongside it.
+
+**Resolution**: `uv cache clean` **and** delete `.venv` entirely, then resync from scratch. Deleting just `.venv` without clearing the cache often looks like it fixed things, but the corruption can recur with a different package shortly after — the hardlinked package cache (`~/.cache/uv`), not the venv itself, is where this class of corruption actually lives.
+
+**Related trap**: running two `uv cache clean`/`uv sync` fix attempts concurrently (e.g. one backgrounded and forgotten about, then a second started) can deadlock both, contending for the same cache lock file — `uv cache clean` hanging indefinitely (not just slowly) is a sign of this. Check `ps aux` for an already-running fix attempt before starting another; `kill -9` all stray `uv` processes and retry with exactly one attempt at a time.
+
+---
+
+## Kubernetes (general)
+
+### A `PersistentVolumeClaim` doesn't work for "many pods across many namespaces need the same directory"
+
+A PVC binds 1:1 to exactly one PV, and PVCs are themselves namespace-scoped — one created in namespace A can't be mounted by a pod in namespace B. For genuinely shared storage across namespaces on a single-node cluster, mount a `hostPath` directly in each pod spec that needs it instead of trying to force a PVC to do cross-namespace sharing. A real single-consumer case (e.g. a database's own data directory) is still fine as a normal PVC via `volumeClaimTemplates` — this only applies to the shared-across-many-consumers case.
+
+### Host-side tools need a NodePort + matching cluster-level port mapping, not just a Service
+
+A plain `ClusterIP` Service is only reachable from inside the cluster. To keep a host tool (a local script, a database client running directly on the machine) able to reach an in-cluster service by `localhost:<port>`, the Service needs `type: NodePort` with a fixed `nodePort`, and (for `kind` specifically) the cluster config needs a matching `extraPortMappings` entry. This has to be set at cluster-creation time for `kind` — changing it later means recreating the cluster.
+
+---
+
+## Postgres / SQLAlchemy
+
+### SQLAlchemy's bind-parameter parser mishandles a `::type` cast glued directly onto a named parameter
+
+**Symptom**: `psycopg.errors.SyntaxError` from a raw SQL string containing `:param_name::jsonb` (a named bind parameter immediately followed by a Postgres type cast).
+
+**Cause**: SQLAlchemy's bind-parameter regex gets confused by the second colon immediately adjacent to the parameter name, and passes something malformed straight to the driver.
+
+**Resolution**: use `cast(:param_name as jsonb)` instead of the `::type` shorthand glued to the parameter — unambiguous, no adjacency issue.
+
+---
+
+## Streamlit
+
+### `st.dataframe` renders via canvas, not the DOM
+
+Two consequences worth knowing if you're building anything on top of `st.dataframe`:
+1. **UUID columns from a database driver come back as Python `uuid.UUID` objects**, which the canvas-based grid renderer (glide-data-grid) serializes as unreadable byte-index dicts instead of readable text. Stringify UUID (and similarly awkward-typed) columns before handing the DataFrame to `st.dataframe`.
+2. **Browser-automation scripts that scrape `page.inner_text()` won't see grid contents at all** — the rendered cells aren't in the DOM. Verify grid content by querying the underlying data source directly in a test, not by scraping the rendered page.
