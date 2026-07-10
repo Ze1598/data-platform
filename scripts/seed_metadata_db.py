@@ -181,7 +181,7 @@ def main() -> None:
         # joins to it. See Roadmap.md "Model Layer: SCD Design".
         seed_model_feed(
             cur,
-            code="dim_customer",
+            code="dim_customer_snapshot",
             model_type="dimension",
             staging_source_data_feed_code="customers",
             business_key_columns=["customer_id"],

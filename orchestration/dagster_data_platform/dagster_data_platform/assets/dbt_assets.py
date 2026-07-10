@@ -23,20 +23,27 @@ dbt_project.prepare_if_dev()
 # a new feed's staging model is added.
 _CLEAN_SOURCE_TABLES = {"customers", "sales"}
 
-# `dbt build --select tag:<feed>` builds staging AND model-layer objects
-# together in one DAG-ordered invocation (Phase 7 added dim_*/fct_*/
-# snapshots tagged the same way as their feed) -- no separate dbt
+# `dbt build --select tag:<feed>` builds staging, model-layer, AND serve
+# objects together in one DAG-ordered invocation (Phase 7 added dim_*/
+# fct_*/snapshots tagged the same way as their feed; Phase 8's generated
+# _latest/_historical views inherit the same tag from model_feed's source
+# data_feed, see scripts/generate_serve_views.py) -- no separate dbt
 # invocation needed, but data_model_run tracks them as distinct stages, so
 # results get split by which of these a node's name matches. Generic test
 # unique_ids embed their target's name (e.g. "not_null_stg_customers_id"),
-# so a substring check on the whole unique_id (not just a suffix match on
-# the node name) classifies tests correctly too.
+# so a substring/suffix check on the whole unique_id (not just the node
+# name itself) classifies tests correctly too.
 _STAGING_MODEL_NAMES = {f"stg_{table}" for table in _CLEAN_SOURCE_TABLES}
-_DATA_MODEL_STAGES_BUILT = ("staging", "model")
+_SERVE_MODEL_SUFFIXES = ("_latest", "_historical")
+_DATA_MODEL_STAGES_BUILT = ("staging", "model", "serve")
 
 
 def _stage_for_dbt_node(unique_id: str) -> str:
-    return "staging" if any(name in unique_id for name in _STAGING_MODEL_NAMES) else "model"
+    if any(name in unique_id for name in _STAGING_MODEL_NAMES):
+        return "staging"
+    if any(suffix in unique_id for suffix in _SERVE_MODEL_SUFFIXES):
+        return "serve"
+    return "model"
 
 
 class DataPlatformDbtTranslator(DagsterDbtTranslator):

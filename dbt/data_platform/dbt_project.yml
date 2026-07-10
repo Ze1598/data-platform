@@ -24,3 +24,9 @@ models:
       # cheap to recompute and always reflect current staging+clean state.
       +materialized: incremental
       +incremental_strategy: merge
+    serve:
+      # `_latest`/`_historical` views, generated from model_feed by
+      # scripts/generate_serve_views.py (Roadmap.md "Serve layer
+      # approach") -- always `view`, never persisted, so they stay cheap
+      # and always reflect the current model layer.
+      +materialized: view

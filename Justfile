@@ -27,13 +27,18 @@ default:
 # Learnings.md for the full investigation -- Python 3.13's site.py skips
 # hidden .pth files, silently breaking editable-install imports). But
 # already-written, previously-good .pth files have been observed getting
-# re-hidden hours later with no rewrite (same mtime) -- something beyond
-# uv's write path is involved, not fully root-caused. Cheap, harmless,
-# idempotent to sweep every time rather than wait to hit it mid-run.
+# re-hidden minutes later with no rewrite (same mtime) -- something beyond
+# uv's write path is involved, not fully root-caused. `UF_HIDDEN`/`chflags`
+# is macOS/BSD-specific (confirmed, not just untested elsewhere) -- gated
+# on `uname` so this is a no-op on Linux (CI runners, other dev machines),
+# not just harmlessly-erroring per-file. Single source of truth: every
+# other sweep site in this repo (orchestration/processing module.just,
+# register-catalog.sh) calls `just _ensure-venv-visible` rather than
+# duplicating this command, so the OS gate only needs to live here.
 _ensure-venv-visible:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -d .venv/lib ]; then
+    if [ "$(uname)" = "Darwin" ] && [ -d .venv/lib ]; then
         find .venv/lib -name "*.pth" -flags +hidden -exec chflags nohidden {} \; 2>/dev/null || true
     fi
 

@@ -12,6 +12,7 @@ start:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
+    just orchestration::generate-serve-views
     just orchestration::build-image
     kubectl create configmap dagster-instance \
         --from-file=dagster.yaml=dagster_home/dagster.yaml \
@@ -20,12 +21,49 @@ start:
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
     cd dagster_data_platform
-    nohup dagster dev -m dagster_data_platform.definitions \
-        > "$DAGSTER_HOME/dagster-dev.log" 2>&1 &
-    disown
 
-    echo "Waiting for the webserver to come up on localhost:3000..."
-    until curl -s -o /dev/null http://localhost:3000; do sleep 2; done
+    # Sweep again immediately before this specific subprocess spawn, not
+    # just once at the top of the recipe -- build-image + the configmap
+    # apply above are enough real elapsed time for the files to get
+    # re-hidden again before dagster dev's own fresh Python startup hits
+    # them (confirmed recurring on a seconds-to-low-minutes cadence, not
+    # tied to any uv write -- see Learnings.md).
+    #
+    # Retried on the known signature, same reasoning as verify-pipeline: a
+    # dagster dev process that fails to import its own code location dies
+    # (or never brings up the webserver) before doing anything else, so
+    # nothing is partially started -- safe to kill and relaunch. The
+    # webserver-wait loop is bounded now (it used to be unbounded, which
+    # would have hung forever against a crashed process instead of
+    # detecting and retrying).
+    just _ensure-venv-visible
+    dagster_up=false
+    for attempt in 1 2 3; do
+        nohup dagster dev -m dagster_data_platform.definitions \
+            > "$DAGSTER_HOME/dagster-dev.log" 2>&1 &
+        disown
+
+        echo "Waiting for the webserver to come up on localhost:3000..."
+        for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:3000 && { dagster_up=true; break; }
+            sleep 2
+        done
+        [ "$dagster_up" = true ] && break
+
+        if ! grep -q "ModuleNotFoundError" "$DAGSTER_HOME/dagster-dev.log" 2>/dev/null; then
+            echo "dagster dev didn't come up after 60s, and not the known .pth/UF_HIDDEN signature -- see $DAGSTER_HOME/dagster-dev.log" >&2
+            tail -30 "$DAGSTER_HOME/dagster-dev.log" >&2
+            exit 1
+        fi
+        echo ">>> dagster dev hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- killing, re-sweeping, and retrying" >&2
+        just orchestration::kill
+        just _ensure-venv-visible
+    done
+    if [ "$dagster_up" != true ]; then
+        echo ">>> dagster dev failed 3 times with the .pth/UF_HIDDEN signature -- giving up" >&2
+        tail -30 "$DAGSTER_HOME/dagster-dev.log" >&2
+        exit 1
+    fi
 
     # The webserver responding doesn't mean dagster_db's schema is fully
     # created yet, let alone that the daemon (a separate thread pool within
@@ -120,6 +158,25 @@ build-image:
     docker build -f Dockerfile -t data-platform-orchestration:latest {{justfile_directory()}}
     kind load docker-image data-platform-orchestration:latest --name data-platform
 
+# Regenerate the serve layer's `_latest`/`_historical` dbt view models from
+# model_feed (scripts/generate_serve_views.py) -- must run before
+# build-image/dagster dev, not as a Dagster op: dagster-dbt's @dbt_assets
+# reads target/manifest.json at Python-import time, before any run
+# executes, so these files have to exist on disk before `dbt parse` builds
+# that manifest (Learnings.md, Phase 5 "manifest must be pre-built into the
+# image"). Requires metadata already seeded (model_feed populated) -- true
+# by the time `start` reaches this step, since metadata::start runs first
+# in the root Justfile's sequencing. Also runnable standalone after a
+# model_feed change, without a full image rebuild (same pattern as
+# `just metadata::seed`). Own .pth sweep, not just inherited from `start`
+# -- reachable standalone (`just orchestration::generate-serve-views`),
+# same reasoning as the sweep in `test` below.
+generate-serve-views:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_serve_views.py
+
 # Launch the full pipeline via the real K8sRunLauncher (not `dagster asset
 # materialize`, which never touches it -- see DebugReference.md) and verify
 # it actually succeeded: finds the newly-created run Job, waits for it to
@@ -136,7 +193,42 @@ verify-pipeline:
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
 
     before=$(kubectl get jobs -n orchestration -o jsonpath='{.items[*].metadata.name}')
-    (cd dagster_data_platform && dagster job launch -j '__ASSET_JOB' -m dagster_data_platform.definitions)
+
+    # Sweep again immediately before this specific subprocess spawn, not
+    # just once at the top of the recipe -- the kubectl round-trip above is
+    # enough real elapsed time for the files to get re-hidden again before
+    # `dagster job launch`'s own fresh Python startup hits them. Confirmed
+    # for real: this exact gap caused a `No module named 'raw_to_clean'`
+    # failure here even with the top-of-recipe sweep already in place.
+    #
+    # Retry, don't just sweep-and-hope: the underlying cause (Learnings.md,
+    # ".pth files getting UF_HIDDEN re-applied") is outside this repo's
+    # control and intermittent, not fixable from here -- but this specific
+    # failure always happens at code-location *import* time, before
+    # `dagster job launch` submits anything, so nothing is partially
+    # applied on failure and a retry is genuinely safe, not a hack. Scoped
+    # to the exact known signature (ModuleNotFoundError) so a real bug
+    # still fails on the first attempt instead of being masked.
+    just _ensure-venv-visible
+    launch_ok=false
+    for attempt in 1 2 3; do
+        if launch_output=$(cd dagster_data_platform && dagster job launch -j '__ASSET_JOB' -m dagster_data_platform.definitions 2>&1); then
+            launch_ok=true
+            break
+        fi
+        if ! grep -q "ModuleNotFoundError" <<< "$launch_output"; then
+            echo "$launch_output" >&2
+            exit 1
+        fi
+        echo ">>> dagster job launch hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
+        just _ensure-venv-visible
+        sleep 1
+    done
+    echo "$launch_output"
+    if [ "$launch_ok" != true ]; then
+        echo ">>> dagster job launch failed 3 times with the .pth/UF_HIDDEN signature -- giving up" >&2
+        exit 1
+    fi
 
     # Space-separated set-difference rather than jsonpath `[-1]` indexing --
     # the latter throws on an empty job list, which is exactly the state
@@ -178,9 +270,30 @@ verify-pipeline:
 # this recipe is reachable standalone (`just orchestration::test`), bypassing
 # the root Justfile's `test` recipe dependency. See Learnings.md for the
 # .pth/UF_HIDDEN investigation -- confirmed recurring within a single
-# `just smoketest` run, minutes after a prior sweep already ran.
+# `just smoketest` run, minutes after a prior sweep already ran. Retried on
+# the known signature only (test *collection* failing on import, before any
+# test runs -- safe to retry, nothing partially executed) -- see
+# verify-pipeline's identical pattern for the full reasoning.
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    find "{{justfile_directory()}}/.venv/lib" -name "*.pth" -flags +hidden -exec chflags nohidden {} \; 2>/dev/null || true
-    cd dagster_data_platform && uv run pytest
+    just _ensure-venv-visible
+    test_ok=false
+    for attempt in 1 2 3; do
+        if test_output=$(cd dagster_data_platform && uv run pytest 2>&1); then
+            test_ok=true
+            break
+        fi
+        if ! grep -q "ModuleNotFoundError" <<< "$test_output"; then
+            echo "$test_output" >&2
+            exit 1
+        fi
+        echo ">>> pytest hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
+        just _ensure-venv-visible
+        sleep 1
+    done
+    echo "$test_output"
+    if [ "$test_ok" != true ]; then
+        echo ">>> pytest failed 3 times with the .pth/UF_HIDDEN signature -- giving up" >&2
+        exit 1
+    fi

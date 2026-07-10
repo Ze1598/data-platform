@@ -31,11 +31,13 @@ CATALOG_NAME = "data_platform"
 # create_namespace_if_not_exists is — that's why `clean` never showed the
 # same failure). `model` (added Phase 7: dim_customer_snapshot tagged
 # customers, dim_branch/fct_sales tagged sales) hits the exact same race
-# for the exact same reason — added here proactively rather than
-# rediscovering it through another failed rebuild. Creating all of them
-# here, once, as part of bootstrap removes the race entirely rather than
-# relying on concurrent runtime code to handle it safely.
-REQUIRED_NAMESPACES = ["clean", "staging", "model"]
+# for the exact same reason, and so does `serve` (Phase 8: the generated
+# _latest/_historical views build in the same per-feed pools as everything
+# else) — added here proactively rather than rediscovering it through
+# another failed rebuild. Creating all of them here, once, as part of
+# bootstrap removes the race entirely rather than relying on concurrent
+# runtime code to handle it safely.
+REQUIRED_NAMESPACES = ["clean", "staging", "model", "serve"]
 
 
 def main() -> None:
