@@ -1,0 +1,63 @@
+# Local dev instance config (DAGSTER_HOME points here for `dagster dev`).
+# Same content, byte-for-byte, is used for the in-cluster ConfigMap that
+# K8sRunLauncher mounts into every launched run pod (see
+# orchestration/k8s/dagster-instance-configmap.yaml) — both need to point
+# at the SAME Postgres-backed run/event storage so a run started locally
+# and executed in-cluster reports status back to one shared place. They
+# resolve POSTGRES_HOST to different values (localhost here via NodePort;
+# postgres.metadata.svc.cluster.local in-cluster, injected as a pod env
+# var by the run launcher config) — that's the only difference.
+storage:
+  postgres:
+    postgres_db:
+      hostname:
+        env: POSTGRES_HOST
+      username:
+        env: POSTGRES_USER
+      password:
+        env: POSTGRES_PASSWORD
+      db_name: dagster_db
+      port:
+        env: POSTGRES_PORT
+
+# Every feed's pool (see extraction_assets.py: FEED_POOL = f"feed:{code}")
+# defaults to a limit of 1 unless explicitly overridden — one run touching
+# a given feed's data at a time, cross-run, not just within one run's own
+# asset DAG. See Learnings.md for why: two runs' clean-write and
+# staging-merge steps racing on the same Iceberg table isn't just slow,
+# it's a real correctness bug (DELETE+INSERT isn't one atomic commit).
+concurrency:
+  pools:
+    default_limit: 1
+
+# Without this, a pool slot held by a crashed/cancelled run is never
+# released — with default_limit: 1, a single stale claim would permanently
+# block every future run of that feed. 300s is generous slack for a
+# genuinely still-running step to finish before being assumed dead.
+run_monitoring:
+  enabled: true
+  free_slots_after_run_end_seconds: 300
+
+run_launcher:
+  module: dagster_k8s.launcher
+  class: K8sRunLauncher
+  config:
+    job_image: data-platform-orchestration:latest
+    job_namespace: orchestration
+    load_incluster_config: false
+    instance_config_map: dagster-instance
+    image_pull_policy: IfNotPresent
+    # Required positionally by K8sRunLauncher's constructor even though the
+    # config schema marks it optional — the ServiceAccount the *launched*
+    # run pod runs as (unrelated to how the launcher itself authenticates,
+    # which is via local kubeconfig per load_incluster_config: false above).
+    # "default" is fine: run pods here only call Postgres/Trino, not the
+    # k8s API.
+    service_account_name: default
+    env_vars:
+      - "POSTGRES_HOST=postgres.metadata.svc.cluster.local"
+      - "POSTGRES_USER"
+      - "POSTGRES_PASSWORD"
+      - "POSTGRES_PORT"
+      - "TRINO_HOST=trino.query-engine.svc.cluster.local"
+      - "TRINO_PORT=8080"
