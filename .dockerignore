@@ -1,0 +1,12 @@
+.git/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.DS_Store
+.pytest_cache/
+*.egg-info/
+data-lake/
+dbt/data_platform/target/
+dbt/data_platform/dbt_packages/
+orchestration/dagster_home/.tmp_dagster_home_*/
