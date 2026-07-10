@@ -1,0 +1,45 @@
+version: 2
+
+models:
+  - name: dim_branch
+    tags: [sales]
+    columns:
+      - name: _key_hash
+        tests: [not_null, unique]
+      - name: _attr_hash
+        tests: [not_null]
+      - name: is_deleted
+        # No accepted_values test here -- it's a native boolean column, so
+        # the type system already rejects anything but true/false/null,
+        # and dbt-trino's accepted_values test doesn't coerce [true, false]
+        # against a real boolean type anyway (TYPE_MISMATCH: boolean vs
+        # varchar). not_null is the meaningful check: did every row
+        # actually get a real value, not left null.
+        tests: [not_null]
+
+  - name: fct_sales
+    tags: [sales]
+    columns:
+      - name: _key_hash
+        tests: [not_null, unique]
+      - name: _attr_hash
+        tests: [not_null]
+      - name: branch_key
+        tests: [not_null]
+      - name: is_deleted
+        tests: [not_null]
+
+snapshots:
+  - name: dim_customer_snapshot
+    tags: [customers]
+    columns:
+      # _key_hash is NOT unique here -- multiple versions of the same
+      # customer share it, only _scd_id (one row per version) is.
+      - name: _key_hash
+        tests: [not_null]
+      - name: _scd_id
+        tests: [not_null, unique]
+      - name: _attr_hash
+        tests: [not_null]
+      - name: is_deleted
+        tests: [not_null]

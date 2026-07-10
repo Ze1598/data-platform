@@ -23,6 +23,21 @@ dbt_project.prepare_if_dev()
 # a new feed's staging model is added.
 _CLEAN_SOURCE_TABLES = {"customers", "sales"}
 
+# `dbt build --select tag:<feed>` builds staging AND model-layer objects
+# together in one DAG-ordered invocation (Phase 7 added dim_*/fct_*/
+# snapshots tagged the same way as their feed) -- no separate dbt
+# invocation needed, but data_model_run tracks them as distinct stages, so
+# results get split by which of these a node's name matches. Generic test
+# unique_ids embed their target's name (e.g. "not_null_stg_customers_id"),
+# so a substring check on the whole unique_id (not just a suffix match on
+# the node name) classifies tests correctly too.
+_STAGING_MODEL_NAMES = {f"stg_{table}" for table in _CLEAN_SOURCE_TABLES}
+_DATA_MODEL_STAGES_BUILT = ("staging", "model")
+
+
+def _stage_for_dbt_node(unique_id: str) -> str:
+    return "staging" if any(name in unique_id for name in _STAGING_MODEL_NAMES) else "model"
+
 
 class DataPlatformDbtTranslator(DagsterDbtTranslator):
     def get_asset_key(self, dbt_resource_props: Mapping[str, Any]) -> AssetKey:
@@ -64,25 +79,47 @@ def _build_dbt_assets_for_feed(feed_code: str):
         # No get_data_feed() lookup needed here (unlike extraction_assets.py) --
         # log_data_model_stage() only needs the feed *code*, which is already
         # in scope, not its data_feed row.
-        with postgres_metadata.log_data_model_stage(
-            model_key=feed_code,
-            uses_feeds=feed_code,
-            stage="staging",
-            dagster_run_id=context.run_id,
-        ) as log:
-            invocation = dbt.cli(["build"], context=context)
-            yield from invocation.stream()
+        invocation = dbt.cli(["build"], context=context)
+        yield from invocation.stream()
 
-            if not invocation.is_successful():
-                raise invocation.get_error() or RuntimeError(f"dbt build failed for feed '{feed_code}'")
-
-            rows_affected = None
+        try:
             run_results = invocation.get_artifact("run_results.json")
-            for result in run_results.get("results", []):
-                adapter_response = result.get("adapter_response") or {}
-                if "rows_affected" in adapter_response:
-                    rows_affected = (rows_affected or 0) + adapter_response["rows_affected"]
-            log.set_counts(rows_updated=rows_affected)
+        except Exception:
+            run_results = {"results": []}
+
+        # Per-node status, not the single overall is_successful() flag --
+        # a model-layer failure shouldn't mark staging as failed too (dbt
+        # build runs both in one DAG-ordered invocation; they're genuinely
+        # independent outcomes even though they share one process).
+        stage_rows: dict[str, int] = {}
+        stage_ok = {stage: True for stage in _DATA_MODEL_STAGES_BUILT}
+        stage_error: dict[str, str] = {}
+        for result in run_results.get("results", []):
+            stage = _stage_for_dbt_node(result["unique_id"])
+            if result.get("status") not in ("success", "pass"):
+                stage_ok[stage] = False
+                stage_error[stage] = result.get("message") or f"{result['unique_id']} failed"
+            adapter_response = result.get("adapter_response") or {}
+            if "rows_affected" in adapter_response:
+                stage_rows[stage] = stage_rows.get(stage, 0) + adapter_response["rows_affected"]
+
+        # A build-level failure with zero per-node results (e.g. a parse
+        # error before execution started) -- neither stage's nodes ever
+        # got a chance to run; attribute it to staging as the earliest one.
+        if not run_results.get("results") and not invocation.is_successful():
+            stage_ok["staging"] = False
+            stage_error["staging"] = str(invocation.get_error() or f"dbt build failed for feed '{feed_code}' before any node ran")
+
+        for stage in _DATA_MODEL_STAGES_BUILT:
+            with postgres_metadata.log_data_model_stage(
+                model_key=feed_code,
+                uses_feeds=feed_code,
+                stage=stage,
+                dagster_run_id=context.run_id,
+            ) as log:
+                if not stage_ok[stage]:
+                    raise RuntimeError(stage_error[stage])
+                log.set_counts(rows_updated=stage_rows.get(stage))
 
     return _dbt_assets_for_feed
 

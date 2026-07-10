@@ -10,4 +10,12 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
+# Defensive, not a full fix -- see Learnings.md for the .pth/UF_HIDDEN
+# investigation. Something beyond uv's own write path re-hides already-good
+# .pth files well within a single `just smoketest` run, not just hours
+# apart, so this needs to run immediately before the import it's protecting,
+# not just once upstream. Cheap, idempotent, harmless if nothing's hidden.
+find .venv/lib -name "*.pth" -flags +hidden -exec chflags nohidden {} \; 2>/dev/null || true
+
 uv run python -m polaris_client.bootstrap

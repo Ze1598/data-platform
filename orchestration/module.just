@@ -11,6 +11,7 @@
 start:
     #!/usr/bin/env bash
     set -euo pipefail
+    just _ensure-venv-visible
     just orchestration::build-image
     kubectl create configmap dagster-instance \
         --from-file=dagster.yaml=dagster_home/dagster.yaml \
@@ -130,6 +131,7 @@ build-image:
 verify-pipeline:
     #!/usr/bin/env bash
     set -euo pipefail
+    just _ensure-venv-visible
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
 
@@ -172,5 +174,13 @@ verify-pipeline:
     echo "Pipeline run $run_id succeeded: 2/2 data_feed_run + 2/2 data_model_run rows successful."
 
 # Unit tests -- pure logic, no live cluster needed.
+# Defensive .pth sweep here too, not just in `start`/`verify-pipeline` --
+# this recipe is reachable standalone (`just orchestration::test`), bypassing
+# the root Justfile's `test` recipe dependency. See Learnings.md for the
+# .pth/UF_HIDDEN investigation -- confirmed recurring within a single
+# `just smoketest` run, minutes after a prior sweep already ran.
 test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    find "{{justfile_directory()}}/.venv/lib" -name "*.pth" -flags +hidden -exec chflags nohidden {} \; 2>/dev/null || true
     cd dagster_data_platform && uv run pytest

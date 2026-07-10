@@ -22,8 +22,23 @@ mod tests-integration 'tests/integration/module.just'
 default:
     @just --list
 
+# Defensive mitigation, not a full fix: `link-mode = "copy"` (pyproject.toml)
+# stops *new* uv writes from getting the macOS UF_HIDDEN flag (see
+# Learnings.md for the full investigation -- Python 3.13's site.py skips
+# hidden .pth files, silently breaking editable-install imports). But
+# already-written, previously-good .pth files have been observed getting
+# re-hidden hours later with no rewrite (same mtime) -- something beyond
+# uv's write path is involved, not fully root-caused. Cheap, harmless,
+# idempotent to sweep every time rather than wait to hit it mid-run.
+_ensure-venv-visible:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d .venv/lib ]; then
+        find .venv/lib -name "*.pth" -flags +hidden -exec chflags nohidden {} \; 2>/dev/null || true
+    fi
+
 # Bring up every module in dependency order, or just one: `just start orchestration`.
-start module="":
+start module="": _ensure-venv-visible
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -z "{{module}}" ]; then
@@ -78,7 +93,7 @@ smoketest:
 # Run tests: no arg runs everything; a known module name scopes to that
 # module's unit tests; anything else is treated as a dbt tag (feed code),
 # e.g. `just test customers` runs that feed's dbt schema tests.
-test module="":
+test module="": _ensure-venv-visible
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{module}}" in

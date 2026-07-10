@@ -97,6 +97,41 @@ def seed_schema_registry(cur, *, data_feed_code: str, version: int, column_defin
     )
 
 
+def seed_model_feed(
+    cur,
+    *,
+    code: str,
+    model_type: str,
+    staging_source_data_feed_code: str,
+    business_key_columns: list[str],
+    tracked_columns: list[str],
+    scd_type: int,
+    deletions_enabled: bool,
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO model_feed (
+            code, model_type, staging_source_data_feed_id,
+            business_key_columns, tracked_columns, scd_type, deletions_enabled
+        )
+        VALUES (
+            %s, %s, (SELECT id FROM data_feed WHERE code = %s),
+            %s, %s, %s, %s
+        )
+        ON CONFLICT (code) DO NOTHING
+        """,
+        (
+            code,
+            model_type,
+            staging_source_data_feed_code,
+            psycopg.types.json.Json(business_key_columns),
+            psycopg.types.json.Json(tracked_columns),
+            scd_type,
+            deletions_enabled,
+        ),
+    )
+
+
 def main() -> None:
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         seed_source_system(
@@ -139,6 +174,41 @@ def main() -> None:
 
         seed_schema_registry(cur, data_feed_code="customers", version=1, column_definitions=CUSTOMERS_SCHEMA, created_by="seed_metadata_db")
         seed_schema_registry(cur, data_feed_code="sales", version=1, column_definitions=SALES_SCHEMA, created_by="seed_metadata_db")
+
+        # Model layer (Phase 7): dim_customer stands alone (no real FK from
+        # sales to customers in this dataset -- see Learnings.md); dim_branch
+        # is conformed out of sales' own branch/city columns, and fct_sales
+        # joins to it. See Roadmap.md "Model Layer: SCD Design".
+        seed_model_feed(
+            cur,
+            code="dim_customer",
+            model_type="dimension",
+            staging_source_data_feed_code="customers",
+            business_key_columns=["customer_id"],
+            tracked_columns=["name", "email"],
+            scd_type=2,
+            deletions_enabled=True,
+        )
+        seed_model_feed(
+            cur,
+            code="dim_branch",
+            model_type="dimension",
+            staging_source_data_feed_code="sales",
+            business_key_columns=["branch"],
+            tracked_columns=["city"],
+            scd_type=1,
+            deletions_enabled=False,
+        )
+        seed_model_feed(
+            cur,
+            code="fct_sales",
+            model_type="fact",
+            staging_source_data_feed_code="sales",
+            business_key_columns=["invoice_id"],
+            tracked_columns=["unit_price", "quantity", "tax_amount", "total", "cogs", "gross_income", "rating"],
+            scd_type=1,
+            deletions_enabled=False,
+        )
 
         conn.commit()
     print("Seed complete.")

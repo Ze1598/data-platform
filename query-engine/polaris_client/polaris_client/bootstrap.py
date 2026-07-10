@@ -21,17 +21,21 @@ CLIENT_ID = "root"
 CLIENT_SECRET = "s3cr3t"
 CATALOG_NAME = "data_platform"
 # Every namespace some run-time path creates lazily on first use: `clean`
-# from raw_to_clean.write_clean_snapshot, `staging` from dbt-trino's own
-# schema auto-creation. Both used to be created on-demand by whichever run
-# got there first — fine for a single writer, but dbt_customers_assets and
-# dbt_sales_assets execute in separate, non-blocking concurrency pools
-# (Learnings.md, Phase 5) and raced to create `staging` concurrently
-# against a genuinely fresh catalog. Trino's schema-creation isn't safe
-# under that race (PyIceberg's create_namespace_if_not_exists is — that's
-# why `clean` never showed the same failure). Creating both here, once,
-# as part of bootstrap removes the race instead of relying on concurrent
-# runtime code to handle it safely.
-REQUIRED_NAMESPACES = ["clean", "staging"]
+# from raw_to_clean.write_clean_snapshot, `staging`/`model` from dbt-trino's
+# own schema auto-creation. All three used to be created on-demand by
+# whichever run got there first — fine for a single writer, but
+# dbt_customers_assets and dbt_sales_assets execute in separate,
+# non-blocking concurrency pools (Learnings.md, Phase 5) and raced to
+# create `staging` concurrently against a genuinely fresh catalog. Trino's
+# schema-creation isn't safe under that race (PyIceberg's
+# create_namespace_if_not_exists is — that's why `clean` never showed the
+# same failure). `model` (added Phase 7: dim_customer_snapshot tagged
+# customers, dim_branch/fct_sales tagged sales) hits the exact same race
+# for the exact same reason — added here proactively rather than
+# rediscovering it through another failed rebuild. Creating all of them
+# here, once, as part of bootstrap removes the race entirely rather than
+# relying on concurrent runtime code to handle it safely.
+REQUIRED_NAMESPACES = ["clean", "staging", "model"]
 
 
 def main() -> None:
