@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: stg_customers
+    tags: [customers]
+    columns:
+      - name: customer_id
+        tests: [not_null]
+      - name: email
+        tests: [not_null]
+      - name: _key_hash
+        tests: [not_null, unique]
+
+  - name: stg_sales
+    tags: [sales]
+    columns:
+      - name: invoice_id
+        tests: [not_null]
+      - name: quantity
+        tests: [not_null]
+      - name: total
+        tests: [not_null]
+      - name: _key_hash
+        tests: [not_null, unique]
+      - name: payment_method
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["Cash", "Credit card", "Ewallet"]
+      - name: customer_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["Member", "Normal"]
+      - name: gender
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["Male", "Female"]

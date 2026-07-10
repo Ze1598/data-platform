@@ -14,11 +14,24 @@ Learnings.md for why this module exists).
 
 from polaris_client.client import PolarisClient
 from polaris_client.port_forward import kubectl_port_forward
+from raw_to_clean import load_iceberg_catalog
 
 POLARIS_PORT = 8181
 CLIENT_ID = "root"
 CLIENT_SECRET = "s3cr3t"
 CATALOG_NAME = "data_platform"
+# Every namespace some run-time path creates lazily on first use: `clean`
+# from raw_to_clean.write_clean_snapshot, `staging` from dbt-trino's own
+# schema auto-creation. Both used to be created on-demand by whichever run
+# got there first — fine for a single writer, but dbt_customers_assets and
+# dbt_sales_assets execute in separate, non-blocking concurrency pools
+# (Learnings.md, Phase 5) and raced to create `staging` concurrently
+# against a genuinely fresh catalog. Trino's schema-creation isn't safe
+# under that race (PyIceberg's create_namespace_if_not_exists is — that's
+# why `clean` never showed the same failure). Creating both here, once,
+# as part of bootstrap removes the race instead of relying on concurrent
+# runtime code to handle it safely.
+REQUIRED_NAMESPACES = ["clean", "staging"]
 
 
 def main() -> None:
@@ -63,6 +76,24 @@ def main() -> None:
         # TABLE_WRITE_DATA. Granting an already-held privilege is a no-op.
         print(f"Ensuring catalog_admin has TABLE_WRITE_DATA on '{CATALOG_NAME}'...")
         client.grant_catalog_privilege(CATALOG_NAME, "catalog_admin", "TABLE_WRITE_DATA")
+
+        # Iceberg REST catalog operations (namespaces/tables), as opposed
+        # to the Management API used above — same Polaris service, same
+        # port-forward, different API surface (see raw_to_clean.catalog
+        # for why both credential_delegation and oauth2-server-uri matter
+        # here too). Namespace creation is pure catalog metadata, so this
+        # doesn't need MinIO reachable.
+        iceberg_catalog = load_iceberg_catalog(
+            polaris_host="localhost",
+            polaris_port=POLARIS_PORT,
+            minio_host="localhost",
+            minio_port=9000,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+        )
+        for namespace in REQUIRED_NAMESPACES:
+            print(f"Ensuring namespace '{namespace}' exists...")
+            iceberg_catalog.create_namespace_if_not_exists(namespace)
 
         print(f"Catalog '{CATALOG_NAME}' ready.")
 

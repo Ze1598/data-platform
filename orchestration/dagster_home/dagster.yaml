@@ -61,3 +61,11 @@ run_launcher:
       - "POSTGRES_PORT"
       - "TRINO_HOST=trino.query-engine.svc.cluster.local"
       - "TRINO_PORT=8080"
+      # Phase 6: the real clean-layer write path (raw_to_clean, via
+      # PyIceberg) needs to reach Polaris and MinIO directly, in addition
+      # to Trino — Trino is still what dbt/staging use, but clean_sales
+      # writes straight to the catalog.
+      - "POLARIS_HOST=polaris.query-engine.svc.cluster.local"
+      - "POLARIS_PORT=8181"
+      - "MINIO_HOST=minio.query-engine.svc.cluster.local"
+      - "MINIO_PORT=9000"

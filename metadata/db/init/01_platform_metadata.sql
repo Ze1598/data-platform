@@ -47,6 +47,11 @@ create table data_feed (
     business_key_columns      jsonb not null default '[]'::jsonb,
     staging_table_name        text,
     schedule_cron             text,
+    -- which engine runs this feed's raw->clean transform: 'polars' by
+    -- default (runs inline in the Dagster op, no extra cluster
+    -- infrastructure), 'spark' opt-in for feeds whose volume actually
+    -- needs distributed execution (see Learnings.md, Phase 6)
+    processing_engine         text not null default 'polars' check (processing_engine in ('polars', 'spark')),
     -- denormalized watermark state for the orchestrator; run_audit_log is the full audit trail
     last_watermark_value      text,
     last_run_id               uuid,

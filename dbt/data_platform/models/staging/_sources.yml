@@ -6,3 +6,4 @@ sources:
     schema: clean
     tables:
       - name: customers
+      - name: sales

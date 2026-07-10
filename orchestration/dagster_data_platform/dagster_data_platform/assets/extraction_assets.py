@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 
+import polars as pl
 from dagster import AssetExecutionContext, Output, asset
 
+from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
-from dagster_data_platform.resources.trino_resource import TrinoResource
+from raw_to_clean import validate_schema, write_clean_snapshot
 
 FEED_CODE = "customers"
 # One pool per feed, shared across every step that touches its data anywhere
@@ -79,7 +81,7 @@ def raw_customers(
 def clean_customers(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    trino: TrinoResource,
+    iceberg_catalog: IcebergCatalogResource,
     raw_customers: list[dict],
 ) -> Output[None]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
@@ -89,14 +91,26 @@ def clean_customers(
         data_feed_id=str(data_feed["id"]),
         dagster_run_id=context.run_id,
     ) as log:
-        # clean is a snapshot per run, not cumulative (Roadmap.md "Layer
-        # Model") — this run's full extract replaces clean's prior content.
-        trino.execute("DELETE FROM iceberg.clean.customers")
-        values = ", ".join(
-            f"({r['customer_id']}, '{r['name']}', '{r['email']}', TIMESTAMP '{r['updated_at']:%Y-%m-%d %H:%M:%S.%f}')"
-            for r in raw_customers
+        # Same real path as clean_sales — PyIceberg for the atomic
+        # overwrite (clean is a snapshot per run, not cumulative, Roadmap.md
+        # "Layer Model"), Polars for the DataFrame, schema_registry for
+        # validation. This used to be a Trino DELETE+INSERT pair (two
+        # separate commits, the exact race the Phase 5 concurrency pools
+        # exist to guard against) with no schema validation at all — see
+        # Learnings.md for why this got migrated onto raw_to_clean instead
+        # of staying a special case.
+        column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
+        df = pl.DataFrame(raw_customers)
+        validate_schema(df, column_definitions)
+
+        catalog = iceberg_catalog.get_catalog()
+        write_clean_snapshot(
+            catalog,
+            namespace="clean",
+            table_name="customers",
+            df=df,
+            column_definitions=column_definitions,
         )
-        trino.execute(f"INSERT INTO iceberg.clean.customers VALUES {values}")
         log.set_counts(rows_inserted=len(raw_customers))
 
     return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": len(raw_customers)})

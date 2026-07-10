@@ -1,7 +1,8 @@
 {{
   config(
     unique_key='_key_hash',
-    alias='customers'
+    alias='customers',
+    tags=['customers']
   )
 }}
 

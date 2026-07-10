@@ -71,6 +71,20 @@ class PostgresMetadataResource(ConfigurableResource):
                 raise ValueError(f"No data_feed with code={code!r}")
             return row
 
+    def get_current_schema(self, data_feed_id: str) -> list[dict[str, Any]]:
+        """The current schema_registry.column_definitions for a feed —
+        raw_to_clean.validate_schema()'s contract, see Roadmap.md "Metadata
+        Schema"."""
+        with self._connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                "SELECT column_definitions FROM schema_registry WHERE data_feed_id = %s AND is_current",
+                (data_feed_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
+            return row["column_definitions"]
+
     def start_run(
         self,
         *,

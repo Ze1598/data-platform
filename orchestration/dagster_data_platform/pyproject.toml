@@ -12,7 +12,14 @@ dependencies = [
     "dbt-trino>=1.9",
     "trino>=0.330",
     "psycopg[binary]>=3.2",
+    "raw-to-clean",
 ]
+
+[tool.uv.sources]
+raw-to-clean = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
 
 [tool.dagster]
 module_name = "dagster_data_platform.definitions"
