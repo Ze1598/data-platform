@@ -8,7 +8,7 @@
     any real string, so NULL and empty-string don't collide.
 #}
 {% macro row_hash(columns) %}
-to_hex(md5(to_utf8(
+to_hex(sha512(to_utf8(
     {%- for col in columns %}
     coalesce(cast({{ col }} as varchar), '~NULL~'){% if not loop.last %} || '|~|' || {% endif %}
     {%- endfor %}

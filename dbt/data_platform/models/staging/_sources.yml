@@ -7,3 +7,5 @@ sources:
     tables:
       - name: customers
       - name: sales
+      - name: financial_transactions
+      - name: police_crimes

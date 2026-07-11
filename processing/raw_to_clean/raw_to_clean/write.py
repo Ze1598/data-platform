@@ -46,6 +46,7 @@ def write_clean_snapshot(
     table_name: str,
     df: pl.DataFrame,
     column_definitions: list[dict[str, Any]],
+    schema_changed: bool = False,
 ) -> Table:
     """Writes `df` as `namespace.table_name`'s entire current content — one
     atomic commit (pyiceberg Table.overwrite), not a delete-then-insert
@@ -53,8 +54,21 @@ def write_clean_snapshot(
     "Layer Model") actually safe under the concurrency pools set up in
     Phase 5, not just pool-protected. Creates the table on first run using
     the current schema_registry definition; every later run just overwrites.
+
+    `schema_changed=True` (set when raw_to_clean.reconcile_schema() returns
+    a non-None updated_column_definitions) drops and recreates the table
+    against the new schema instead of overwriting in place. `clean` never
+    retains history across runs — it's a snapshot of just this run's batch,
+    nothing downstream reads an old clean snapshot once a new one lands —
+    so there's nothing to lose by recreating it; this sidesteps Iceberg's
+    schema evolution rules entirely (which don't allow arbitrary type
+    changes like string→long in place, only a narrow set of "safe"
+    promotions) rather than needing an in-place-evolve-with-fallback path.
     """
     identifier = (namespace, table_name)
+    if schema_changed and catalog.table_exists(identifier):
+        catalog.drop_table(identifier)
+
     if not catalog.table_exists(identifier):
         # Every prior test this session silently relied on `clean` already
         # existing as a namespace, left over from Phase 3's original manual

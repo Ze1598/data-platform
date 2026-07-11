@@ -79,6 +79,93 @@ class PostgresMetadataResource(ConfigurableResource):
                 raise ValueError(f"No data_feed with code={code!r}")
             return row
 
+    def update_watermark(self, *, data_feed_id: str, watermark_value: str, run_id: str) -> None:
+        """Advances data_feed.last_watermark_value/last_run_id (Phase 9,
+        Roadmap.md "Incremental Loading & Watermarks") -- call this only
+        after `clean` has actually succeeded for the run, never before or
+        on failure. A failed run must not advance the watermark, or the
+        next run would silently skip whatever failed to load; this is the
+        correctness property safe re-run depends on."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE data_feed
+                SET last_watermark_value = %(watermark_value)s,
+                    last_run_id = %(run_id)s,
+                    updated_at = now()
+                WHERE id = %(data_feed_id)s
+                """,
+                {"watermark_value": watermark_value, "run_id": run_id, "data_feed_id": data_feed_id},
+            )
+
+    def update_schema_registry(self, *, data_feed_id: str, column_definitions: list[dict[str, Any]], created_by: str) -> None:
+        """Writes a new current schema_registry version for a feed --
+        called by raw_to_clean's schema reconciliation (schema_evolution.py)
+        when incoming data adds a column or changes an existing column's
+        type (see Roadmap.md "Metadata Schema"). Both writes happen in one
+        transaction: flip the existing is_current row to false first, then
+        insert the new one -- required by uq_schema_registry_current (a
+        partial unique index allowing only one is_current=true row per
+        data_feed_id), so the old row must stop being current before the
+        new one can become current."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE schema_registry
+                SET is_current = false,
+                    effective_to = now()
+                WHERE data_feed_id = %(data_feed_id)s AND is_current
+                """,
+                {"data_feed_id": data_feed_id},
+            )
+            cur.execute(
+                """
+                INSERT INTO schema_registry (data_feed_id, version, column_definitions, is_current, effective_from, created_by)
+                VALUES (
+                    %(data_feed_id)s,
+                    coalesce((SELECT max(version) FROM schema_registry WHERE data_feed_id = %(data_feed_id)s), 0) + 1,
+                    %(column_definitions)s,
+                    true,
+                    now(),
+                    %(created_by)s
+                )
+                """,
+                {
+                    "data_feed_id": data_feed_id,
+                    "column_definitions": psycopg.types.json.Json(column_definitions),
+                    "created_by": created_by,
+                },
+            )
+
+    def get_updates_enabled_map(self, feed_code: str) -> dict[str, bool]:
+        """Maps every dbt model built under this feed's tag to whether
+        updates are enabled for it -- data_feed.updates_enabled for the
+        staging model (stg_<feed_code>), model_feed.updates_enabled for
+        any staging->model dims/facts sourced from this feed. Consumed via
+        `dbt build --vars` (dbt_assets.py) since Trino has no catalog
+        federating into platform_metadata -- a dbt model can't look this
+        up live, it has to be resolved before the dbt CLI invocation and
+        passed in. When false for a given model, that model's own SQL
+        skips attribute-hash change detection entirely and treats the
+        feed as insert-only (see stg_customers.sql)."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 'stg_' || code AS model_name, updates_enabled
+                FROM data_feed
+                WHERE code = %(feed_code)s
+
+                UNION ALL
+
+                SELECT model_feed.code AS model_name, model_feed.updates_enabled
+                FROM model_feed
+                JOIN data_feed ON data_feed.id = model_feed.staging_source_data_feed_id
+                WHERE data_feed.code = %(feed_code)s
+                """,
+                {"feed_code": feed_code},
+            )
+            return {model_name: updates_enabled for model_name, updates_enabled in cur.fetchall()}
+
     def get_current_schema(self, data_feed_id: str) -> list[dict[str, Any]]:
         """The current schema_registry.column_definitions for a feed —
         raw_to_clean.validate_schema()'s contract, see Roadmap.md "Metadata

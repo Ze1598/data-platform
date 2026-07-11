@@ -54,6 +54,19 @@ run_launcher:
     # "default" is fine: run pods here only call Postgres/Trino, not the
     # k8s API.
     service_account_name: default
+    # Phase 9: financial_transactions' landing asset reads CSV files
+    # scripts/generate_financial_reports.py drops into
+    # data-lake/landing/financial_transactions/ on the host. The kind node
+    # already bind-mounts ./data-lake -> /data-lake (platform/kind/kind-
+    # cluster.yaml's extraMounts), but no pod mounted it until now -- this
+    # is the first thing in the project to actually use that mount.
+    volumes:
+      - name: data-lake
+        host_path:
+          path: /data-lake
+    volume_mounts:
+      - name: data-lake
+        mount_path: /data-lake
     env_vars:
       - "POSTGRES_HOST=postgres.metadata.svc.cluster.local"
       - "POSTGRES_USER"
@@ -69,3 +82,9 @@ run_launcher:
       - "POLARIS_PORT=8181"
       - "MINIO_HOST=minio.query-engine.svc.cluster.local"
       - "MINIO_PORT=9000"
+      # Phase 9: financial_transactions' landing asset needs a different
+      # path locally (repo-relative) vs. in the launched pod (mounted at
+      # the container root, see the volumes/volume_mounts above) -- same
+      # local-vs-in-cluster split as every other env var here. Unset
+      # locally, financial_assets.py falls back to a repo-relative path.
+      - "DATA_LAKE_PATH=/data-lake"

@@ -1,26 +1,54 @@
 # Local dev sizing: single pod (coordinator doing double duty as worker) to
 # fit a laptop-constrained kind cluster (~7-8GB total Docker memory, shared
-# with Postgres, Polaris, MinIO, and Kubernetes system pods). Revisit for
-# anything resembling a real workload.
+# with Postgres, Polaris, MinIO, and Kubernetes system pods).
+#
+# Bumped from the original 1Gi/2Gi request/limit (maxHeapSize 1500M,
+# maxMemoryPerNode 700MB) after a real stress test: a MERGE of 3M new rows
+# into staging.financial_transactions OOMKilled the coordinator at 2Gi
+# (Phase 9 stress test, see Learnings.md). 4Gi/2500MB gives real headroom
+# for a several-million-row incremental load while still fitting
+# comfortably in a ~7.6GB Docker Desktop VM alongside the rest of the
+# stack. maxHeapSize is kept below the container memory limit (not equal
+# to it) to leave room for the JVM's off-heap/native memory, direct
+# buffers, and metaspace -- setting it equal to the container limit is a
+# common way to get OOMKilled again despite raising the limit.
 server:
   workers: 0
 
 coordinator:
   jvm:
-    maxHeapSize: "1500M"
+    # 4Gi/3000M/1800MB, not the original 2Gi/1500M/700MB: confirmed via a
+    # real A/B test that the OOM at multi-million-row incremental scale
+    # is NOT primarily caused by the old MERGE-based query shape --
+    # reverting to the original sizing and rerunning under the new
+    # insert/update-split rewrite (macros/insert_update_split.sql, no
+    # MERGE at all) still OOMKilled Trino, this time on just ~1.3M rows.
+    # This is a genuine "this data volume needs more memory than a
+    # laptop-dev-sized single-node coordinator has" situation, not a
+    # query-shape inefficiency that a rewrite alone fixes. See
+    # Learnings.md.
+    maxHeapSize: "3000M"
   config:
     nodeScheduler:
       # Lets the coordinator also execute query tasks, since we're running
       # with zero dedicated workers.
       includeCoordinator: true
     query:
-      maxMemoryPerNode: "700MB"
+      # Trino reserves ~30% of maxHeapSize as headroom automatically
+      # (heap-headroom-per-node); maxMemoryPerNode + that headroom must fit
+      # inside maxHeapSize or the coordinator refuses to start at all
+      # ("Invalid memory configuration ... cannot be larger than the
+      # available heap memory") -- hit for real setting this to 2500MB
+      # against a 3000M heap (headroom alone was ~900MB, already over
+      # budget together). 1800MB leaves clear margin under the ~2100MB
+      # actually available after headroom.
+      maxMemoryPerNode: "1800MB"
   resources:
     requests:
       cpu: "500m"
-      memory: "1Gi"
-    limits:
       memory: "2Gi"
+    limits:
+      memory: "4Gi"
 
 service:
   type: NodePort

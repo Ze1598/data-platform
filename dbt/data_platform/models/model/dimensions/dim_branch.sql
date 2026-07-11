@@ -12,11 +12,16 @@
     sales has no real FK to a separate branch source, so this dimension is
     extracted directly from the fact source itself (see Learnings.md for
     why: sales has no customer FK either, so fct_sales joins here instead
-    of to dim_customer). Same anti-join-gate pattern as stg_customers.sql
-    (see there for the reasoning) rather than a hand-written MERGE ... WHEN
-    MATCHED AND condition -- one mechanism for "only write changed rows",
-    reused everywhere it's needed.
+    of to dim_customer). Same insert/update-split pattern as
+    stg_customers.sql (see there for the full reasoning) -- one mechanism
+    for "only write changed rows", reused everywhere it's needed.
+    `updates_enabled` here reads from model_feed.updates_enabled (this is
+    the staging->model layer, not clean->staging), via the same
+    `updates_enabled_by_model` var dbt_assets.py computes for the whole
+    feed's `dbt build` invocation.
 #}
+
+{% set updates_enabled = var('updates_enabled_by_model', {}).get(model.name, true) %}
 
 with base as (
 
@@ -44,12 +49,16 @@ hashed as (
 
 , to_merge as (
 
-    select hashed.*
+    select
+        hashed.*,
+        case when target._key_hash is null then 'insert' else 'update' end as _change_type
     from hashed
     left join {{ this }} as target
         on hashed._key_hash = target._key_hash
-    where target._key_hash is null                       -- new branch
-       or target._attr_hash != hashed._attr_hash          -- changed attributes
+    where target._key_hash is null                                   -- new branch
+       {% if updates_enabled %}
+       or target._attr_hash != hashed._attr_hash                     -- changed attributes
+       {% endif %}
 
 )
 

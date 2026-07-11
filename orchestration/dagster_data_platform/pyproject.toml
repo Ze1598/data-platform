@@ -13,6 +13,8 @@ dependencies = [
     "trino>=0.330",
     "psycopg[binary]>=3.2",
     "raw-to-clean",
+    "requests>=2.32",
+    "numpy>=1.26",
 ]
 
 [tool.uv.sources]

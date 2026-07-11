@@ -37,3 +37,25 @@ models:
           - not_null
           - accepted_values:
               values: ["Male", "Female"]
+
+  - name: stg_financial_transactions
+    tags: [financial_transactions]
+    columns:
+      - name: transaction_id
+        tests: [not_null]
+      - name: posted_date
+        tests: [not_null]
+      - name: _key_hash
+        tests: [not_null, unique]
+
+  - name: stg_police_crimes
+    tags: [police_crimes]
+    columns:
+      - name: id
+        tests: [not_null]
+      - name: category
+        tests: [not_null]
+      - name: month
+        tests: [not_null]
+      - name: _key_hash
+        tests: [not_null, unique]

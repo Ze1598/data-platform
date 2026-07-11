@@ -52,6 +52,13 @@ create table data_feed (
     -- infrastructure), 'spark' opt-in for feeds whose volume actually
     -- needs distributed execution (see Learnings.md, Phase 6)
     processing_engine         text not null default 'polars' check (processing_engine in ('polars', 'spark')),
+    -- mirrors model_feed.updates_enabled -- staging's clean->staging merge
+    -- is keyed off data_feed, not model_feed, so it needs its own copy of
+    -- this flag rather than reading model_feed's (which governs the
+    -- separate staging->model layer). false means this feed is treated as
+    -- insert-only in staging: attribute-hash change detection is skipped
+    -- entirely, only new business keys are ever written.
+    updates_enabled           boolean not null default true,
     -- denormalized watermark state for the orchestrator; data_feed_run is the full run history
     last_watermark_value      text,
     last_run_id               uuid,

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -21,7 +22,7 @@ dbt_project.prepare_if_dev()
 # the landing -> raw -> clean chain and dbt's staging model share one asset
 # graph instead of two coincidentally-ordered ones. Add an entry here when
 # a new feed's staging model is added.
-_CLEAN_SOURCE_TABLES = {"customers", "sales"}
+_CLEAN_SOURCE_TABLES = {"customers", "sales", "financial_transactions", "police_crimes"}
 
 # `dbt build --select tag:<feed>` builds staging, model-layer, AND serve
 # objects together in one DAG-ordered invocation (Phase 7 added dim_*/
@@ -83,10 +84,16 @@ def _build_dbt_assets_for_feed(feed_code: str):
     def _dbt_assets_for_feed(
         context: AssetExecutionContext, dbt: DbtCliResource, postgres_metadata: PostgresMetadataResource
     ):
-        # No get_data_feed() lookup needed here (unlike extraction_assets.py) --
-        # log_data_model_stage() only needs the feed *code*, which is already
-        # in scope, not its data_feed row.
-        invocation = dbt.cli(["build"], context=context)
+        # updates_enabled_by_model: resolved from Postgres here, not inside
+        # the dbt SQL itself (Trino has no catalog federating into
+        # platform_metadata) -- see PostgresMetadataResource
+        # .get_updates_enabled_map()'s docstring and stg_customers.sql for
+        # how each model consumes it.
+        updates_enabled_map = postgres_metadata.get_updates_enabled_map(feed_code)
+        invocation = dbt.cli(
+            ["build", "--vars", json.dumps({"updates_enabled_by_model": updates_enabled_map})],
+            context=context,
+        )
         yield from invocation.stream()
 
         try:
@@ -133,3 +140,5 @@ def _build_dbt_assets_for_feed(feed_code: str):
 
 dbt_customers_assets = _build_dbt_assets_for_feed("customers")
 dbt_sales_assets = _build_dbt_assets_for_feed("sales")
+dbt_financial_transactions_assets = _build_dbt_assets_for_feed("financial_transactions")
+dbt_police_crimes_assets = _build_dbt_assets_for_feed("police_crimes")

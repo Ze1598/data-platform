@@ -5,7 +5,7 @@ from dagster import AssetExecutionContext, Output, asset
 
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
-from raw_to_clean import validate_schema, write_clean_snapshot
+from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
 FEED_CODE = "customers"
 # One pool per feed, shared across every step that touches its data anywhere
@@ -38,7 +38,7 @@ _BASE_CUSTOMERS = [
 @asset(pool=FEED_POOL)
 def landing_customers(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
-) -> Output[list[dict]]:
+) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
@@ -46,21 +46,21 @@ def landing_customers(
         dagster_run_id=context.run_id,
     ) as log:
         now = datetime.now(timezone.utc)
-        rows = [
-            {**c, "email": f"{c['name'].lower().split()[0]}@example.com", "updated_at": now}
-            for c in _BASE_CUSTOMERS
-        ]
-        log.set_counts(rows_read=len(rows))
+        df = pl.DataFrame(_BASE_CUSTOMERS).with_columns(
+            (pl.col("name").str.split(" ").list.first().str.to_lowercase() + "@example.com").alias("email"),
+            pl.lit(now).alias("updated_at"),
+        )
+        log.set_counts(rows_read=df.height)
 
-    return Output(rows, metadata={"audit_run_id": log.run_id, "row_count": len(rows)})
+    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
 @asset(pool=FEED_POOL)
 def raw_customers(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    landing_customers: list[dict],
-) -> Output[list[dict]]:
+    landing_customers: pl.DataFrame,
+) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
@@ -69,10 +69,10 @@ def raw_customers(
     ) as log:
         # Stub: passes the landing payload through unchanged. Phase 6
         # replaces this with a real raw file write + parse/validate step.
-        rows = landing_customers
-        log.set_counts(rows_read=len(rows))
+        df = landing_customers
+        log.set_counts(rows_read=df.height)
 
-    return Output(rows, metadata={"audit_run_id": log.run_id, "row_count": len(rows)})
+    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
 @asset(pool=FEED_POOL)
@@ -80,9 +80,10 @@ def clean_customers(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
-    raw_customers: list[dict],
+    raw_customers: pl.DataFrame,
 ) -> Output[None]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    df = raw_customers
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         stage="clean",
@@ -97,7 +98,17 @@ def clean_customers(
         # Learnings.md for why this got migrated onto raw_to_clean instead
         # of staying a special case.
         column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
-        df = pl.DataFrame(raw_customers)
+        reconciliation = reconcile_schema(df, column_definitions)
+        df = reconciliation.df
+        schema_changed = reconciliation.updated_column_definitions is not None
+        if schema_changed:
+            postgres_metadata.update_schema_registry(
+                data_feed_id=str(data_feed["id"]),
+                column_definitions=reconciliation.updated_column_definitions,
+                created_by="clean_customers",
+            )
+            column_definitions = reconciliation.updated_column_definitions
+
         validate_schema(df, column_definitions)
 
         catalog = iceberg_catalog.get_catalog()
@@ -107,7 +118,8 @@ def clean_customers(
             table_name="customers",
             df=df,
             column_definitions=column_definitions,
+            schema_changed=schema_changed,
         )
-        log.set_counts(rows_inserted=len(raw_customers))
+        log.set_counts(rows_inserted=df.height)
 
-    return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": len(raw_customers)})
+    return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": df.height})

@@ -1,12 +1,12 @@
-import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
+import numpy as np
 import polars as pl
 from dagster import AssetExecutionContext, Output, asset
 
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
-from raw_to_clean import validate_schema, write_clean_snapshot
+from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
 FEED_CODE = "sales"
 FEED_POOL = f"feed:{FEED_CODE}"
@@ -27,60 +27,75 @@ _PRODUCT_LINES = [
 _PAYMENT_METHODS = ["Cash", "Credit card", "Ewallet"]
 
 
-def _generate_sales_rows(n: int = 20) -> list[dict]:
-    rows = []
+def _generate_sales_rows(n: int = 20) -> pl.DataFrame:
+    # Vectorized (numpy + Polars) generation -- every column built as one
+    # array operation, no per-row Python loop, same reasoning as
+    # generate_financial_reports.py's bulk generator.
+    rng = np.random.default_rng()
     now = datetime.now(timezone.utc)
-    for i in range(n):
-        branch, city = random.choice(_BRANCHES)
-        unit_price = round(random.uniform(10, 100), 2)
-        quantity = random.randint(1, 10)
-        subtotal = unit_price * quantity
-        tax_amount = round(subtotal * 0.05, 2)
-        cogs = round(subtotal * 0.6, 2)
-        rows.append(
-            {
-                "invoice_id": f"INV-{now:%Y%m%d}-{i:04d}",
-                "branch": branch,
-                "city": city,
-                "customer_type": random.choice(["Member", "Normal"]),
-                "gender": random.choice(["Male", "Female"]),
-                "product_line": random.choice(_PRODUCT_LINES),
-                "unit_price": unit_price,
-                "quantity": quantity,
-                "tax_amount": tax_amount,
-                "total": round(subtotal + tax_amount, 2),
-                "payment_method": random.choice(_PAYMENT_METHODS),
-                "cogs": cogs,
-                "gross_income": round(subtotal - cogs, 2),
-                "rating": round(random.uniform(4.0, 10.0), 1),
-                "sale_timestamp": now - timedelta(minutes=random.randint(0, 1440)),
-            }
-        )
-    return rows
+
+    branch_idx = rng.integers(0, len(_BRANCHES), size=n)
+    branches = np.array([b[0] for b in _BRANCHES])[branch_idx]
+    cities = np.array([b[1] for b in _BRANCHES])[branch_idx]
+
+    unit_price = np.round(rng.uniform(10, 100, size=n), 2)
+    quantity = rng.integers(1, 11, size=n)
+    subtotal = unit_price * quantity
+    tax_amount = np.round(subtotal * 0.05, 2)
+    cogs = np.round(subtotal * 0.6, 2)
+
+    customer_types = np.array(["Member", "Normal"])[rng.integers(0, 2, size=n)]
+    genders = np.array(["Male", "Female"])[rng.integers(0, 2, size=n)]
+    product_lines = np.array(_PRODUCT_LINES)[rng.integers(0, len(_PRODUCT_LINES), size=n)]
+    payment_methods = np.array(_PAYMENT_METHODS)[rng.integers(0, len(_PAYMENT_METHODS), size=n)]
+    ratings = np.round(rng.uniform(4.0, 10.0, size=n), 1)
+    minutes_ago = rng.integers(0, 1440, size=n)
+
+    return pl.DataFrame(
+        {
+            "invoice_id": [f"INV-{now:%Y%m%d}-{i:04d}" for i in range(n)],
+            "branch": branches,
+            "city": cities,
+            "customer_type": customer_types,
+            "gender": genders,
+            "product_line": product_lines,
+            "unit_price": unit_price,
+            "quantity": quantity,
+            "tax_amount": tax_amount,
+            "total": np.round(subtotal + tax_amount, 2),
+            "payment_method": payment_methods,
+            "cogs": cogs,
+            "gross_income": np.round(subtotal - cogs, 2),
+            "rating": ratings,
+            "minutes_ago": minutes_ago,
+        }
+    ).with_columns(
+        (pl.lit(now) - pl.duration(minutes=pl.col("minutes_ago"))).alias("sale_timestamp")
+    ).drop("minutes_ago")
 
 
 @asset(pool=FEED_POOL)
 def landing_sales(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
-) -> Output[list[dict]]:
+) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
-        rows = _generate_sales_rows()
-        log.set_counts(rows_read=len(rows))
+        df = _generate_sales_rows()
+        log.set_counts(rows_read=df.height)
 
-    return Output(rows, metadata={"audit_run_id": log.run_id, "row_count": len(rows)})
+    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
 @asset(pool=FEED_POOL)
 def raw_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    landing_sales: list[dict],
-) -> Output[list[dict]]:
+    landing_sales: pl.DataFrame,
+) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
@@ -90,10 +105,10 @@ def raw_sales(
         # Stub: passes the landing payload through unchanged, same as
         # raw_customers — real raw file writes are still out of scope
         # (Phase 6 is specifically about raw->clean becoming real).
-        rows = landing_sales
-        log.set_counts(rows_read=len(rows))
+        df = landing_sales
+        log.set_counts(rows_read=df.height)
 
-    return Output(rows, metadata={"audit_run_id": log.run_id, "row_count": len(rows)})
+    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
 @asset(pool=FEED_POOL)
@@ -101,16 +116,27 @@ def clean_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
-    raw_sales: list[dict],
+    raw_sales: pl.DataFrame,
 ) -> Output[None]:
     data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    df = raw_sales
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         stage="clean",
         dagster_run_id=context.run_id,
     ) as log:
         column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
-        df = pl.DataFrame(raw_sales)
+        reconciliation = reconcile_schema(df, column_definitions)
+        df = reconciliation.df
+        schema_changed = reconciliation.updated_column_definitions is not None
+        if schema_changed:
+            postgres_metadata.update_schema_registry(
+                data_feed_id=str(data_feed["id"]),
+                column_definitions=reconciliation.updated_column_definitions,
+                created_by="clean_sales",
+            )
+            column_definitions = reconciliation.updated_column_definitions
+
         validate_schema(df, column_definitions)
 
         catalog = iceberg_catalog.get_catalog()
@@ -120,7 +146,8 @@ def clean_sales(
             table_name="sales",
             df=df,
             column_definitions=column_definitions,
+            schema_changed=schema_changed,
         )
-        log.set_counts(rows_inserted=len(raw_sales))
+        log.set_counts(rows_inserted=df.height)
 
-    return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": len(raw_sales)})
+    return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": df.height})

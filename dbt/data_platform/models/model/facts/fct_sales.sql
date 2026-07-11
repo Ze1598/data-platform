@@ -8,7 +8,7 @@
 }}
 
 {#
-    Fact table, Type 1-style merge (same anti-join-gate pattern as
+    Fact table, Type 1-style insert/update split (same pattern as
     dim_branch.sql/stg_customers.sql -- see there for the reasoning).
     Joins to dim_branch on the natural branch key to pull in its
     _key_hash as the dimensional FK. Deliberately joins on _key_hash, not
@@ -18,6 +18,8 @@
     actually Type 2 (see Learnings.md for why sales has no such join
     today: no customer FK in this dataset).
 #}
+
+{% set updates_enabled = var('updates_enabled_by_model', {}).get(model.name, true) %}
 
 with base as (
 
@@ -56,12 +58,16 @@ hashed as (
 
 , to_merge as (
 
-    select hashed.*
+    select
+        hashed.*,
+        case when target._key_hash is null then 'insert' else 'update' end as _change_type
     from hashed
     left join {{ this }} as target
         on hashed._key_hash = target._key_hash
-    where target._key_hash is null                       -- new invoice
-       or target._attr_hash != hashed._attr_hash          -- changed attributes
+    where target._key_hash is null                                   -- new invoice
+       {% if updates_enabled %}
+       or target._attr_hash != hashed._attr_hash                     -- changed attributes
+       {% endif %}
 
 )
 

@@ -623,8 +623,10 @@ dependencies = [
     { name = "dagster-webserver" },
     { name = "dbt-core" },
     { name = "dbt-trino" },
+    { name = "numpy" },
     { name = "psycopg", extra = ["binary"] },
     { name = "raw-to-clean" },
+    { name = "requests" },
     { name = "trino" },
 ]
 
@@ -642,8 +644,10 @@ requires-dist = [
     { name = "dagster-webserver", specifier = ">=1.13" },
     { name = "dbt-core", specifier = ">=1.9" },
     { name = "dbt-trino", specifier = ">=1.9" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "raw-to-clean", editable = "processing/raw_to_clean" },
+    { name = "requests", specifier = ">=2.32" },
     { name = "trino", specifier = ">=0.330" },
 ]
 
@@ -3150,11 +3154,17 @@ name = "scripts"
 version = "0.1.0"
 source = { virtual = "scripts" }
 dependencies = [
+    { name = "numpy" },
+    { name = "polars" },
     { name = "psycopg", extra = ["binary"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "psycopg", extras = ["binary"], specifier = ">=3.2" }]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "polars", specifier = ">=1.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+]
 
 [[package]]
 name = "shellingham"

@@ -138,6 +138,18 @@ Only affects models that set an explicit `schema` config.
 
 **Resolution**: after any change to schema/materialization config, explicitly check `show tables from <intended_schema>` (or equivalent) — don't rely on a green test suite alone to confirm object placement.
 
+### A locally-sized Trino coordinator OOMs on a real multi-million-row `MERGE` — and raising its memory limit has its own internal constraint
+
+**Symptom, part 1**: Trino coordinator pod gets `OOMKilled` (container exit code 137) partway through a dbt incremental model's `MERGE`, on a coordinator sized for light dev workloads (e.g. a 2Gi container memory limit) processing a genuinely large batch (millions of new rows).
+
+**Symptom, part 2, after naively raising the limit**: coordinator fails to start at all — `IllegalArgumentException: Invalid memory configuration. The sum of max query memory per node (...) and heap headroom (...) cannot be larger than the available heap memory (...)`.
+
+**Cause, part 2**: Trino reserves roughly 30% of `jvm.maxHeapSize` automatically as headroom (`heap-headroom-per-node`); `query.maxMemoryPerNode` plus that headroom has to fit *inside* the heap or the coordinator refuses to boot. Bumping the container's memory limit alone (without checking how `maxMemoryPerNode` relates to the new heap size) reproduces this immediately if `maxMemoryPerNode` was set close to the old heap ceiling.
+
+**Resolution**: when resizing for real data volume, change all three settings together and keep clear margin: container memory limit > `jvm.maxHeapSize` (leaves room for off-heap/native memory, direct buffers, metaspace — don't set the heap equal to the container limit), and `jvm.maxHeapSize` > `query.maxMemoryPerNode` + ~30% headroom (don't set `maxMemoryPerNode` close to the heap ceiling either). A rough working ratio that held for a several-million-row incremental load: 4Gi container limit / 3000M heap / 1800MB `maxMemoryPerNode`.
+
+**Don't assume a doubled join (or any other query-shape inefficiency) is the cause without an A/B test proving it** — confirmed the hard way here. The original OOM happened under a query with a real, genuine inefficiency: an anti-join CTE pre-filtering "changed or new" rows, feeding into dbt's `merge` incremental strategy, which then did its *own* internal join against the same target table — two joins where one would do. Rewriting to eliminate that (see the insert/update-split entry below) was a real, worthwhile fix on its own merits, but a direct A/B test — reverting Trino to the exact original undersized limits and rerunning the rewritten, single-join, no-MERGE version against comparable data volume — still `OOMKilled` the coordinator, this time on a *smaller* row count (~1.3M vs. the original 3M). That's decisive: the double-join was a real but secondary inefficiency, not the dominant cause. The dominant cause was `server.workers: 0` (Trino's coordinator doing double duty as its only worker, deliberately, to fit a laptop) concentrating an entire multi-million-row query's memory footprint onto one node, something no query-shape rewrite fixes — only vertical (more memory per node) or horizontal (more nodes, unavailable here by design) scaling does. **Lesson**: when a query OOMs and you can see a real inefficiency in its shape, fixing the inefficiency is still worth doing, but don't declare victory on the resource question until you've re-run the *fixed* query against the *original* resource ceiling and confirmed it actually survives — "this looks more efficient now" and "this now fits in the memory budget" are different claims, and only a rerun proves the second one.
+
 ### Fixing a writer doesn't retroactively fix already-materialized tables
 
 **Symptom**: after fixing a bug in code that writes a table's schema (e.g. a timestamp column written without timezone info), newly-written data is correct, but querying the table still shows the old, wrong column type.
@@ -181,6 +193,38 @@ Only affects models that set an explicit `schema` config.
 **Cause**: `pl.datetime(2026, 1, 1)` is a **Polars expression constructor**, meant for use inside `select()`/`with_columns()` — using it as a plain literal value in a Python list (not inside a Polars expression context) doesn't do what it looks like it does.
 
 **Resolution**: use `datetime.datetime(...)` from the standard library for actual literal values; reserve `pl.datetime()` for expression contexts.
+
+---
+
+## Polars data processing (raw_to_clean, landing/raw/clean assets)
+
+### `pl.DataFrame()`/`pl.read_csv()` sample only the first N rows to infer a column's type — a late, real value can crash the build entirely
+
+**Symptom**: `could not append value "..." to the builder; make sure that all rows have the same schema` constructing a DataFrame from a `list[dict]`, or a column silently inferring as the wrong type (e.g. an all-digit ID column inferring `Int64` instead of the intended string) reading a CSV.
+
+**Cause**: Polars' schema inference (`infer_schema_length`, default 100 for `pl.DataFrame()`/CSV reading) only looks at the first N rows. A column that's null across every sampled row but has a real string value later in a multi-thousand-row batch breaks the builder the moment it hits that later row — Polars committed to a schema before ever seeing the value that contradicts it. A column that looks numeric in every row (e.g. `"5000"`, `"6100"`) infers as `Int64` even when it's semantically a string identifier.
+
+**Resolution**: pass `infer_schema_length=None` to scan every row before committing to a schema — turns the crash-on-a-later-row failure mode into a correct (if occasionally surprising) upfront inference. Doesn't fully solve the "numeric-looking string" case (Polars will still legitimately infer `Int64` for an all-digit column if that's genuinely what every row's data looks like) — that's what a schema-registry-driven reconciliation step downstream is for (see below), not something CSV-read-time flags can fix on their own.
+
+**Caveat**: a column that's *entirely* null across the whole file (not just the sample) still infers as Polars' `Null` type even with `infer_schema_length=None` — there's no data to infer a real type from. Handle this explicitly downstream (cast to a known/expected type, or default to a sensible fallback like `Utf8`) rather than assuming full-file scanning eliminates every null-related edge case.
+
+### `pl.concat(how="vertical_relaxed")` requires an identical column set across frames — only dtype differences are tolerated, not column differences
+
+**Symptom**: `SchemaError: schema lengths differ` concatenating several DataFrames (e.g. one CSV file per historical batch in a file-drop landing directory) where one file has a different column count than the others.
+
+**Cause**: `"vertical_relaxed"` relaxes *type* mismatches between frames with the same columns (casting to a common supertype) — it does not union differing column sets. A file-drop source's historical files can genuinely gain/lose columns over time (the same schema-evolution scenario a downstream reconciliation step is built to handle), and the naive `vertical_relaxed` concat breaks on exactly that case instead of tolerating it.
+
+**Resolution**: use `how="diagonal_relaxed"` instead — unions the columns across all frames and fills any frame missing a given column with null, while still relaxing dtype mismatches for columns that are present in both. This is the vectorized equivalent of what a plain `list[dict]`-based concatenation (e.g. `all_rows.extend(...)`) tolerates for free via `.get()`-style defensive access — `vertical_relaxed` is the wrong default the moment historical batches aren't guaranteed to have identical columns.
+
+### Reactive schema-registry reconciliation vs. hardcoded per-column `schema_overrides` dicts
+
+If a pipeline validates incoming data against a metadata-tracked expected schema (a `schema_registry`-style table) and that schema can legitimately drift over time (a source system adds a column, or changes a column's precision — e.g. starts sending an ID as an integer instead of a zero-padded string): don't hardcode a Python dict of Polars dtype overrides per feed as the fix for a schema-inference mismatch. It silently reintroduces exactly the problem the registry exists to track, and produces inconsistent per-feed special-casing across a codebase (some feeds go through the registry, others get a bespoke override dict).
+
+**Better pattern**: reconcile the *inferred* schema against the *registered* schema at the point data enters the pipeline, before validation — null/all-null columns get cast to the already-known type from the registry (or a safe default like `Utf8` if genuinely new); a new column not yet in the registry gets added automatically (nullable, inferred type); a column whose *non-null* data now has a different concrete type than registered is treated as a legitimate upstream schema change — auto-evolve the registry to the new type and let the run proceed, don't fail it. Only a column *disappearing* entirely (present in the registry, absent from this run's data) should hard-fail — silently dropping a promised column is never safe to auto-heal, unlike the other three cases.
+
+**A consequence worth knowing if the target table is a spec-strict format like Iceberg**: Iceberg's schema evolution rules only allow a narrow set of "safe" type promotions in place (`int`→`long`, `float`→`double`) — a change like `string`→`long` (a plausible real case: an ID field the source system suddenly sends as pure digits) isn't a legal in-place column-type change. If the target table has no cross-run history to preserve (e.g. it's overwritten fresh every run, not accumulated), the simplest correct response to *any* detected schema change is to drop and recreate the table under the new schema rather than attempting in-place evolution with a fallback path — there's nothing to lose by recreating it, and it sidesteps Iceberg's promotion restrictions entirely.
+
+**A second consequence, one layer downstream**: if a *cumulative* table (e.g. a dbt incremental model built via `MERGE`) reads from the table whose schema just evolved, the cumulative table still has the *old* column type baked into its own already-materialized schema — `MERGE`'s source/target column types have to match, so the very next incremental run fails with a type-mismatch error even though the upstream schema change was itself handled correctly. Dropping+recreating the cumulative table isn't viable if it holds history nothing else can reconstruct (a full backing snapshot only ever holds the *current* run's batch, not the union of everything ever seen). The fix belongs in the cumulative model itself: cast every source column to a fixed, deliberately-chosen target type in the model's own `select`, decoupling the warehouse's stable contract from whatever type upstream happens to infer on any given run. This is standard dbt staging-layer practice (normalize/type-stabilize before anything durable) for exactly this reason, not something specific to a Polars/Iceberg source — a bare `select *`/unqualified column list in a staging model is implicitly betting the source's inferred types never change.
 
 ---
 
@@ -284,6 +328,22 @@ If cross-run concurrency safety is a concern (e.g. two overlapping runs of the s
 
 **Resolution**: use a plain space-separated before/after set-difference instead — snapshot `.items[*].metadata.name` before submitting, poll again after, and diff the two sets — rather than indexing into a list that might still be empty.
 
+### A workspace member's own `pyproject.toml` must declare every module it directly imports, even if another workspace member happens to already pull it in
+
+**Symptom**: code runs fine locally under `uv run` (a shared `.venv` across the whole `uv` workspace), but the same code fails inside a Docker image built from just one workspace member's own `pyproject.toml`/lockfile-resolved dependency set — `ModuleNotFoundError` for a package that's genuinely used, and genuinely installed locally.
+
+**Cause**: a `uv` workspace shares one `.venv` across every member, so a package declared as a dependency of member A is importable from member B's code too during local dev, even though B never declared it. A container image built from B's own dependency list alone doesn't have that accidental transitive availability — only what B itself declares.
+
+**Resolution**: declare every module a package's own code directly imports in that package's own `pyproject.toml`, regardless of whether some other workspace member already happens to depend on it. Don't rely on "it imports fine locally" as confirmation a dependency is correctly declared in a multi-package workspace — verify against the actual built artifact (the Docker image, a fresh single-package venv) instead.
+
+### A `kubectl wait --timeout` tuned for a normal run can be too short for a legitimate first-run workload
+
+**Symptom**: a smoke-test/verification script's `kubectl wait --for=condition=complete ... --timeout=<N>s` times out and reports failure, even though the underlying Dagster run is healthy and completes successfully shortly after — checking `data_feed_run`/`data_model_run` (or the Dagster UI) for that run shows every stage green.
+
+**Cause**: a fresh/reset metadata database means an incremental feed's watermark is empty, so its next run does a full historical catch-up (e.g. every available month from an external API's start, one sequential HTTP call per month) instead of a normal incremental step — genuinely, correctly slower than the steady-state case the timeout was originally tuned against.
+
+**Resolution**: size verification timeouts for the worst *legitimate* case (a cold-start full backfill), not just the common steady-state case — a "the pipeline is broken" false negative from an under-provisioned timeout is worse than a verification step that occasionally takes a few extra minutes on a fresh environment. When a verification script also asserts specific row counts (e.g. "expect N successful rows for this run"), keep that count in sync by hand as new feeds/models get added — it's easy for the count to go stale (still asserting an old, smaller number) long after the timeout itself gets noticed and fixed.
+
 ### `pkill -f` (SIGTERM) doesn't reliably kill a process once its backing resources are already gone
 
 **Symptom**: a `pkill` call reports success (exit code 0), but the target process is still alive 10+ seconds later, unresponsive to further signals.
@@ -303,6 +363,16 @@ If building a Type-2 SCD pattern where an intermediate model needs to detect "a 
 ### Iceberg tables require microsecond timestamp precision — dbt's default `current_timestamp()` renders milliseconds
 
 If using dbt snapshots (or any model) against Iceberg tables: dbt's default `current_timestamp` macro renders `TIMESTAMP(3) WITH TIME ZONE` (millisecond precision). Iceberg's table spec only supports microsecond precision, so writes to `TIMESTAMP(3)` columns fail against Iceberg tables. Override `trino__current_timestamp()` to render `current_timestamp(6)` before any snapshot/timestamp-writing model runs against Iceberg.
+
+### Explicit insert/update split instead of MERGE — and how to get there without an adapter that lets you invent strategy names
+
+If avoiding `MERGE` for an incremental upsert (a defensible, common preference — MERGE's matched/unmatched query planning is comparatively newer/heavier than plain `DELETE`+`INSERT` on some engines, and a MERGE gives no built-in visibility into how many rows were inserts vs. updates): a naive first attempt at "only touch changed rows" often ends up computing a pre-filter join (an anti-join CTE excluding unchanged rows) *and then* still using `incremental_strategy='merge'`, which does its **own separate internal join** against the same target table to figure out matched/unmatched rows. That's two joins against the target where one would do — a real inefficiency, not just a stylistic MERGE-avoidance question (see the Trino OOM entry above for what this cost in practice).
+
+**The actual fix**: compute the *single* join needed for change-detection once, in the model's own SQL, classifying each surviving row with an explicit flag column (e.g. `_change_type = 'insert' | 'update'`) — this join already tells you everything a MERGE's internal join would have told you a second time. Apply the result with a plain `DELETE` (matching only the 'update' rows' keys) followed by `INSERT` (everything from the classified set) — this achieves "update" semantics using only DELETE+INSERT, both cheap and well-supported by Iceberg/Trino, without ever invoking MERGE's own planner.
+
+**The adapter-dispatch trick that makes this work cleanly in dbt**: you can't just invent a new `incremental_strategy` name (e.g. `'insert_update_split'`) — at least on dbt-trino, `TrinoAdapter.valid_incremental_strategies()` is a hardcoded Python list (`["append", "merge", "delete+insert", "microbatch"]`), and a project can't extend it via macros alone (that's compiled adapter code, not Jinja). The workaround: reuse an *existing*, already-whitelisted strategy name whose shipped SQL-generating macro is close in spirit — `delete+insert` is the natural fit — but override that macro's implementation at the **project level**. dbt's macro dispatch resolves a project-defined macro of the same name (`trino__get_delete_insert_merge_sql`) ahead of the adapter-shipped one, so the config stays valid (`incremental_strategy='delete+insert'`, no adapter changes needed) while the actual generated SQL is entirely custom (in this case, reading a `_change_type` column the shipped version has no concept of).
+
+**A subtlety worth getting right**: any classification column added purely for this purpose (like `_change_type`) must never appear in the model's final `select *` on the **non-incremental** branch (a model's first run does a plain `CREATE TABLE AS SELECT`, which bakes in whatever the compiled query returns) — otherwise it becomes a real, permanently-persisted column in the target table. Gate it inside the `{% if is_incremental() %}` branch only; a first run never invokes the incremental-strategy macro at all (dbt's own incremental materialization only calls it once the target already exists), so the column never gets a chance to leak into the initial schema.
 
 ---
 

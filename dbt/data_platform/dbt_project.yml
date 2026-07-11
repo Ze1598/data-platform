@@ -16,14 +16,22 @@ models:
   data_platform:
     staging:
       +materialized: incremental
-      +incremental_strategy: merge
+      # Not a real MERGE -- reuses the `delete+insert` strategy name (the
+      # only whitelisted name that fits), but macros/insert_update_split.sql
+      # overrides trino__get_delete_insert_merge_sql project-wide to do an
+      # explicit insert/update split via a `_change_type` column each
+      # model computes itself, rather than the adapter's default
+      # (delete every matching key, then insert everything from source,
+      # with no insert/update distinction). See Learnings.md.
+      +incremental_strategy: delete+insert
     model:
-      # Type 1 dimensions and facts use the same merge pattern as staging
-      # (see Roadmap.md "Model Layer: SCD Design"). int_*_with_deletes
-      # intermediate models override this to `view` individually -- they're
-      # cheap to recompute and always reflect current staging+clean state.
+      # Type 1 dimensions and facts use the same insert/update-split
+      # pattern as staging (see Roadmap.md "Model Layer: SCD Design").
+      # int_*_with_deletes intermediate models override this to `view`
+      # individually -- they're cheap to recompute and always reflect
+      # current staging+clean state.
       +materialized: incremental
-      +incremental_strategy: merge
+      +incremental_strategy: delete+insert
     serve:
       # `_latest`/`_historical` views, generated from model_feed by
       # scripts/generate_serve_views.py (Roadmap.md "Serve layer

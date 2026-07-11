@@ -46,6 +46,42 @@ SALES_SCHEMA = [
     {"name": "sale_timestamp", "data_type": "timestamp", "nullable": False, "ordinal": 15, "description": "Transaction timestamp, UTC"},
 ]
 
+# Phase 9: financial_transactions (CSV file-drop source, incremental on
+# posted_date) -- see scripts/generate_financial_reports.py for the
+# generator this feed's landing asset reads the output of.
+FINANCIAL_TRANSACTIONS_SCHEMA = [
+    {"name": "transaction_id", "data_type": "string", "nullable": False, "ordinal": 1, "description": "Business key, unique per journal-entry line"},
+    {"name": "posted_date", "data_type": "timestamp", "nullable": False, "ordinal": 2, "description": "When the transaction was posted, UTC -- the incremental watermark column"},
+    {"name": "account_code", "data_type": "string", "nullable": False, "ordinal": 3, "description": "Chart-of-accounts code"},
+    {"name": "account_name", "data_type": "string", "nullable": False, "ordinal": 4, "description": "Chart-of-accounts name"},
+    {"name": "description", "data_type": "string", "nullable": False, "ordinal": 5, "description": "Free-text transaction description"},
+    {"name": "debit_amount", "data_type": "double", "nullable": False, "ordinal": 6, "description": "Debit amount; 0 if this line is a credit"},
+    {"name": "credit_amount", "data_type": "double", "nullable": False, "ordinal": 7, "description": "Credit amount; 0 if this line is a debit"},
+    {"name": "currency", "data_type": "string", "nullable": False, "ordinal": 8, "description": "ISO currency code"},
+    {"name": "cost_center", "data_type": "string", "nullable": False, "ordinal": 9, "description": "Owning cost center"},
+]
+
+# Phase 9: police_crimes (UK Police API, https://data.police.uk/docs/,
+# incremental on month -- one calendar month of street-level crime data per
+# run, for a fixed point in central London to keep volume bounded).
+# Flattened from the API's nested location/outcome_status JSON shape,
+# confirmed against a live call before designing this.
+POLICE_CRIMES_SCHEMA = [
+    {"name": "id", "data_type": "long", "nullable": False, "ordinal": 1, "description": "Business key, the crime's own numeric ID"},
+    {"name": "persistent_id", "data_type": "string", "nullable": True, "ordinal": 2, "description": "Stable cross-request ID; often empty per the API"},
+    {"name": "category", "data_type": "string", "nullable": False, "ordinal": 3, "description": "Crime category"},
+    {"name": "location_type", "data_type": "string", "nullable": True, "ordinal": 4, "description": "'Force' or 'BTP' (British Transport Police)"},
+    {"name": "location_subtype", "data_type": "string", "nullable": True, "ordinal": 5, "description": "Further location classification, often empty"},
+    {"name": "street_id", "data_type": "long", "nullable": True, "ordinal": 6, "description": "Anonymised street ID"},
+    {"name": "street_name", "data_type": "string", "nullable": True, "ordinal": 7, "description": "Anonymised street name ('On or near ...')"},
+    {"name": "latitude", "data_type": "double", "nullable": True, "ordinal": 8, "description": "Approximate latitude"},
+    {"name": "longitude", "data_type": "double", "nullable": True, "ordinal": 9, "description": "Approximate longitude"},
+    {"name": "context", "data_type": "string", "nullable": True, "ordinal": 10, "description": "Extra context, often empty"},
+    {"name": "month", "data_type": "string", "nullable": False, "ordinal": 11, "description": "YYYY-MM this record belongs to -- the incremental watermark column"},
+    {"name": "outcome_category", "data_type": "string", "nullable": True, "ordinal": 12, "description": "Latest known outcome category, null if none yet"},
+    {"name": "outcome_date", "data_type": "string", "nullable": True, "ordinal": 13, "description": "YYYY-MM of the latest outcome, null if none yet"},
+]
+
 
 def seed_source_system(cur, *, code: str, name: str, description: str, system_type: str) -> None:
     cur.execute(
@@ -69,20 +105,32 @@ def seed_data_feed(
     business_key_columns: list[str],
     staging_table_name: str,
     processing_engine: str,
+    incremental_column: str | None = None,
+    incremental_column_type: str | None = None,
+    landing_path_template: str | None = None,
+    schedule_cron: str | None = None,
+    updates_enabled: bool = True,
 ) -> None:
     cur.execute(
         """
         INSERT INTO data_feed (
             source_system_id, code, name, object_name, extraction_type,
-            business_key_columns, staging_table_name, processing_engine
+            business_key_columns, staging_table_name, processing_engine,
+            incremental_column, incremental_column_type, landing_path_template, schedule_cron,
+            updates_enabled
         )
         VALUES (
             (SELECT id FROM source_system WHERE code = %s),
-            %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (code) DO NOTHING
         """,
-        (source_system_code, code, name, object_name, extraction_type, psycopg.types.json.Json(business_key_columns), staging_table_name, processing_engine),
+        (
+            source_system_code, code, name, object_name, extraction_type,
+            psycopg.types.json.Json(business_key_columns), staging_table_name, processing_engine,
+            incremental_column, incremental_column_type, landing_path_template, schedule_cron,
+            updates_enabled,
+        ),
     )
 
 
@@ -148,6 +196,20 @@ def main() -> None:
             description="Point-of-sale system for supermarket branch transactions",
             system_type="database",
         )
+        seed_source_system(
+            cur,
+            code="erp_export",
+            name="ERP financial export",
+            description="Periodic CSV export of general-ledger transactions, dropped into data-lake/landing/financial_transactions/",
+            system_type="file_drop",
+        )
+        seed_source_system(
+            cur,
+            code="uk_police_api",
+            name="UK Police API",
+            description="https://data.police.uk/docs/ -- street-level crime data",
+            system_type="api",
+        )
 
         seed_data_feed(
             cur,
@@ -171,9 +233,39 @@ def main() -> None:
             staging_table_name="sales",
             processing_engine="polars",
         )
+        seed_data_feed(
+            cur,
+            source_system_code="erp_export",
+            code="financial_transactions",
+            name="Financial Transactions",
+            object_name="financial_transactions",
+            extraction_type="incremental",
+            business_key_columns=["transaction_id"],
+            staging_table_name="financial_transactions",
+            processing_engine="polars",
+            incremental_column="posted_date",
+            incremental_column_type="timestamp",
+            landing_path_template="data-lake/landing/financial_transactions",
+        )
+        seed_data_feed(
+            cur,
+            source_system_code="uk_police_api",
+            code="police_crimes",
+            name="UK Police Street-Level Crimes",
+            object_name="crimes-street/all-crime",
+            extraction_type="incremental",
+            business_key_columns=["id"],
+            staging_table_name="police_crimes",
+            processing_engine="polars",
+            incremental_column="month",
+            incremental_column_type="string",
+            schedule_cron="0 6 * * *",
+        )
 
         seed_schema_registry(cur, data_feed_code="customers", version=1, column_definitions=CUSTOMERS_SCHEMA, created_by="seed_metadata_db")
         seed_schema_registry(cur, data_feed_code="sales", version=1, column_definitions=SALES_SCHEMA, created_by="seed_metadata_db")
+        seed_schema_registry(cur, data_feed_code="financial_transactions", version=1, column_definitions=FINANCIAL_TRANSACTIONS_SCHEMA, created_by="seed_metadata_db")
+        seed_schema_registry(cur, data_feed_code="police_crimes", version=1, column_definitions=POLICE_CRIMES_SCHEMA, created_by="seed_metadata_db")
 
         # Model layer (Phase 7): dim_customer stands alone (no real FK from
         # sales to customers in this dataset -- see Learnings.md); dim_branch

@@ -259,7 +259,17 @@ verify-pipeline:
         exit 1
     fi
     echo "Watching job/$job_name..."
-    kubectl wait --for=condition=complete "job/$job_name" -n orchestration --timeout=180s
+    # 900s, not 180s -- a from-scratch metadata DB (the normal post-nuke
+    # state this recipe runs against) means police_crimes' watermark is
+    # empty, so landing_police_crimes does a full historical backfill
+    # (every available month since the UK Police API's start, one
+    # sequential HTTP call per month) instead of a normal incremental
+    # catch-up. Confirmed for real: this alone took ~2.5 minutes against
+    # the live API on top of everything else in __ASSET_JOB, blowing past
+    # the old 180s budget even though the run was genuinely healthy the
+    # whole time -- kubectl wait timing out here is a recipe bug, not a
+    # pipeline bug.
+    kubectl wait --for=condition=complete "job/$job_name" -n orchestration --timeout=900s
 
     run_id="${job_name#dagster-run-}"
     feed_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
@@ -268,11 +278,14 @@ verify-pipeline:
     model_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
         "select count(*) from data_model_run where dagster_run_id = '$run_id' and job_successful = true;")
-    if [[ "$feed_ok" -ne 2 || "$model_ok" -ne 2 ]]; then
-        echo "Expected 2 successful data_feed_run + 2 successful data_model_run rows for run $run_id, got $feed_ok + $model_ok" >&2
+    # 4 + 4, not 2 + 2 -- Phase 9 added financial_transactions and
+    # police_crimes as two more feeds __ASSET_JOB always includes
+    # alongside customers/sales.
+    if [[ "$feed_ok" -ne 4 || "$model_ok" -ne 4 ]]; then
+        echo "Expected 4 successful data_feed_run + 4 successful data_model_run rows for run $run_id, got $feed_ok + $model_ok" >&2
         exit 1
     fi
-    echo "Pipeline run $run_id succeeded: 2/2 data_feed_run + 2/2 data_model_run rows successful."
+    echo "Pipeline run $run_id succeeded: 4/4 data_feed_run + 4/4 data_model_run rows successful."
 
 # Unit tests -- pure logic, no live cluster needed.
 # Defensive .pth sweep here too, not just in `start`/`verify-pipeline` --
