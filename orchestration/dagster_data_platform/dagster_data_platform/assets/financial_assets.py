@@ -1,4 +1,6 @@
 import os
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -22,6 +24,8 @@ from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 FEED_CODE = "financial_transactions"
 FEED_POOL = f"feed:{FEED_CODE}"
 LANDING_SUBDIR = "landing/financial_transactions"
+RAW_SUBDIR = "raw/financial_transactions"
+ARCHIVE_SUBDIR = "archive/financial_transactions"
 
 # .../orchestration/dagster_data_platform/dagster_data_platform/assets/financial_assets.py
 # -> repo root is 4 parents up, same convention as dbt_assets.py's
@@ -32,9 +36,20 @@ LANDING_SUBDIR = "landing/financial_transactions"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
+def _data_lake_dir() -> Path:
+    return Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
+
+
 def _landing_dir() -> Path:
-    data_lake = Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
-    return data_lake / LANDING_SUBDIR
+    return _data_lake_dir() / LANDING_SUBDIR
+
+
+def _raw_dir() -> Path:
+    return _data_lake_dir() / RAW_SUBDIR
+
+
+def _archive_dir() -> Path:
+    return _data_lake_dir() / ARCHIVE_SUBDIR
 
 
 @asset(pool=FEED_POOL)
@@ -105,6 +120,25 @@ def raw_financial_transactions(
         dagster_run_id=context.run_id,
     ) as log:
         df = landing_financial_transactions
+
+        # raw = a verbatim, durable, platform-internal copy of whatever
+        # landing had this run -- not a transformation (clean is where
+        # parsing/typing happens; raw_to_clean.reconcile_schema() etc. only
+        # ever touch the in-memory df, never this copy). Copies the actual
+        # landing *files* byte-for-byte, not a re-serialization of the
+        # DataFrame -- this run's raw/run_id=<id>/ folder is then the
+        # single source of truth for archive_financial_transactions below:
+        # whatever filenames land here are exactly what this run consumed
+        # from landing, and exactly what gets archived + wiped from
+        # landing once the whole run (through the model layer) succeeds.
+        # Landing itself is never touched here -- only read.
+        if not df.is_empty():
+            raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
+            raw_run_dir.mkdir(parents=True, exist_ok=True)
+            landing_dir = _landing_dir()
+            for f in sorted(landing_dir.glob("*.csv")):
+                shutil.copy2(f, raw_run_dir / f.name)
+
         log.set_counts(rows_read=df.height)
 
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
@@ -171,6 +205,47 @@ def clean_financial_transactions(
     return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": df.height})
 
 
+@asset(pool=FEED_POOL, deps=[dbt_financial_transactions_assets])
+def archive_financial_transactions(context: AssetExecutionContext) -> Output[None]:
+    """Archives this run's raw snapshot and wipes the landing files it
+    came from -- only reachable once dbt_financial_transactions_assets has
+    fully succeeded (a plain `deps=` dependency; Dagster skips a downstream
+    asset entirely if any of its dependencies failed, so a clean/dbt
+    failure anywhere upstream leaves landing completely untouched for a
+    retry -- no separate error handling needed here for that case).
+
+    archive holds the long-term, disaster-recovery copy: one
+    watermark-style timestamped folder (YYYY/MM/DD/HH/MM/SS) per run,
+    holding everything that run ingested -- reload archived folders in
+    run order to rebuild raw/clean/staging from scratch if ever needed.
+    landing is wiped only now, at the very end, deliberately last: if
+    anything upstream failed, this asset never runs at all, so landing
+    still has the original files and a re-run has something to reprocess
+    without needing to restore from archive.
+    """
+    raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
+    if not raw_run_dir.exists() or not any(raw_run_dir.iterdir()):
+        # Nothing was new this run (raw_financial_transactions only writes
+        # this folder when there were rows to process) -- nothing to
+        # archive or wipe. Still a success, just a no-op.
+        return Output(None, metadata={"archived_files": 0})
+
+    now = datetime.now(timezone.utc)
+    archive_run_dir = _archive_dir() / now.strftime("%Y/%m/%d/%H/%M/%S")
+    archive_run_dir.mkdir(parents=True, exist_ok=True)
+
+    landing_dir = _landing_dir()
+    archived = 0
+    for f in sorted(raw_run_dir.iterdir()):
+        shutil.copy2(f, archive_run_dir / f.name)
+        archived += 1
+        landing_file = landing_dir / f.name
+        if landing_file.exists():
+            landing_file.unlink()
+
+    return Output(None, metadata={"archived_files": archived, "archive_path": str(archive_run_dir)})
+
+
 # Scoped to just this feed's chain -- a per-feed sensor triggering the
 # whole (implicit) __ASSET_JOB would also re-run every other feed on every
 # new financial-transactions file, defeating the point of a file-triggered
@@ -185,6 +260,7 @@ financial_transactions_job = define_asset_job(
         raw_financial_transactions,
         clean_financial_transactions,
         dbt_financial_transactions_assets,
+        archive_financial_transactions,
     ),
 )
 

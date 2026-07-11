@@ -53,17 +53,7 @@ with source_raw as (
 {% if is_incremental() %}
 
 , source as (
-
-    select
-        source_raw.*,
-        case when target._key_hash is null then 'insert' else 'update' end as _change_type
-    from source_raw
-    left join {{ this }} as target
-        on source_raw._key_hash = target._key_hash
-    where target._key_hash is null                                   -- new business key
-       {% if updates_enabled %}
-       or target._attr_hash != source_raw._attr_hash                 -- changed attributes
-       {% endif %}
+    {{ classify_changes('source_raw', updates_enabled) }}
 )
 
 {% endif %}

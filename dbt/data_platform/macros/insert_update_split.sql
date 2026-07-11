@@ -53,3 +53,35 @@
         {% endif %}
     )
 {%- endmacro %}
+
+{#
+    The other half of the insert/update split: the single join against
+    the target that both classifies each row ('insert'/'update' via
+    _change_type, consumed by trino__get_delete_insert_merge_sql above)
+    and *is* the change-detection step -- not a pre-filter ahead of a
+    second join inside a generated MERGE, which is what every one of the
+    6 models using this replaced (see Learnings.md, "Explicit
+    insert/update split instead of MERGE"). Assumes the standard
+    _key_hash/_attr_hash pair every model in this project computes via
+    row_hash() -- not a generic arbitrary-key join, deliberately, since
+    every caller already has both hashes by the time this runs.
+
+    `source_relation` is the upstream CTE name providing this run's rows
+    (already hashed); `updates_enabled` (from data_feed.updates_enabled or
+    model_feed.updates_enabled, threaded in via the updates_enabled_by_model
+    dbt var -- see dbt_assets.py) gates whether the attribute-hash branch
+    is even compiled in: false means this feed/model is insert-only, an
+    existing business key is never re-evaluated for attribute changes.
+#}
+{% macro classify_changes(source_relation, updates_enabled) %}
+    select
+        {{ source_relation }}.*,
+        case when target._key_hash is null then 'insert' else 'update' end as _change_type
+    from {{ source_relation }}
+    left join {{ this }} as target
+        on {{ source_relation }}._key_hash = target._key_hash
+    where target._key_hash is null                                   {# new business key #}
+       {% if updates_enabled %}
+       or target._attr_hash != {{ source_relation }}._attr_hash      {# changed attributes #}
+       {% endif %}
+{% endmacro %}

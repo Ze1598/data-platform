@@ -12,6 +12,7 @@ from dagster_data_platform.assets.dbt_assets import (
 )
 from dagster_data_platform.assets.extraction_assets import clean_customers, landing_customers, raw_customers
 from dagster_data_platform.assets.financial_assets import (
+    archive_financial_transactions,
     clean_financial_transactions,
     financial_transactions_sensor,
     landing_financial_transactions,
@@ -41,6 +42,7 @@ defs = Definitions(
         raw_financial_transactions,
         clean_financial_transactions,
         dbt_financial_transactions_assets,
+        archive_financial_transactions,
         landing_police_crimes,
         raw_police_crimes,
         clean_police_crimes,

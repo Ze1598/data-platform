@@ -232,6 +232,11 @@ def main() -> None:
             business_key_columns=["invoice_id"],
             staging_table_name="sales",
             processing_engine="polars",
+            # A completed sale/invoice line is immutable in this domain --
+            # you refund or void a transaction, you don't edit one in
+            # place -- so staging never needs attribute-hash update
+            # detection for this feed, only new-key inserts.
+            updates_enabled=False,
         )
         seed_data_feed(
             cur,
@@ -246,6 +251,11 @@ def main() -> None:
             incremental_column="posted_date",
             incremental_column_type="timestamp",
             landing_path_template="data-lake/landing/financial_transactions",
+            # A posted GL entry is immutable in real-world accounting --
+            # you post a reversing entry, you don't edit a posted line --
+            # so staging never needs attribute-hash update detection for
+            # this feed, only new-key inserts.
+            updates_enabled=False,
         )
         seed_data_feed(
             cur,

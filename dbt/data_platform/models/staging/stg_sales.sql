@@ -11,10 +11,11 @@
     Roadmap.md "Model Layer: SCD Design"). Same insert/update-split
     pattern as stg_customers.sql — see there for the full reasoning
     (why this isn't a MERGE, why every column is cast explicitly).
-    sales is transactional (each invoice_id is immutable once written), so
-    in practice _attr_hash should never change for an existing key, but
-    the classification costs nothing and stays consistent with every
-    other staging model.
+    sales is transactional (a completed invoice line is immutable --
+    you refund/void, you don't edit one in place), so
+    data_feed.updates_enabled is false for this feed: attribute-hash
+    comparison is skipped entirely, only new invoice_ids are ever
+    written.
 #}
 
 {% set updates_enabled = var('updates_enabled_by_model', {}).get(model.name, true) %}
@@ -46,17 +47,7 @@ with source_raw as (
 {% if is_incremental() %}
 
 , source as (
-
-    select
-        source_raw.*,
-        case when target._key_hash is null then 'insert' else 'update' end as _change_type
-    from source_raw
-    left join {{ this }} as target
-        on source_raw._key_hash = target._key_hash
-    where target._key_hash is null                                   -- new business key
-       {% if updates_enabled %}
-       or target._attr_hash != source_raw._attr_hash                 -- changed attributes
-       {% endif %}
+    {{ classify_changes('source_raw', updates_enabled) }}
 )
 
 {% endif %}

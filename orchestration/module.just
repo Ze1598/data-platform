@@ -13,6 +13,7 @@ start:
     set -euo pipefail
     just _ensure-venv-visible
     just orchestration::generate-serve-views
+    just orchestration::generate-deletion-synthesis-views
     just orchestration::build-image
     kubectl create configmap dagster-instance \
         --from-file=dagster.yaml=dagster_home/dagster.yaml \
@@ -179,6 +180,18 @@ generate-serve-views:
     set -euo pipefail
     just _ensure-venv-visible
     cd {{justfile_directory()}} && uv run python scripts/generate_serve_views.py
+
+# Regenerate the model layer's deletion-synthesis intermediate models
+# (int_<feed>_with_deletes.sql) from model_feed + schema_registry
+# (scripts/generate_deletion_synthesis_views.py) -- same "must run before
+# build-image/dagster dev" reasoning as generate-serve-views above (the
+# manifest needs these files to already exist on disk). Also runnable
+# standalone after a model_feed.deletions_enabled change.
+generate-deletion-synthesis-views:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_deletion_synthesis_views.py
 
 # Launch the full pipeline via the real K8sRunLauncher (not `dagster asset
 # materialize`, which never touches it -- see DebugReference.md) and verify

@@ -57,18 +57,7 @@ hashed as (
 {% if is_incremental() %}
 
 , to_merge as (
-
-    select
-        hashed.*,
-        case when target._key_hash is null then 'insert' else 'update' end as _change_type
-    from hashed
-    left join {{ this }} as target
-        on hashed._key_hash = target._key_hash
-    where target._key_hash is null                                   -- new invoice
-       {% if updates_enabled %}
-       or target._attr_hash != hashed._attr_hash                     -- changed attributes
-       {% endif %}
-
+    {{ classify_changes('hashed', updates_enabled) }}
 )
 
 {% endif %}

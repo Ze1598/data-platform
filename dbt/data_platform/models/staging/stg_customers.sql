@@ -9,12 +9,12 @@
 {#
     clean -> staging: cumulative insert/update, hash-gated (see Roadmap.md
     "Model Layer: SCD Design"). Explicit insert/update split, not a MERGE
-    (see Learnings.md for the full reasoning): a single join against the
-    target below classifies each surviving row as 'insert' (no matching
-    key in target) or 'update' (matching key, different _attr_hash) via
-    `_change_type`; insert_update_split.sql's
+    (see Learnings.md for the full reasoning): classify_changes() (a
+    single join against the target) classifies each surviving row as
+    'insert' (no matching key in target) or 'update' (matching key,
+    different _attr_hash) via `_change_type`; insert_update_split.sql's
     `trino__get_delete_insert_merge_sql` override applies the two sets
-    with their own DELETE+INSERT statements. This join *is* the
+    with their own DELETE+INSERT statements. That join *is* the
     change-detection step -- not a pre-filter ahead of a second join
     inside a generated MERGE, which is what this replaced.
 
@@ -56,17 +56,7 @@ with source_raw as (
 {% if is_incremental() %}
 
 , source as (
-
-    select
-        source_raw.*,
-        case when target._key_hash is null then 'insert' else 'update' end as _change_type
-    from source_raw
-    left join {{ this }} as target
-        on source_raw._key_hash = target._key_hash
-    where target._key_hash is null                                   -- new business key
-       {% if updates_enabled %}
-       or target._attr_hash != source_raw._attr_hash                 -- changed attributes
-       {% endif %}
+    {{ classify_changes('source_raw', updates_enabled) }}
 )
 
 {% endif %}

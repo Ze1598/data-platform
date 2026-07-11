@@ -21,11 +21,10 @@
     regardless.
 
     Note: a posted financial transaction is real-world immutable (you
-    post a reversing entry, you don't edit a posted GL line) -- this feed
-    is a plausible candidate for data_feed.updates_enabled=false
-    (insert-only), but that's a metadata decision left to whoever owns
-    this feed's config, not decided here; the mechanism just respects
-    whatever the flag says.
+    post a reversing entry, you don't edit a posted GL line) --
+    data_feed.updates_enabled is false for this feed: attribute-hash
+    comparison is skipped entirely, only new transaction_ids are ever
+    written.
 #}
 
 {% set updates_enabled = var('updates_enabled_by_model', {}).get(model.name, true) %}
@@ -51,17 +50,7 @@ with source_raw as (
 {% if is_incremental() %}
 
 , source as (
-
-    select
-        source_raw.*,
-        case when target._key_hash is null then 'insert' else 'update' end as _change_type
-    from source_raw
-    left join {{ this }} as target
-        on source_raw._key_hash = target._key_hash
-    where target._key_hash is null                                   -- new business key
-       {% if updates_enabled %}
-       or target._attr_hash != source_raw._attr_hash                 -- changed attributes
-       {% endif %}
+    {{ classify_changes('source_raw', updates_enabled) }}
 )
 
 {% endif %}

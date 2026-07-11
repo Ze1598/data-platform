@@ -11,6 +11,7 @@ dbt/data_platform/dbt_packages/
 dbt/data_platform/logs/
 dbt/data_platform/profiles/.user.yml
 dbt/data_platform/models/serve/generated/
+dbt/data_platform/models/model/dimensions/generated/
 
 # DAGSTER_HOME runtime state (telemetry, compute logs, IO manager pickled
 # storage, log queue) — only dagster.yaml itself is source, everything
