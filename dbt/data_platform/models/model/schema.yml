@@ -29,6 +29,25 @@ models:
       - name: is_deleted
         tests: [not_null]
 
+  - name: fct_daily_financial_activity
+    tags: [financial_transactions]
+    columns:
+      - name: _key_hash
+        tests: [not_null, unique]
+      - name: _attr_hash
+        tests: [not_null]
+      - name: source_feed
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["sales", "financial_transactions"]
+      - name: source_id
+        tests: [not_null]
+      - name: activity_date
+        tests: [not_null]
+      - name: is_deleted
+        tests: [not_null]
+
 snapshots:
   - name: dim_customer_snapshot
     tags: [customers]

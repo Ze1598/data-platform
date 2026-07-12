@@ -1,4 +1,6 @@
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import polars as pl
 from dagster import AssetExecutionContext, Output, asset
@@ -8,6 +10,20 @@ from dagster_data_platform.resources.postgres_metadata_resource import PostgresM
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
 FEED_FRIENDLY_NAME = "customers"
+RAW_SUBDIR = "raw/customers"
+
+# .../orchestration/dagster_data_platform/dagster_data_platform/assets/extraction_assets.py
+# -> repo root is 4 parents up, same convention as financial_assets.py/
+# police_assets.py's REPO_ROOT.
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _data_lake_dir() -> Path:
+    return Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
+
+
+def _raw_dir() -> Path:
+    return _data_lake_dir() / RAW_SUBDIR
 # One pool per feed, shared across every step that touches its data anywhere
 # in the pipeline (this file + dbt_assets.py) — blocks two runs of this
 # feed from overlapping, e.g. one run's clean-layer write racing another
@@ -35,7 +51,7 @@ _BASE_CUSTOMERS = [
 ]
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def landing_customers(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
@@ -56,7 +72,7 @@ def landing_customers(
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def raw_customers(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
@@ -69,15 +85,21 @@ def raw_customers(
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
-        # Stub: passes the landing payload through unchanged. Phase 6
-        # replaces this with a real raw file write + parse/validate step.
+        # raw = a verbatim, durable, platform-internal copy of whatever was
+        # extracted this run -- zero transformation (same contract as
+        # raw_police_crimes/raw_sales). No archive step for this feed --
+        # synthetic smoketest data, no retention need.
         df = landing_customers
-        log.set_counts(rows_read=df.height)
+        if not df.is_empty():
+            raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
+            raw_run_dir.mkdir(parents=True, exist_ok=True)
+            df.write_parquet(raw_run_dir / "customers.parquet")
+        log.set_counts(rows_read=df.height, output_path=str(_raw_dir() / f"run_id={context.run_id}") if not df.is_empty() else None)
 
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def clean_customers(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,

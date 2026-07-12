@@ -166,6 +166,12 @@ create table schedule (
     is_active                 boolean not null default true
 );
 
+-- at most one schedule per controlled feed/model -- also what makes idempotent
+-- seeding possible (every other table's seed function uses ON CONFLICT against
+-- a natural-key unique constraint; schedule had none until this one)
+create unique index uq_schedule_controlling_object
+    on schedule (controlling_object_type, controlling_object_id);
+
 -- ---------------------------------------------------------------------------
 -- data_processing_runs (one row per feed-run or model-run per job execution
 -- -- same grain as the former data_feed_run/data_model_run, merged into one

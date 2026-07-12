@@ -1,4 +1,6 @@
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -10,6 +12,17 @@ from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
 FEED_FRIENDLY_NAME = "sales"
 FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
+RAW_SUBDIR = "raw/sales"
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _data_lake_dir() -> Path:
+    return Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
+
+
+def _raw_dir() -> Path:
+    return _data_lake_dir() / RAW_SUBDIR
 
 # Stub landing payload for Phase 6 — a synthetic supermarket sales run,
 # standing in for a real POS export until this feed gets a real source.
@@ -74,7 +87,7 @@ def _generate_sales_rows(n: int = 20) -> pl.DataFrame:
     ).drop("minutes_ago")
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def landing_sales(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
@@ -91,7 +104,7 @@ def landing_sales(
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def raw_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
@@ -104,16 +117,21 @@ def raw_sales(
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
-        # Stub: passes the landing payload through unchanged, same as
-        # raw_customers — real raw file writes are still out of scope
-        # (Phase 6 is specifically about raw->clean becoming real).
+        # raw = a verbatim, durable, platform-internal copy of whatever was
+        # extracted this run -- zero transformation (same contract as
+        # raw_police_crimes/raw_customers). No archive step for this feed --
+        # synthetic smoketest data, no retention need.
         df = landing_sales
-        log.set_counts(rows_read=df.height)
+        if not df.is_empty():
+            raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
+            raw_run_dir.mkdir(parents=True, exist_ok=True)
+            df.write_parquet(raw_run_dir / "sales.parquet")
+        log.set_counts(rows_read=df.height, output_path=str(_raw_dir() / f"run_id={context.run_id}") if not df.is_empty() else None)
 
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def clean_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,

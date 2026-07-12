@@ -191,6 +191,33 @@ def seed_lakehouse_model(
     )
 
 
+def seed_schedule(
+    cur,
+    *,
+    cron: str,
+    controlling_object_type: str,
+    controlling_object_friendly_name: str,
+) -> None:
+    table = "data_feed" if controlling_object_type == "feed" else "lakehouse_models"
+    # table is an internal literal (one of exactly two values above), not
+    # caller-supplied free text -- same safety pattern as postgres_metadata_
+    # resource.py's _ensure_run table/column composition.
+    cur.execute(
+        f"""
+        INSERT INTO schedule (cron, controlling_object_id, controlling_object_type)
+        SELECT %(cron)s, id, %(controlling_object_type)s
+        FROM {table}
+        WHERE friendly_name = %(friendly_name)s
+        ON CONFLICT (controlling_object_type, controlling_object_id) DO NOTHING
+        """,
+        {
+            "cron": cron,
+            "controlling_object_type": controlling_object_type,
+            "friendly_name": controlling_object_friendly_name,
+        },
+    )
+
+
 def main() -> None:
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         seed_source_system(
@@ -312,6 +339,30 @@ def main() -> None:
             deletes_enabled=False,
             updates_enabled=False,
         )
+        # First lakehouse_models row to depend on financial_transactions --
+        # flips stg_financial_transactions from the "zero dependents,
+        # defaults to updates_enabled=true" case to a real false, matching
+        # that staging model's own already-stated insert-only assumption
+        # (a posted GL entry isn't edited in place). A correction, not a
+        # regression -- see Progress.md.
+        seed_lakehouse_model(
+            cur,
+            friendly_name="fct_daily_financial_activity",
+            table_type="fact",
+            depends_on_feed_friendly_names=["sales", "financial_transactions"],
+            business_key_columns=["source_feed", "source_id"],
+            tracked_columns=["activity_date", "category", "amount"],
+            scd_type=1,
+            deletes_enabled=False,
+            updates_enabled=False,
+        )
+
+        # Migrates police_crimes' previously-hardcoded _SCHEDULE_CRON into
+        # real metadata; fct_daily_financial_activity is the first
+        # model-type schedule (expands into one generated Dagster schedule
+        # per dependent feed -- see scripts/generate_dagster_pipeline.py).
+        seed_schedule(cur, cron="0 6 * * *", controlling_object_type="feed", controlling_object_friendly_name="police_crimes")
+        seed_schedule(cur, cron="0 7 * * *", controlling_object_type="model", controlling_object_friendly_name="fct_daily_financial_activity")
 
         conn.commit()
     print("Seed complete.")

@@ -48,6 +48,10 @@ def _stage_for_dbt_node(unique_id: str) -> str:
 
 
 class DataPlatformDbtTranslator(DagsterDbtTranslator):
+    def __init__(self, group_name: str | None = None):
+        super().__init__()
+        self._group_name = group_name
+
     def get_asset_key(self, dbt_resource_props: Mapping[str, Any]) -> AssetKey:
         if (
             dbt_resource_props["resource_type"] == "source"
@@ -56,6 +60,19 @@ class DataPlatformDbtTranslator(DagsterDbtTranslator):
         ):
             return AssetKey(f"clean_{dbt_resource_props['name']}")
         return super().get_asset_key(dbt_resource_props)
+
+    def get_group_name(self, dbt_resource_props: Mapping[str, Any]) -> str | None:
+        # Lets every dbt-layer asset for a feed share group_name=<feed
+        # friendly_name> with that feed's hand-written landing/raw/clean
+        # assets (see extraction_assets.py etc.) -- AssetSelection.groups()
+        # then selects a feed's entire chain purely from a metadata string,
+        # no hardcoded per-feed asset lists needed (see
+        # scripts/generate_dagster_pipeline.py). None keeps superclass
+        # behavior, so a bare DataPlatformDbtTranslator() (e.g.
+        # tests/test_dbt_assets.py) is unaffected.
+        if self._group_name is not None:
+            return self._group_name
+        return super().get_group_name(dbt_resource_props)
 
 
 def _build_dbt_assets_for_feed(feed_friendly_name: str):
@@ -76,7 +93,7 @@ def _build_dbt_assets_for_feed(feed_friendly_name: str):
 
     @dbt_assets(
         manifest=dbt_project.manifest_path,
-        dagster_dbt_translator=DataPlatformDbtTranslator(),
+        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=feed_friendly_name),
         select=f"tag:{feed_friendly_name}",
         pool=f"feed:{feed_friendly_name}",
         name=f"dbt_{feed_friendly_name}_assets",
@@ -146,7 +163,10 @@ def _build_dbt_assets_for_feed(feed_friendly_name: str):
     return _dbt_assets_for_feed
 
 
-dbt_customers_assets = _build_dbt_assets_for_feed("customers")
-dbt_sales_assets = _build_dbt_assets_for_feed("sales")
-dbt_financial_transactions_assets = _build_dbt_assets_for_feed("financial_transactions")
-dbt_police_crimes_assets = _build_dbt_assets_for_feed("police_crimes")
+# No hardcoded per-feed calls here anymore -- scripts/generate_dagster_pipeline.py
+# calls _build_dbt_assets_for_feed(...) once per active data_feed row (a live
+# Postgres read at build/start time, not at this module's import time) and
+# writes the results into pipeline_generated.DBT_ASSETS. Call this factory
+# at most once per feed anywhere in the codebase -- calling it twice for the
+# same feed would construct two different @dbt_assets defs both claiming the
+# same AssetKeys, which Dagster rejects.

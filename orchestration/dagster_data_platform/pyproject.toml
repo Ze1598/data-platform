@@ -8,6 +8,7 @@ dependencies = [
     "dagster-dbt>=0.29",
     "dagster-k8s>=0.29",
     "dagster-postgres>=0.29",
+    "dagster-graphql>=1.13",
     "dbt-core>=1.9",
     "dbt-trino>=1.9",
     "trino>=0.330",

@@ -13,6 +13,7 @@ start:
     set -euo pipefail
     just _ensure-venv-visible
     just orchestration::seed-financial-landing
+    just orchestration::generate-pipeline-jobs
     just orchestration::generate-serve-views
     just orchestration::generate-deletion-synthesis-views
     just orchestration::build-image
@@ -185,6 +186,21 @@ seed-financial-landing:
         cd {{justfile_directory()}} && uv run python scripts/generate_financial_reports.py
     fi
 
+# Regenerate the dynamic pipeline foundation (per-feed dbt asset factory
+# calls, per-feed jobs, real Dagster schedules) from data_feed/schedule/
+# lakehouse_models (scripts/generate_dagster_pipeline.py) as
+# pipeline_generated.py -- must run before build-image/dagster dev, same
+# "structural decisions are a build-time codegen artifact, never a live
+# Postgres read at Python import time" rule as generate-serve-views below.
+# financial_assets.py/police_assets.py import from pipeline_generated.py
+# directly, so it must exist on disk before dagster dev's own import even
+# starts. Also runnable standalone after a schedule/data_feed change.
+generate-pipeline-jobs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_dagster_pipeline.py
+
 # Regenerate the serve layer's `_latest`/`_historical` dbt view models from
 # lakehouse_models (scripts/generate_serve_views.py) -- must run before
 # build-image/dagster dev, not as a Dagster op: dagster-dbt's @dbt_assets
@@ -323,6 +339,66 @@ verify-pipeline:
     fi
     echo "Pipeline run $run_id succeeded: 4/4 feed-run + 4/4 model-run rows successful in data_processing_runs."
 
+    # customers/sales raw durability fix -- confirms raw_customers/raw_sales
+    # actually write a verbatim file now, not just pass the DataFrame
+    # through in memory (see extraction_assets.py/sales_assets.py).
+    for f in "data-lake/raw/customers/run_id=$run_id/customers.parquet" "data-lake/raw/sales/run_id=$run_id/sales.parquet"; do
+        if [ ! -f "{{justfile_directory()}}/$f" ]; then
+            echo "Expected durable raw file missing: $f" >&2
+            exit 1
+        fi
+    done
+    echo "Durable raw files confirmed for customers and sales."
+
+# Real end-to-end test for a schedule-fired run: evaluates a real generated
+# ScheduleDefinition (trigger_schedule_run.py, via build_schedule_context --
+# no cron wait), submits the resulting RunRequest through the actual
+# webserver -> daemon -> K8sRunLauncher path (dagster_graphql's
+# DagsterGraphQLClient -- `dagster job launch` has no --tags flag and there's
+# no "fire a schedule now" CLI command), then waits for the k8s Job and
+# checks data_processing_runs the same way verify-pipeline does. Targets the
+# police_crimes feed-schedule specifically (schedule_id looked up live, not
+# hardcoded -- see trigger_schedule_run.py).
+verify-schedule:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
+    export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
+    cd dagster_data_platform
+
+    run_id=$(uv run python -m dagster_data_platform.trigger_schedule_run --feed police_crimes)
+    job_name="dagster-run-$run_id"
+
+    # Submitting via GraphQL only queues the run -- the daemon picks it up
+    # and creates the actual k8s Job a moment later (same asynchronous gap
+    # verify-pipeline's before/after job-name diffing loop exists for), so
+    # `kubectl wait` can't target it immediately. Poll for existence first.
+    job_found=false
+    for i in $(seq 1 30); do
+        if kubectl get "job/$job_name" -n orchestration >/dev/null 2>&1; then
+            job_found=true
+            break
+        fi
+        sleep 2
+    done
+    if [ "$job_found" != true ]; then
+        echo "k8s Job $job_name never appeared after schedule-triggered submission" >&2
+        exit 1
+    fi
+
+    echo "Watching job/$job_name (schedule-triggered)..."
+    kubectl wait --for=condition=complete "job/$job_name" -n orchestration --timeout=180s
+
+    ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+        -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+        "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and data_feed_id is not null and job_successful = true;")
+    if [[ "$ok" -lt 1 ]]; then
+        echo "Schedule-triggered run $run_id did not produce a successful feed-run row in data_processing_runs" >&2
+        exit 1
+    fi
+    echo "Schedule-triggered run $run_id succeeded."
+
 # Unit tests -- pure logic, no live cluster needed.
 # Defensive .pth sweep here too, not just in `start`/`verify-pipeline` --
 # this recipe is reachable standalone (`just orchestration::test`), bypassing
@@ -336,6 +412,10 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
+    # test_schedules.py's build_schedule_context(instance=DagsterInstance.get())
+    # needs a real DAGSTER_HOME, same as verify-pipeline/verify-schedule --
+    # it's a no-op for every other test file, which don't touch DagsterInstance.
+    export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     test_ok=false
     for attempt in 1 2 3; do
         if test_output=$(cd dagster_data_platform && uv run pytest 2>&1); then

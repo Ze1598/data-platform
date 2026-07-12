@@ -41,15 +41,22 @@ def _render_view(*, model_name: str, feed_tags: list[str], filter_to_current: bo
     # target's default schema (staging), landing every generated view in
     # the wrong namespace even though it builds and tests clean.
     #
-    # tags= every feed in depends_on_feeds, not just one -- so the view gets
-    # picked up by *any* of its dependent feeds' per-feed `dbt build
-    # --select tag:<feed>` invocation (dbt_assets.py), matching the general
-    # depends_on_feeds relationship rather than the old 1:1
-    # staging_source_data_feed_id assumption.
-    tags_repr = ", ".join(f"'{tag}'" for tag in feed_tags)
+    # tags= only the alphabetically-first feed in depends_on_feeds, not
+    # every one -- tagging with more than one would make dbt select this
+    # view under *multiple* per-feed `_build_dbt_assets_for_feed(...)`
+    # @dbt_assets defs (dbt_assets.py), each independently claiming the
+    # same AssetKey, which Dagster rejects at Definitions-construction time
+    # (confirmed for real: this broke `just smoketest` for
+    # fct_daily_financial_activity_latest/_historical before this fix). A
+    # multi-feed base model's own tags=[...] (e.g.
+    # fct_daily_financial_activity.sql) must use this same
+    # alphabetically-first convention for consistency -- depends_on_feeds
+    # itself is unaffected and keeps every dependent feed, for gating/
+    # updates_enabled-sourcing purposes.
+    owning_tag = feed_tags[0]
     where_clause = "\nwhere _valid_to is null" if filter_to_current else ""
     return (
-        f"{{{{ config(schema='serve', tags=[{tags_repr}]) }}}}\n\n"
+        f"{{{{ config(schema='serve', tags=['{owning_tag}']) }}}}\n\n"
         f"select * from {{{{ ref('{model_name}') }}}}{where_clause}\n"
     )
 

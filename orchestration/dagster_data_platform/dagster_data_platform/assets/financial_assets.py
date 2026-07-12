@@ -6,17 +6,15 @@ from pathlib import Path
 import polars as pl
 from dagster import (
     AssetExecutionContext,
-    AssetSelection,
     DefaultSensorStatus,
     Output,
     RunRequest,
     SensorEvaluationContext,
     asset,
-    define_asset_job,
     sensor,
 )
 
-from dagster_data_platform.assets.dbt_assets import dbt_financial_transactions_assets
+from dagster_data_platform.pipeline_generated import DBT_ASSETS, FEED_JOBS
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
@@ -52,7 +50,7 @@ def _archive_dir() -> Path:
     return _data_lake_dir() / ARCHIVE_SUBDIR
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def landing_financial_transactions(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
@@ -108,7 +106,7 @@ def landing_financial_transactions(
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def raw_financial_transactions(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
@@ -146,7 +144,7 @@ def raw_financial_transactions(
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def clean_financial_transactions(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
@@ -208,7 +206,7 @@ def clean_financial_transactions(
     return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": df.height})
 
 
-@asset(pool=FEED_POOL, deps=[dbt_financial_transactions_assets])
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME, deps=[DBT_ASSETS[FEED_FRIENDLY_NAME]])
 def archive_financial_transactions(context: AssetExecutionContext) -> Output[None]:
     """Archives this run's raw snapshot and wipes the landing files it
     came from -- only reachable once dbt_financial_transactions_assets has
@@ -252,24 +250,13 @@ def archive_financial_transactions(context: AssetExecutionContext) -> Output[Non
 # Scoped to just this feed's chain -- a per-feed sensor triggering the
 # whole (implicit) __ASSET_JOB would also re-run every other feed on every
 # new financial-transactions file, defeating the point of a file-triggered
-# sensor. AssetSelection.assets() takes the actual asset *objects*, not
-# their names as strings -- dbt_financial_transactions_assets is a
-# multi-asset (one dbt model = one AssetKey inside it), so its own `name=`
-# isn't a selectable individual key the way a plain @asset's is.
-financial_transactions_job = define_asset_job(
-    "financial_transactions_job",
-    selection=AssetSelection.assets(
-        landing_financial_transactions,
-        raw_financial_transactions,
-        clean_financial_transactions,
-        dbt_financial_transactions_assets,
-        archive_financial_transactions,
-    ),
-)
-
-
+# sensor. Uses the generated per-feed job (scripts/generate_dagster_pipeline.py
+# -> pipeline_generated.py), not a hand-written AssetSelection -- every feed
+# gets the same job-construction mechanism now, driven by group_name=
+# FEED_FRIENDLY_NAME on every asset in this file (including
+# archive_financial_transactions above), not a hand-listed asset tuple.
 @sensor(
-    job=financial_transactions_job,
+    job=FEED_JOBS[FEED_FRIENDLY_NAME],
     minimum_interval_seconds=30,
     # STOPPED by default -- a sensor that's RUNNING from the moment
     # `dagster dev` starts would immediately fire against whatever CSVs

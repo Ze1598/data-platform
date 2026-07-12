@@ -194,6 +194,19 @@ class PostgresMetadataResource(ConfigurableResource):
                 raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
             return row["column_definitions"]
 
+    def is_schedule_active(self, schedule_id: str) -> bool:
+        """Live re-check at schedule-tick time -- lets a schedule be
+        disabled via the metadata DB and take effect immediately, without
+        waiting for the next `generate_dagster_pipeline.py` regen to remove
+        the ScheduleDefinition object entirely. A missing/deleted row is
+        treated as inactive, not an error -- a schedule row disappearing
+        out from under a still-running generated ScheduleDefinition
+        (stale until the next codegen regen) should skip, not crash."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT is_active FROM schedule WHERE id = %s", (schedule_id,))
+            row = cur.fetchone()
+            return bool(row and row[0])
+
     # --- public API: one context manager per row kind, same table ----------
     # data_feed_run and data_model_run were merged into one wide
     # data_processing_runs table (metadata schema redesign, see

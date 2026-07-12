@@ -93,6 +93,7 @@ smoketest:
     just nuke
     just start
     just orchestration::verify-pipeline
+    just orchestration::verify-schedule
     just test
 
 # Run tests: no arg runs everything; a known module name scopes to that

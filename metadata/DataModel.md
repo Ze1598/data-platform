@@ -151,9 +151,9 @@ Seed rows:
 
 ---
 
-## `schedule` *(new)*
+## `schedule`
 
-Metadata for Dagster schedules. A build-time codegen step (matching the existing serve-view generator's pattern) would read this table and construct the real Dagster `ScheduleDefinition` Python objects — the schedule object itself has to be code, but its cron string and what it controls can live here. **Scope note**: this implementation pass creates the table and makes it seedable/CRUD-manageable; it does not yet build the codegen step that turns rows into live Dagster schedules (`police_crimes`'s schedule stays on its existing hardcoded-cron mechanism for now) — that's follow-on work, not part of the metadata schema itself.
+Metadata for Dagster schedules. A build-time codegen step (`scripts/generate_dagster_pipeline.py`, matching the existing serve-view generator's pattern) reads this table and constructs real Dagster `ScheduleDefinition` objects — the schedule object itself has to be code, but its cron string and what it controls live here. A feed-type row becomes one generated schedule bound to that feed's job; a model-type row becomes one generated schedule *per feed in that model's `lakehouse_models.depends_on_feeds`* (a schedule binds to exactly one Dagster job, and a model has no standalone job of its own — see `orchestration/dagster_data_platform/dagster_data_platform/pipeline_generated.py`). Every generated schedule's execution function re-reads `is_active` live at each tick (so disabling a schedule here takes effect without a redeploy) and defaults to `DefaultScheduleStatus.STOPPED` in Dagster regardless of this column's value — `is_active` controls whether the schedule *exists and fires when turned on*, not Dagster's own manual on/off toggle.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -162,6 +162,8 @@ Metadata for Dagster schedules. A build-time codegen step (matching the existing
 | controlling_object_id | uuid | not null — polymorphic: a `data_feed.id` or a `lakehouse_models.id`, depending on `controlling_object_type` |
 | controlling_object_type | text | not null, check in `('model','feed')` |
 | is_active | boolean | not null, default true — lets a schedule be disabled without deleting the row |
+
+Constraint: unique `(controlling_object_type, controlling_object_id)` — at most one schedule per controlled feed/model. This is also what makes idempotent seeding possible (`scripts/seed_metadata_db.py`'s `seed_schedule()` uses `ON CONFLICT (controlling_object_type, controlling_object_id) DO NOTHING`, the same pattern every other table's natural-key seeding already follows).
 
 **Joins/lookups**: `controlling_object_id` → `data_feed.id` when `controlling_object_type='feed'`, or → `lakehouse_models.id` when `controlling_object_type='model'`. Not a real FK (polymorphic target).
 

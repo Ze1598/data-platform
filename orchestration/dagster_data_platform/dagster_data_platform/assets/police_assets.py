@@ -4,9 +4,8 @@ from typing import Any
 
 import polars as pl
 import requests
-from dagster import AssetExecutionContext, AssetSelection, Output, ScheduleDefinition, asset, define_asset_job
+from dagster import AssetExecutionContext, Output, asset
 
-from dagster_data_platform.assets.dbt_assets import dbt_police_crimes_assets
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
@@ -90,7 +89,7 @@ def _outcome_field(df: pl.DataFrame, field: str) -> pl.Expr:
     return pl.lit(None, dtype=pl.Utf8)
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def landing_police_crimes(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
@@ -118,7 +117,7 @@ def landing_police_crimes(
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height, "months": months})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def raw_police_crimes(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
@@ -153,7 +152,7 @@ def raw_police_crimes(
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def clean_police_crimes(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
@@ -235,30 +234,10 @@ def clean_police_crimes(
     return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": df.height})
 
 
-# AssetSelection.assets() takes the actual asset *objects*, not their names
-# as strings -- dbt_police_crimes_assets is a multi-asset (one dbt model =
-# one AssetKey inside it), so its own `name=` isn't a selectable individual
-# key the way a plain @asset's is (see financial_assets.py's identical note).
-police_crimes_job = define_asset_job(
-    "police_crimes_job",
-    selection=AssetSelection.assets(
-        landing_police_crimes,
-        raw_police_crimes,
-        clean_police_crimes,
-        dbt_police_crimes_assets,
-    ),
-)
-
-# Cron string hardcoded here rather than read from data_feed.schedule_cron
-# at Python import time -- reading Postgres as a module-level side effect
-# would make importing this module (e.g. from a future test) silently
-# require a live database, the same class of problem Phase 8 hit with
-# metadata-driven decisions needing to happen at build/start time, not
-# folded into Dagster's own object-graph construction (see Learnings.md,
-# "A passing dbt build/test doesn't confirm..." neighbor entry and the
-# codegen-is-a-build-time-script lesson). Keep in sync by hand with the
-# seeded data_feed.schedule_cron value -- that row is the documented record
-# of intent, this constant is what's actually wired.
-_SCHEDULE_CRON = "0 6 * * *"
-
-police_crimes_schedule = ScheduleDefinition(job=police_crimes_job, cron_schedule=_SCHEDULE_CRON)
+# No hand-written job/schedule here anymore -- this feed's job
+# (FEED_JOBS["police_crimes"]) and its schedule are both generated from the
+# schedule/data_feed metadata by scripts/generate_dagster_pipeline.py (see
+# pipeline_generated.py), driven by group_name=FEED_FRIENDLY_NAME on every
+# asset above. This is the migration this file's own comment predicted
+# ("that row is the documented record of intent, this constant is what's
+# actually wired") -- the seeded schedule row is now what's actually wired.

@@ -3,13 +3,7 @@ import os
 from dagster import Definitions
 from dagster_dbt import DbtCliResource
 
-from dagster_data_platform.assets.dbt_assets import (
-    dbt_customers_assets,
-    dbt_financial_transactions_assets,
-    dbt_police_crimes_assets,
-    dbt_project,
-    dbt_sales_assets,
-)
+from dagster_data_platform.assets.dbt_assets import dbt_project
 from dagster_data_platform.assets.extraction_assets import clean_customers, landing_customers, raw_customers
 from dagster_data_platform.assets.financial_assets import (
     archive_financial_transactions,
@@ -18,13 +12,9 @@ from dagster_data_platform.assets.financial_assets import (
     landing_financial_transactions,
     raw_financial_transactions,
 )
-from dagster_data_platform.assets.police_assets import (
-    clean_police_crimes,
-    landing_police_crimes,
-    police_crimes_schedule,
-    raw_police_crimes,
-)
+from dagster_data_platform.assets.police_assets import clean_police_crimes, landing_police_crimes, raw_police_crimes
 from dagster_data_platform.assets.sales_assets import clean_sales, landing_sales, raw_sales
+from dagster_data_platform.pipeline_generated import ALL_DBT_ASSETS, ALL_FEED_JOBS, ALL_SCHEDULES
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 
@@ -33,23 +23,21 @@ defs = Definitions(
         landing_customers,
         raw_customers,
         clean_customers,
-        dbt_customers_assets,
         landing_sales,
         raw_sales,
         clean_sales,
-        dbt_sales_assets,
         landing_financial_transactions,
         raw_financial_transactions,
         clean_financial_transactions,
-        dbt_financial_transactions_assets,
         archive_financial_transactions,
         landing_police_crimes,
         raw_police_crimes,
         clean_police_crimes,
-        dbt_police_crimes_assets,
+        *ALL_DBT_ASSETS,
     ],
+    jobs=ALL_FEED_JOBS,
     sensors=[financial_transactions_sensor],
-    schedules=[police_crimes_schedule],
+    schedules=ALL_SCHEDULES,
     resources={
         "dbt": DbtCliResource(project_dir=dbt_project.project_dir, profiles_dir=dbt_project.profiles_dir),
         "postgres_metadata": PostgresMetadataResource(

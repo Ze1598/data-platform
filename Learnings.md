@@ -358,6 +358,30 @@ If an early-phase placeholder ("this asset just passes its input through for now
 
 **Second occurrence, same lesson, a different angle**: `raw_police_crimes` had the mirror-image bug — not "never writes to disk" but "does real work it shouldn't." It flattened the API's nested `location`/`outcome_status` structs into the schema-registry's flat shape *inside* the `raw` stage, and its own comment even framed that as a deliberate choice ("Genuine parsing, not a passthrough"), rather than recognizing it as a raw→clean responsibility. `raw` means a verbatim, zero-transformation dump — nothing downstream flagged this either, for the same reason: `clean_police_crimes` happily accepted already-flat rows and never checked whether `raw` had done more than a source-of-truth copy. Fixed by moving the flattening into `clean_police_crimes` and making `raw_police_crimes` write the untouched nested rows to `raw/police_crimes/run_id=<id>/crimes.parquet` (parquet, not CSV/JSON, specifically to survive the round-trip with nested struct columns intact). Same root cause as the first occurrence: a layer's documented contract ("no transformation" / "durable copy") isn't self-enforcing, and violating it silently doesn't break anything nearby enough to get caught by tests.
 
+### A dbt model tagged with two feed tags gets claimed by two competing `@dbt_assets` defs
+
+**Symptom**: `Definitions` construction fails with `DagsterInvalidDefinitionError: Duplicate asset key` for a model's `serve` view, even though the base model itself imports and builds fine on its own.
+
+**Cause**: this project builds one `@dbt_assets` Python function per feed (`_build_dbt_assets_for_feed(feed)`, scoped via `select=f"tag:{feed}"`). A dbt node tagged with *two* feed tags matches both selections, so it gets declared as an asset by two separate `@dbt_assets` defs in the same code location — Dagster rejects that outright, it doesn't just pick one. The base model (`fct_daily_financial_activity.sql`) was tagged with only one feed by design, but `generate_serve_views.py` independently derived its generated `_latest`/`_historical` views' tags from *every* feed in `depends_on_feeds` — reintroducing the exact problem the base model's single tag was chosen to avoid, in a different file the fix didn't touch.
+
+**Resolution**: a multi-feed model gets exactly one dbt tag (the alphabetically-first `depends_on_feeds` member, chosen deterministically so the base model and the derived serve views agree without either reading the other's output). Real Dagster-level cross-feed dependencies are still preserved via `AssetSelection.groups(feed).upstream()` on every generated per-feed job, instead of a bare `.groups(feed)` — pulls in whatever a group's assets actually depend on from other groups, a no-op for every feed with no cross-feed dependents. `depends_on_feeds` itself is untouched (still lists every real dependency, for gating/`updates_enabled` sourcing) — only the single dbt tag used for asset *ownership* is constrained to one value. Caught by actually building `Definitions` end to end (`just smoketest`), not by unit-testing either file in isolation.
+
+### A `@schedule` function requesting a resource must declare it as a named parameter, not read `context.resources`
+
+**Symptom**: `ScheduleDefinition.__call__(context)` (the direct-invocation testing path, via `build_schedule_context`) raises `TypeError: _fn() got an unexpected keyword argument 'postgres_metadata'` even though the same function has `required_resource_keys={"postgres_metadata"}` and reads `context.resources.postgres_metadata` inside its body.
+
+**Cause**: `ScheduleDefinition.__call__` always injects required resources as keyword arguments matching the decorated function's own parameter names (confirmed by reading the actual implementation) — it doesn't just pass `context` and let the function reach into `context.resources`. Declaring a resource in `required_resource_keys` *and* accepting it as a named parameter is also rejected outright: `"Cannot specify resource requirements in both @schedule decorator and as arguments to the decorated function"`.
+
+**Resolution**: declare the resource as a plain named parameter (`def _fn(context, postgres_metadata: PostgresMetadataResource):`) and drop `required_resource_keys=` from the `@schedule(...)` call entirely — Dagster infers the requirement from the parameter name. Worth checking this kind of API detail against the actual installed version's source directly (`inspect.getsource`) rather than assuming from general Dagster familiarity, since this behavior isn't the first thing documentation examples show.
+
+### A GraphQL-submitted run only queues — the k8s Job appears a moment later, asynchronously
+
+**Symptom**: `kubectl wait --for=condition=complete job/dagster-run-<id>` immediately fails with `Error from server (NotFound)`, right after `DagsterGraphQLClient.submit_job_execution(...)` successfully returned that same run id.
+
+**Cause**: submitting a run via GraphQL (needed here since `dagster job launch`'s CLI has no `--tags` flag) only queues it — same as any other run submission, the **daemon** picks it up and calls the launcher to create the actual k8s Job a moment later (see the neighboring "sits in QUEUED forever" entry above for the general mechanism). `verify-pipeline`'s existing `dagster job launch` already accounts for this with a before/after job-name-diffing retry loop; a new recipe built around the GraphQL client needs the identical wait, not a direct `kubectl wait`.
+
+**Resolution**: poll `kubectl get job/<name>` in a bounded retry loop until it exists, *then* `kubectl wait --for=condition=complete` on it — the same two-phase pattern, not a one-shot wait.
+
 ---
 
 ## dbt modeling patterns

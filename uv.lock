@@ -618,6 +618,7 @@ source = { editable = "orchestration/dagster_data_platform" }
 dependencies = [
     { name = "dagster" },
     { name = "dagster-dbt" },
+    { name = "dagster-graphql" },
     { name = "dagster-k8s" },
     { name = "dagster-postgres" },
     { name = "dagster-webserver" },
@@ -639,6 +640,7 @@ dev = [
 requires-dist = [
     { name = "dagster", specifier = ">=1.13" },
     { name = "dagster-dbt", specifier = ">=0.29" },
+    { name = "dagster-graphql", specifier = ">=1.13" },
     { name = "dagster-k8s", specifier = ">=0.29" },
     { name = "dagster-postgres", specifier = ">=0.29" },
     { name = "dagster-webserver", specifier = ">=1.13" },
