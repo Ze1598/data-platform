@@ -12,6 +12,7 @@ start:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
+    just orchestration::seed-financial-landing
     just orchestration::generate-serve-views
     just orchestration::generate-deletion-synthesis-views
     just orchestration::build-image
@@ -162,16 +163,38 @@ build-image:
     docker build -f Dockerfile -t data-platform-orchestration:latest {{justfile_directory()}}
     kind load docker-image data-platform-orchestration:latest --name data-platform
 
+# Ensure at least one financial_transactions landing batch exists before the
+# pipeline's first run. clean_financial_transactions deliberately skips its
+# Iceberg write when there's nothing new to process (so an empty run doesn't
+# crash) -- which means the very first run against an empty landing/ never
+# creates iceberg.clean.financial_transactions at all, and
+# stg_financial_transactions.sql's `source('clean', 'financial_transactions')`
+# then fails with TABLE_NOT_FOUND (confirmed for real: this is exactly what a
+# from-scratch `just smoketest` hit once this session's landing/ cleanup
+# emptied the directory with nothing to regenerate it). Only generates when
+# empty -- a `just start` on top of already-live landing data (the normal,
+# non-smoketest case) shouldn't silently inject an extra synthetic batch
+# nobody asked for.
+seed-financial-landing:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    landing_dir="{{justfile_directory()}}/data-lake/landing/financial_transactions"
+    if [ -z "$(find "$landing_dir" -name '*.csv' -print -quit 2>/dev/null)" ]; then
+        echo "No financial_transactions landing batches found -- seeding one."
+        cd {{justfile_directory()}} && uv run python scripts/generate_financial_reports.py
+    fi
+
 # Regenerate the serve layer's `_latest`/`_historical` dbt view models from
-# model_feed (scripts/generate_serve_views.py) -- must run before
+# lakehouse_models (scripts/generate_serve_views.py) -- must run before
 # build-image/dagster dev, not as a Dagster op: dagster-dbt's @dbt_assets
 # reads target/manifest.json at Python-import time, before any run
 # executes, so these files have to exist on disk before `dbt parse` builds
 # that manifest (Learnings.md, Phase 5 "manifest must be pre-built into the
-# image"). Requires metadata already seeded (model_feed populated) -- true
-# by the time `start` reaches this step, since metadata::start runs first
-# in the root Justfile's sequencing. Also runnable standalone after a
-# model_feed change, without a full image rebuild (same pattern as
+# image"). Requires metadata already seeded (lakehouse_models populated) --
+# true by the time `start` reaches this step, since metadata::start runs
+# first in the root Justfile's sequencing. Also runnable standalone after a
+# lakehouse_models change, without a full image rebuild (same pattern as
 # `just metadata::seed`). Own .pth sweep, not just inherited from `start`
 # -- reachable standalone (`just orchestration::generate-serve-views`),
 # same reasoning as the sweep in `test` below.
@@ -182,11 +205,11 @@ generate-serve-views:
     cd {{justfile_directory()}} && uv run python scripts/generate_serve_views.py
 
 # Regenerate the model layer's deletion-synthesis intermediate models
-# (int_<feed>_with_deletes.sql) from model_feed + schema_registry
+# (int_<feed>_with_deletes.sql) from lakehouse_models + schema_registry
 # (scripts/generate_deletion_synthesis_views.py) -- same "must run before
 # build-image/dagster dev" reasoning as generate-serve-views above (the
 # manifest needs these files to already exist on disk). Also runnable
-# standalone after a model_feed.deletions_enabled change.
+# standalone after a lakehouse_models.deletes_enabled change.
 generate-deletion-synthesis-views:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -196,11 +219,11 @@ generate-deletion-synthesis-views:
 # Launch the full pipeline via the real K8sRunLauncher (not `dagster asset
 # materialize`, which never touches it -- see DebugReference.md) and verify
 # it actually succeeded: finds the newly-created run Job, waits for it to
-# complete, then checks data_feed_run/data_model_run show 2 successful rows
-# each (customers/sales x landing->raw->clean, and customers/sales staging).
-# This is the check that actually caught both bugs found during this
-# session's full nuke-and-rebuild -- a narrower check (like tests/integration
-# alone) would not have.
+# complete, then checks data_processing_runs shows successful feed-run rows
+# (data_feed_id is not null) and model-run rows (model_key is not null) for
+# every feed. This is the check that actually caught both bugs found during
+# this session's full nuke-and-rebuild -- a narrower check (like
+# tests/integration alone) would not have.
 verify-pipeline:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -287,18 +310,18 @@ verify-pipeline:
     run_id="${job_name#dagster-run-}"
     feed_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-        "select count(*) from data_feed_run where dagster_run_id = '$run_id' and job_successful = true;")
+        "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and data_feed_id is not null and job_successful = true;")
     model_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-        "select count(*) from data_model_run where dagster_run_id = '$run_id' and job_successful = true;")
+        "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and model_key is not null and job_successful = true;")
     # 4 + 4, not 2 + 2 -- Phase 9 added financial_transactions and
     # police_crimes as two more feeds __ASSET_JOB always includes
     # alongside customers/sales.
     if [[ "$feed_ok" -ne 4 || "$model_ok" -ne 4 ]]; then
-        echo "Expected 4 successful data_feed_run + 4 successful data_model_run rows for run $run_id, got $feed_ok + $model_ok" >&2
+        echo "Expected 4 successful feed-run + 4 successful model-run rows in data_processing_runs for run $run_id, got $feed_ok + $model_ok" >&2
         exit 1
     fi
-    echo "Pipeline run $run_id succeeded: 4/4 data_feed_run + 4/4 data_model_run rows successful."
+    echo "Pipeline run $run_id succeeded: 4/4 feed-run + 4/4 model-run rows successful in data_processing_runs."
 
 # Unit tests -- pure logic, no live cluster needed.
 # Defensive .pth sweep here too, not just in `start`/`verify-pipeline` --

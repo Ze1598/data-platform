@@ -1,6 +1,6 @@
 # Debug Reference: metadata (Postgres)
 
-Commands for inspecting/resetting the platform's own configuration database (`source_system`, `data_feed`, `model_feed`, etc.) and, later, the Hive/Polaris-adjacent `polaris_db`. See [../platform/DebugReference.md](../platform/DebugReference.md) for general `kubectl exec` mechanics this builds on, and [../Learnings.md](../Learnings.md) for why some of this schema looks the way it does.
+Commands for inspecting/resetting the platform's own configuration database (`source_system`, `data_feed`, `lakehouse_models`, etc.) and, later, the Hive/Polaris-adjacent `polaris_db`. See [../platform/DebugReference.md](../platform/DebugReference.md) for general `kubectl exec` mechanics this builds on, and [../Learnings.md](../Learnings.md) for why some of this schema looks the way it does.
 
 ---
 
@@ -21,7 +21,7 @@ kubectl exec -n metadata postgres-0 -- psql -U platform -d platform_metadata -c 
 **Scenario**: before re-running an end-to-end verification script, so `INSERT`s referencing fixed test codes (`test_src`, `test_feed`) don't collide with leftovers from a previous run.
 ```bash
 kubectl exec -n metadata postgres-0 -- psql -U platform -d platform_metadata -c \
-  "truncate table model_feed_source, data_feed_run, data_model_run, model_feed, schema_registry, data_feed, source_system cascade;"
+  "truncate table data_processing_runs, schedule, lakehouse_models, schema_registry, data_feed, source_system cascade;"
 ```
 Order matters less than it looks because of `cascade`, but listing dependents-first is clearer to read. `cascade` is required because of the FK relationships between these tables.
 

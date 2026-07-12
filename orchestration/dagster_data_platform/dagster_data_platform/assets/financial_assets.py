@@ -21,8 +21,8 @@ from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResou
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
-FEED_CODE = "financial_transactions"
-FEED_POOL = f"feed:{FEED_CODE}"
+FEED_FRIENDLY_NAME = "financial_transactions"
+FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
 LANDING_SUBDIR = "landing/financial_transactions"
 RAW_SUBDIR = "raw/financial_transactions"
 ARCHIVE_SUBDIR = "archive/financial_transactions"
@@ -56,9 +56,10 @@ def _archive_dir() -> Path:
 def landing_financial_transactions(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
@@ -113,9 +114,10 @@ def raw_financial_transactions(
     postgres_metadata: PostgresMetadataResource,
     landing_financial_transactions: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
@@ -151,10 +153,11 @@ def clean_financial_transactions(
     iceberg_catalog: IcebergCatalogResource,
     raw_financial_transactions: pl.DataFrame,
 ) -> Output[None]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     df = raw_financial_transactions
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="clean",
         dagster_run_id=context.run_id,
     ) as log:

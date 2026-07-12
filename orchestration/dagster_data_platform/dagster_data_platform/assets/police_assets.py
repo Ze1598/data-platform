@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -9,8 +11,9 @@ from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResou
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
-FEED_CODE = "police_crimes"
-FEED_POOL = f"feed:{FEED_CODE}"
+FEED_FRIENDLY_NAME = "police_crimes"
+FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
+RAW_SUBDIR = "raw/police_crimes"
 
 _API_BASE = "https://data.police.uk/api"
 # Central London -- kept fixed to bound volume. Street-level crime data for
@@ -18,6 +21,21 @@ _API_BASE = "https://data.police.uk/api"
 # records per month, confirmed against a live call before designing this
 # (see the Phase 9 plan / Learnings.md).
 _LAT, _LNG = "51.5074", "-0.1278"
+
+# .../orchestration/dagster_data_platform/dagster_data_platform/assets/police_assets.py
+# -> repo root is 4 parents up, same convention as financial_assets.py's
+# REPO_ROOT. Only used as the *local* fallback -- inside the launched pod,
+# DATA_LAKE_PATH=/data-lake is set explicitly (dagster.yaml's run_launcher
+# env_vars).
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _data_lake_dir() -> Path:
+    return Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
+
+
+def _raw_dir() -> Path:
+    return _data_lake_dir() / RAW_SUBDIR
 
 
 def _months_to_pull(last_watermark: str | None) -> list[str]:
@@ -76,9 +94,10 @@ def _outcome_field(df: pl.DataFrame, field: str) -> pl.Expr:
 def landing_police_crimes(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
@@ -105,18 +124,61 @@ def raw_police_crimes(
     postgres_metadata: PostgresMetadataResource,
     landing_police_crimes: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
+        # raw = a verbatim, durable, platform-internal copy of whatever was
+        # extracted this run -- zero transformation (flattening the nested
+        # location/outcome_status structs is raw_to_clean's job, not raw's;
+        # see clean_police_crimes). For a direct-connect source like this
+        # API, there's no landing *file* to copy the way
+        # raw_financial_transactions copies one -- landing's in-memory
+        # extraction result is itself what needs a durable, run-scoped
+        # write, so this writes it out rather than copying bytes that
+        # already exist on disk. Parquet, not JSON/CSV, since it preserves
+        # the nested struct columns (location, outcome_status) without a
+        # lossy round-trip.
         df = landing_police_crimes
         if not df.is_empty():
-            # Genuine parsing, not a passthrough: flattens the API's nested
-            # location/location.street/outcome_status structs into the
-            # flat row shape schema_registry expects -- vectorized struct
-            # field access, no per-row Python loop.
+            raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
+            raw_run_dir.mkdir(parents=True, exist_ok=True)
+            df.write_parquet(raw_run_dir / "crimes.parquet")
+
+        log.set_counts(rows_read=df.height, output_path=str(_raw_dir() / f"run_id={context.run_id}") if not df.is_empty() else None)
+
+    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
+
+
+@asset(pool=FEED_POOL)
+def clean_police_crimes(
+    context: AssetExecutionContext,
+    postgres_metadata: PostgresMetadataResource,
+    iceberg_catalog: IcebergCatalogResource,
+    raw_police_crimes: pl.DataFrame,
+) -> Output[None]:
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
+    df = raw_police_crimes
+    with postgres_metadata.log_data_feed_stage(
+        data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
+        stage="clean",
+        dagster_run_id=context.run_id,
+    ) as log:
+        # Nothing new this run (already caught up to the latest available
+        # month) -- skip the Iceberg write, same reasoning as
+        # clean_financial_transactions. Still logged as a success with 0
+        # rows.
+        if not df.is_empty():
+            # Genuine parsing, moved here from raw_police_crimes (raw must
+            # be a verbatim dump, zero transformation -- see that asset's
+            # docstring): flattens the API's nested location/
+            # location.street/outcome_status structs into the flat row
+            # shape schema_registry expects -- vectorized struct field
+            # access, no per-row Python loop.
             df = df.select(
                 pl.col("id"),
                 pl.col("persistent_id").fill_null(""),
@@ -132,30 +194,7 @@ def raw_police_crimes(
                 _outcome_field(df, "category").alias("outcome_category"),
                 _outcome_field(df, "date").alias("outcome_date"),
             )
-        log.set_counts(rows_read=df.height)
 
-    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
-
-
-@asset(pool=FEED_POOL)
-def clean_police_crimes(
-    context: AssetExecutionContext,
-    postgres_metadata: PostgresMetadataResource,
-    iceberg_catalog: IcebergCatalogResource,
-    raw_police_crimes: pl.DataFrame,
-) -> Output[None]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
-    df = raw_police_crimes
-    with postgres_metadata.log_data_feed_stage(
-        data_feed_id=str(data_feed["id"]),
-        stage="clean",
-        dagster_run_id=context.run_id,
-    ) as log:
-        # Nothing new this run (already caught up to the latest available
-        # month) -- skip the Iceberg write, same reasoning as
-        # clean_financial_transactions. Still logged as a success with 0
-        # rows.
-        if not df.is_empty():
             column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
             reconciliation = reconcile_schema(df, column_definitions)
             df = reconciliation.df

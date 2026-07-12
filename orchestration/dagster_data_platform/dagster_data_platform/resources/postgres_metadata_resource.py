@@ -9,8 +9,8 @@ _DATA_MODEL_STAGES = ("staging", "model", "serve")
 
 
 class IngestionStepLog:
-    """Handle for one stage's column group on a data_feed_run/data_model_run
-    row, yielded by PostgresMetadataResource.log_data_feed_stage()/
+    """Handle for one stage's column group on a data_processing_runs row,
+    yielded by PostgresMetadataResource.log_data_feed_stage()/
     log_data_model_stage(). Call set_counts(...) any time before the `with`
     block exits; that stage's columns are finalized automatically on exit —
     successful if the block completed, failed (with the exception message)
@@ -47,8 +47,8 @@ class IngestionStepLog:
 
 class PostgresMetadataResource(ConfigurableResource):
     """Connection to the platform_metadata Postgres database — reading
-    data_feed/model_feed config, and writing data_feed_run/data_model_run
-    rows, per Roadmap.md's "Metadata Schema"."""
+    data_feed/lakehouse_models config, and writing data_processing_runs
+    rows, per metadata/DataModel.md."""
 
     host: str
     port: int
@@ -71,31 +71,32 @@ class PostgresMetadataResource(ConfigurableResource):
         finally:
             conn.close()
 
-    def get_data_feed(self, code: str) -> dict[str, Any]:
+    def get_data_feed(self, friendly_name: str) -> dict[str, Any]:
         with self._connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute("SELECT * FROM data_feed WHERE code = %s", (code,))
+            cur.execute("SELECT * FROM data_feed WHERE friendly_name = %s", (friendly_name,))
             row = cur.fetchone()
             if row is None:
-                raise ValueError(f"No data_feed with code={code!r}")
+                raise ValueError(f"No data_feed with friendly_name={friendly_name!r}")
             return row
 
     def update_watermark(self, *, data_feed_id: str, watermark_value: str, run_id: str) -> None:
-        """Advances data_feed.last_watermark_value/last_run_id (Phase 9,
-        Roadmap.md "Incremental Loading & Watermarks") -- call this only
-        after `clean` has actually succeeded for the run, never before or
-        on failure. A failed run must not advance the watermark, or the
-        next run would silently skip whatever failed to load; this is the
-        correctness property safe re-run depends on."""
+        """Advances data_feed.last_watermark_value (Phase 9, Roadmap.md
+        "Incremental Loading & Watermarks") -- call this only after `clean`
+        has actually succeeded for the run, never before or on failure. A
+        failed run must not advance the watermark, or the next run would
+        silently skip whatever failed to load; this is the correctness
+        property safe re-run depends on. `run_id` is accepted for call-site
+        symmetry with the run this watermark advance belongs to, but
+        data_feed no longer stores last_run_id (see metadata/DataModel.md
+        -- derivable from data_processing_runs instead)."""
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE data_feed
-                SET last_watermark_value = %(watermark_value)s,
-                    last_run_id = %(run_id)s,
-                    updated_at = now()
+                SET last_watermark_value = %(watermark_value)s
                 WHERE id = %(data_feed_id)s
                 """,
-                {"watermark_value": watermark_value, "run_id": run_id, "data_feed_id": data_feed_id},
+                {"watermark_value": watermark_value, "data_feed_id": data_feed_id},
             )
 
     def update_schema_registry(self, *, data_feed_id: str, column_definitions: list[dict[str, Any]], created_by: str) -> None:
@@ -137,32 +138,45 @@ class PostgresMetadataResource(ConfigurableResource):
                 },
             )
 
-    def get_updates_enabled_map(self, feed_code: str) -> dict[str, bool]:
+    def get_updates_enabled_map(self, feed_friendly_name: str) -> dict[str, bool]:
         """Maps every dbt model built under this feed's tag to whether
-        updates are enabled for it -- data_feed.updates_enabled for the
-        staging model (stg_<feed_code>), model_feed.updates_enabled for
-        any staging->model dims/facts sourced from this feed. Consumed via
-        `dbt build --vars` (dbt_assets.py) since Trino has no catalog
-        federating into platform_metadata -- a dbt model can't look this
-        up live, it has to be resolved before the dbt CLI invocation and
-        passed in. When false for a given model, that model's own SQL
-        skips attribute-hash change detection entirely and treats the
-        feed as insert-only (see stg_customers.sql)."""
+        updates are enabled for it, per the staging update-tracking rule in
+        metadata/DataModel.md:
+
+        - stg_<feed_friendly_name>: the logical OR of updates_enabled across
+          every lakehouse_models row whose depends_on_feeds includes this
+          feed's id, defaulting to true if no such row exists (the safe
+          default -- assume changes matter until a dependent model
+          explicitly says otherwise).
+        - <lakehouse_models.friendly_name>: that row's own updates_enabled,
+          verbatim, for every model depending on this feed.
+
+        Consumed via `dbt build --vars` (dbt_assets.py) since Trino has no
+        catalog federating into platform_metadata -- a dbt model can't look
+        this up live, it has to be resolved before the dbt CLI invocation
+        and passed in. When false for a given model, that model's own SQL
+        skips attribute-hash change detection entirely and treats its
+        source as insert-only (see stg_customers.sql)."""
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT 'stg_' || code AS model_name, updates_enabled
-                FROM data_feed
-                WHERE code = %(feed_code)s
+                WITH feed AS (
+                    SELECT id FROM data_feed WHERE friendly_name = %(feed_friendly_name)s
+                ),
+                dependents AS (
+                    SELECT lakehouse_models.friendly_name, lakehouse_models.updates_enabled
+                    FROM lakehouse_models, feed
+                    WHERE feed.id::text = ANY(string_to_array(lakehouse_models.depends_on_feeds, ','))
+                )
+                SELECT friendly_name AS model_name, updates_enabled FROM dependents
 
                 UNION ALL
 
-                SELECT model_feed.code AS model_name, model_feed.updates_enabled
-                FROM model_feed
-                JOIN data_feed ON data_feed.id = model_feed.staging_source_data_feed_id
-                WHERE data_feed.code = %(feed_code)s
+                SELECT 'stg_' || %(feed_friendly_name)s AS model_name,
+                       coalesce(bool_or(updates_enabled), true) AS updates_enabled
+                FROM dependents
                 """,
-                {"feed_code": feed_code},
+                {"feed_friendly_name": feed_friendly_name},
             )
             return {model_name: updates_enabled for model_name, updates_enabled in cur.fetchall()}
 
@@ -180,21 +194,34 @@ class PostgresMetadataResource(ConfigurableResource):
                 raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
             return row["column_definitions"]
 
-    # --- public API: one context manager per run table ---------------------
+    # --- public API: one context manager per row kind, same table ----------
+    # data_feed_run and data_model_run were merged into one wide
+    # data_processing_runs table (metadata schema redesign, see
+    # metadata/DataModel.md) -- a feed-run row and a model-run row are
+    # distinguished by which of data_feed_id/model_key is set, enforced by
+    # chk_data_processing_runs_one_target.
 
     @contextmanager
     def log_data_feed_stage(
-        self, *, data_feed_id: str, stage: str, dagster_run_id: str
+        self, *, data_feed_id: str, stage: str, dagster_run_id: str, tracking_group: str
     ) -> Iterator[IngestionStepLog]:
-        """Logs one stage (landing/raw/clean) of a data_feed_run row,
-        creating the row on the first stage of a given (data_feed_id,
-        dagster_run_id) and updating just that stage's column group plus
-        the job-level roll-up (job_ended_timestamp/job_successful) on
-        every call — see extraction_assets.py/sales_assets.py for usage."""
+        """Logs one stage (landing/raw/clean) of a data_processing_runs
+        feed-run row, creating the row on the first stage of a given
+        (data_feed_id, dagster_run_id) and updating just that stage's
+        column group plus the job-level roll-up (job_ended_timestamp/
+        job_successful) on every call — see extraction_assets.py/
+        sales_assets.py for usage. `tracking_group` is the feed's
+        data_feed.batch_group_friendly_name -- every feed has one (see
+        metadata/DataModel.md), the platform tracks runs by batch or model
+        schema, never by bare feed."""
         with self._log_stage(
-            table="data_feed_run",
-            insert_columns={"data_feed_id": data_feed_id},
+            insert_columns={
+                "data_feed_id": data_feed_id,
+                "tracking_group": tracking_group,
+                "tracking_group_type": "batch_group",
+            },
             conflict_columns=("data_feed_id", "dagster_run_id"),
+            conflict_where="data_feed_id IS NOT NULL",
             valid_stages=_DATA_FEED_STAGES,
             stage=stage,
             dagster_run_id=dagster_run_id,
@@ -203,81 +230,90 @@ class PostgresMetadataResource(ConfigurableResource):
 
     @contextmanager
     def log_data_model_stage(
-        self, *, model_key: str, uses_feeds: str, stage: str, dagster_run_id: str
+        self, *, model_key: str, uses_feeds: str, stage: str, dagster_run_id: str, tracking_group: str
     ) -> Iterator[IngestionStepLog]:
-        """Logs one stage (staging/model/serve) of a data_model_run row —
-        the warehouse-building concern, kept separate from data_feed_run's
-        extraction-and-validation concern (see Roadmap.md "Metadata
-        Schema"). `model_key` names the model unit being built (today just
-        the feed code, since staging is still 1:1 with a data_feed);
-        `uses_feeds` is a comma-separated list of the data_feed codes this
-        model unit draws from. Deliberately not the same thing as
-        model_feed/model_feed_source — see the comment on model_feed_source
-        in metadata/db/init/01_platform_metadata.sql for why those don't
-        fit a staging-only build unit."""
+        """Logs one stage (staging/model/serve) of a data_processing_runs
+        model-run row — the warehouse-building concern, kept separate from
+        the feed-run rows' extraction-and-validation concern (see
+        metadata/DataModel.md). `model_key` names the model unit being
+        built (today just the feed friendly_name, since staging is still
+        1:1 with a data_feed); `uses_feeds` is a comma-separated list of
+        the data_feed friendly_names this model unit draws from.
+        `tracking_group` is a lakehouse_models.model_schema value (e.g.
+        'model') -- the schema this build's output primarily lands in."""
         with self._log_stage(
-            table="data_model_run",
-            insert_columns={"model_key": model_key, "uses_feeds": uses_feeds},
+            insert_columns={
+                "model_key": model_key,
+                "uses_feeds": uses_feeds,
+                "tracking_group": tracking_group,
+                "tracking_group_type": "model_schema",
+            },
             conflict_columns=("model_key", "dagster_run_id"),
+            conflict_where="model_key IS NOT NULL",
             valid_stages=_DATA_MODEL_STAGES,
             stage=stage,
             dagster_run_id=dagster_run_id,
         ) as log:
             yield log
 
-    # --- shared implementation, generic over the two run tables ------------
-    # data_feed_run and data_model_run are structurally identical (a wide
-    # row with a job-level roll-up plus one repeated column group per
-    # stage) apart from which columns identify the row and which stages are
-    # valid, so both public methods above delegate to the same three
-    # private helpers instead of each having their own copy.
+    # --- shared implementation, generic over the two row kinds --------------
+    # Both public methods above delegate to the same three private helpers
+    # instead of each having their own copy, since a feed-run row and a
+    # model-run row are structurally identical (a wide row with a job-level
+    # roll-up plus one repeated column group per stage) apart from which
+    # columns identify the row and which stages are valid.
 
     @contextmanager
     def _log_stage(
         self,
         *,
-        table: str,
         insert_columns: dict[str, str],
         conflict_columns: tuple[str, ...],
+        conflict_where: str,
         valid_stages: tuple[str, ...],
         stage: str,
         dagster_run_id: str,
     ) -> Iterator[IngestionStepLog]:
         if stage not in valid_stages:
-            raise ValueError(f"Unknown stage {stage!r} for {table}, expected one of {valid_stages}")
+            raise ValueError(f"Unknown stage {stage!r}, expected one of {valid_stages}")
         run_id = self._ensure_run(
-            table=table,
             insert_columns=insert_columns,
             conflict_columns=conflict_columns,
+            conflict_where=conflict_where,
             dagster_run_id=dagster_run_id,
         )
         log = IngestionStepLog(run_id)
         try:
             yield log
         except Exception as e:
-            self._finish_stage(table, run_id, stage, successful=False, error_message=str(e), **log._counts)
+            self._finish_stage(run_id, stage, successful=False, error_message=str(e), **log._counts)
             raise
         else:
-            self._finish_stage(table, run_id, stage, successful=True, **log._counts)
+            self._finish_stage(run_id, stage, successful=True, **log._counts)
 
     def _ensure_run(
         self,
         *,
-        table: str,
         insert_columns: dict[str, str],
         conflict_columns: tuple[str, ...],
+        conflict_where: str,
         dagster_run_id: str,
     ) -> str:
-        # table/insert_columns keys/conflict_columns are always internal
-        # literals passed by log_data_feed_stage/log_data_model_stage above,
-        # never caller-supplied free text -- same safety property as the
-        # f-string table/column composition in frontend/metadata_db.py.
+        # insert_columns keys/conflict_columns/conflict_where are always
+        # internal literals passed by log_data_feed_stage/
+        # log_data_model_stage above, never caller-supplied free text --
+        # same safety property as the f-string table/column composition in
+        # frontend/metadata_db.py.
         # Upsert-and-return-id: only the *first* stage of a given
         # (identity..., dagster_run_id) actually inserts a new row; later
         # stages hit the ON CONFLICT branch and get the existing run_id
         # back. A single round-trip INSERT ... ON CONFLICT is used rather
         # than a SELECT-then-INSERT-if-missing specifically to avoid the
         # TOCTOU race the latter would introduce between concurrent stages.
+        # The ON CONFLICT target includes the same WHERE predicate as the
+        # matching partial unique index (uq_data_processing_runs_feed/
+        # _model) -- required for Postgres to resolve which partial index
+        # this insert is targeting.
         columns = (*insert_columns.keys(), "dagster_run_id")
         values = (*insert_columns.values(), dagster_run_id)
         column_list = ", ".join(columns)
@@ -287,9 +323,9 @@ class PostgresMetadataResource(ConfigurableResource):
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"""
-                INSERT INTO {table} ({column_list})
+                INSERT INTO data_processing_runs ({column_list})
                 VALUES ({placeholders})
-                ON CONFLICT ({conflict_target}) DO UPDATE
+                ON CONFLICT ({conflict_target}) WHERE {conflict_where} DO UPDATE
                     SET {noop_column} = excluded.{noop_column}
                 RETURNING run_id
                 """,
@@ -299,7 +335,6 @@ class PostgresMetadataResource(ConfigurableResource):
 
     def _finish_stage(
         self,
-        table: str,
         run_id: str,
         stage: str,
         *,
@@ -320,7 +355,7 @@ class PostgresMetadataResource(ConfigurableResource):
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"""
-                UPDATE {table}
+                UPDATE data_processing_runs
                 SET is_{stage}_successful = %(successful)s,
                     {stage}_end_timestamp = now(),
                     {stage}_error_message = %(error_message)s,

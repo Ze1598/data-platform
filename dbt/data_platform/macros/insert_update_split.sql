@@ -67,9 +67,11 @@
     every caller already has both hashes by the time this runs.
 
     `source_relation` is the upstream CTE name providing this run's rows
-    (already hashed); `updates_enabled` (from data_feed.updates_enabled or
-    model_feed.updates_enabled, threaded in via the updates_enabled_by_model
-    dbt var -- see dbt_assets.py) gates whether the attribute-hash branch
+    (already hashed); `updates_enabled` (the OR-across-depends_on_feeds
+    staging rule for a staging model, or lakehouse_models.updates_enabled
+    directly for a model-layer model -- see metadata/DataModel.md, threaded
+    in via the updates_enabled_by_model dbt var -- see dbt_assets.py) gates
+    whether the attribute-hash branch
     is even compiled in: false means this feed/model is insert-only, an
     existing business key is never re-evaluated for attribute changes.
 #}

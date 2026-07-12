@@ -27,10 +27,10 @@ _CLEAN_SOURCE_TABLES = {"customers", "sales", "financial_transactions", "police_
 # `dbt build --select tag:<feed>` builds staging, model-layer, AND serve
 # objects together in one DAG-ordered invocation (Phase 7 added dim_*/
 # fct_*/snapshots tagged the same way as their feed; Phase 8's generated
-# _latest/_historical views inherit the same tag from model_feed's source
-# data_feed, see scripts/generate_serve_views.py) -- no separate dbt
-# invocation needed, but data_model_run tracks them as distinct stages, so
-# results get split by which of these a node's name matches. Generic test
+# _latest/_historical views inherit their tags from lakehouse_models'
+# depends_on_feeds, see scripts/generate_serve_views.py) -- no separate dbt
+# invocation needed, but data_processing_runs tracks them as distinct
+# stages, so results get split by which of these a node's name matches. Generic test
 # unique_ids embed their target's name (e.g. "not_null_stg_customers_id"),
 # so a substring/suffix check on the whole unique_id (not just the node
 # name itself) classifies tests correctly too.
@@ -58,7 +58,7 @@ class DataPlatformDbtTranslator(DagsterDbtTranslator):
         return super().get_asset_key(dbt_resource_props)
 
 
-def _build_dbt_assets_for_feed(feed_code: str):
+def _build_dbt_assets_for_feed(feed_friendly_name: str):
     """One @dbt_assets function per feed, not one for the whole project.
 
     Necessary, not just tidier: a single @dbt_assets function running
@@ -68,18 +68,18 @@ def _build_dbt_assets_for_feed(feed_code: str):
     second feed got its own dbt model. Flagged as a known boundary back
     in Phase 5 (Learnings.md); this is that boundary being hit.
 
-    `select=f"tag:{feed_code}"` scopes which assets this function owns in
-    Dagster's graph; `dbt.cli(["build"], context=context)` derives the
-    matching dbt `--select` automatically from that same context — no
+    `select=f"tag:{feed_friendly_name}"` scopes which assets this function
+    owns in Dagster's graph; `dbt.cli(["build"], context=context)` derives
+    the matching dbt `--select` automatically from that same context — no
     need to pass --select twice.
     """
 
     @dbt_assets(
         manifest=dbt_project.manifest_path,
         dagster_dbt_translator=DataPlatformDbtTranslator(),
-        select=f"tag:{feed_code}",
-        pool=f"feed:{feed_code}",
-        name=f"dbt_{feed_code}_assets",
+        select=f"tag:{feed_friendly_name}",
+        pool=f"feed:{feed_friendly_name}",
+        name=f"dbt_{feed_friendly_name}_assets",
     )
     def _dbt_assets_for_feed(
         context: AssetExecutionContext, dbt: DbtCliResource, postgres_metadata: PostgresMetadataResource
@@ -89,7 +89,7 @@ def _build_dbt_assets_for_feed(feed_code: str):
         # platform_metadata) -- see PostgresMetadataResource
         # .get_updates_enabled_map()'s docstring and stg_customers.sql for
         # how each model consumes it.
-        updates_enabled_map = postgres_metadata.get_updates_enabled_map(feed_code)
+        updates_enabled_map = postgres_metadata.get_updates_enabled_map(feed_friendly_name)
         invocation = dbt.cli(
             ["build", "--vars", json.dumps({"updates_enabled_by_model": updates_enabled_map})],
             context=context,
@@ -122,12 +122,20 @@ def _build_dbt_assets_for_feed(feed_code: str):
         # got a chance to run; attribute it to staging as the earliest one.
         if not run_results.get("results") and not invocation.is_successful():
             stage_ok["staging"] = False
-            stage_error["staging"] = str(invocation.get_error() or f"dbt build failed for feed '{feed_code}' before any node ran")
+            stage_error["staging"] = str(invocation.get_error() or f"dbt build failed for feed '{feed_friendly_name}' before any node ran")
 
         for stage in _DATA_MODEL_STAGES_BUILT:
             with postgres_metadata.log_data_model_stage(
-                model_key=feed_code,
-                uses_feeds=feed_code,
+                model_key=feed_friendly_name,
+                uses_feeds=feed_friendly_name,
+                # Every lakehouse_models row built today uses model_schema
+                # 'model' (staging/serve are naming-convention-only, not
+                # separately tracked lakehouse_models rows) -- hardcoded
+                # rather than looked up per stage since a single
+                # data_processing_runs row spans all three stages
+                # (staging/model/serve) and needs one tracking_group value.
+                # Revisit once a second model_schema is actually in use.
+                tracking_group="model",
                 stage=stage,
                 dagster_run_id=context.run_id,
             ) as log:

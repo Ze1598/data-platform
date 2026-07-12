@@ -7,7 +7,7 @@ from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResou
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
-FEED_CODE = "customers"
+FEED_FRIENDLY_NAME = "customers"
 # One pool per feed, shared across every step that touches its data anywhere
 # in the pipeline (this file + dbt_assets.py) — blocks two runs of this
 # feed from overlapping, e.g. one run's clean-layer write racing another
@@ -18,7 +18,7 @@ FEED_CODE = "customers"
 # yet handle a single @dbt_assets function spanning *multiple* feeds in one
 # dbt invocation (not a concern until a second feed's dbt models share this
 # dbt_assets function — see Learnings.md).
-FEED_POOL = f"feed:{FEED_CODE}"
+FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
 
 # Stub landing payload for Phase 5 — Phase 6 replaces this asset chain with
 # a real SparkApplication reading actual source data (see Roadmap.md,
@@ -39,9 +39,10 @@ _BASE_CUSTOMERS = [
 def landing_customers(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
@@ -61,9 +62,10 @@ def raw_customers(
     postgres_metadata: PostgresMetadataResource,
     landing_customers: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
@@ -82,10 +84,11 @@ def clean_customers(
     iceberg_catalog: IcebergCatalogResource,
     raw_customers: pl.DataFrame,
 ) -> Output[None]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     df = raw_customers
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="clean",
         dagster_run_id=context.run_id,
     ) as log:

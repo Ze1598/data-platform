@@ -4,7 +4,7 @@ Tracks implementation of [Roadmap.md](Roadmap.md), phase by phase. Update checkb
 
 **Status legend**: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 
-**Current phase**: Phase 9 complete, ready to start Phase 10
+**Current phase**: Phase 10 complete (metadata schema redesign), Phase 11 (streaming) not started
 
 ---
 
@@ -255,12 +255,25 @@ A design correction, not an incremental patch: `raw` was never actually implemen
 ---
 
 ## Phase 10 — Metadata data model review
-- [ ] Audit every column in `source_system`/`data_feed`/`schema_registry`/`model_feed`/`model_feed_source`/`data_feed_run`/`data_model_run` against actual code call sites (not intent/comments)
-- [ ] For each column flagged dead in the Phase 6-era tech-debt audit (`processing_engine`, `landing_path_template`/`raw_path_template`, `incremental_column`/`incremental_column_type`, `schedule_cron`, `schema_registry` versioning columns): either wire up the real call site now that the corresponding phase (Spark opt-in, incremental extraction, scheduling, schema evolution) is built, or drop the column
-- [ ] Revisit `data_model_run.model_key`/`uses_feeds` now that Phase 7 has given `model_feed` real fact/dimension rows — decide whether fact/dim `data_model_run` rows should FK to `model_feed` for real (the walk-back reasoning against this in Learnings.md was specifically about *staging*, which still doesn't fit `model_feed`'s Kimball-specific columns — that part still holds)
-- [ ] **Verify**: no column left in an ambiguous "maybe something reads it" state — each one has either a named call site or is gone from the DDL
+- [x] Audit every column in `source_system`/`data_feed`/`schema_registry`/`model_feed`/`model_feed_source`/`data_feed_run`/`data_model_run` against actual code call sites (not intent/comments)
+- [x] For each column flagged dead in the Phase 6-era tech-debt audit: either wired up for real or dropped (see below)
+- [x] `data_feed_run`/`data_model_run` merged into one `data_processing_runs` table (`tracking_group`/`tracking_group_type` added as classification context, not a grain change)
+- [x] **Verify**: full `just smoketest` green — 4/4 feed-run + 4/4 model-run rows successful, 44/44 dbt tests, full pytest suite, live frontend CRUD round-trip
 
 Notes / deviations:
+
+A full redesign of the metadata schema, driven entirely by a detailed table-by-table review (design captured in [metadata/DataModel.md](metadata/DataModel.md), now the source of truth for this schema — `Roadmap.md`'s "Metadata Schema" section just points there instead of duplicating it).
+
+- **`source_system`**: `user`/`secret` renamed to `connection_user`/`connection_secret` (`user` is a Postgres reserved word); new `base_location`.
+- **`data_feed`**: `code` removed — `friendly_name` (renamed from `object_name`) is now the identity/idempotency key everywhere (seed script, asset `get_data_feed()` lookups, frontend selection). `name` dropped. New `source_object_name`, `source_pk` (renamed from `business_key_columns`), and `batch_group`/`batch_group_friendly_name`/`batch_feed_hierarchy` (batching concept, not yet consumed by a real scheduler — every feed still gets a singleton batch of its own name, enforced not-null since the platform is meant to track runs by batch, never by a bare feed). `incremental_column`/`incremental_column_type` collapsed into `watermark_column`. `staging_table_name`/`schedule_cron`/`landing_path_template`/`raw_path_template`/`updates_enabled`/`created_at`/`updated_at` all removed — path/naming conventions are pure code now, and staging's update-tracking behavior moved to a derived rule (see below).
+- **`model_feed` → `lakehouse_models`**: `code`→`friendly_name`, `model_type`→`table_type`, `deletions_enabled`→`deletes_enabled`. New `model_schema`, `batch_hierarchy`, `load_type` (new lookup table: full/incremental_by_id/incremental_by_timestamp/incremental_by_custom_query). `staging_source_data_feed_id` + the `model_feed_source` bridge table both replaced by a single `depends_on_feeds` (comma-separated `data_feed.id`s) — staging itself still has no metadata row of its own, this is fact/dimension-only. `surrogate_key_column`/`created_at`/`updated_at` dropped.
+- **New staging update-tracking rule**: since `data_feed.updates_enabled` is gone, a feed's staging table now tracks updates if *any* `lakehouse_models` row listing it in `depends_on_feeds` has `updates_enabled=true`, defaulting to `true` if no dependents exist. Implemented in `PostgresMetadataResource.get_updates_enabled_map()`. Consequence: `sales` reverts to update-tracking under the default rule unless its dependents say otherwise — both `dim_branch` and `fct_sales` are seeded `updates_enabled=false` to deliberately preserve the earlier-established "sales is immutable" behavior.
+- **New `schedule` table** (polymorphic `controlling_object_id`/`controlling_object_type` in `feed`/`model`) — table + CRUD only, no codegen consumer yet (that's follow-on work, same category as the serve-view/deletion-synthesis generators).
+- **`insert/update-split` mechanism unaffected** by the rename — `classify_changes()`/`trino__get_delete_insert_merge_sql` just consume whatever `updates_enabled` value they're handed.
+- **Real bug found and fixed along the way, unrelated to the schema itself**: `raw_police_crimes` was flattening the API's nested JSON (a `clean`-layer responsibility) instead of being a verbatim, zero-transformation dump, and never actually wrote anything to `raw/` storage. Fixed: flattening moved into `clean_police_crimes`; `raw_police_crimes` now writes the untouched nested rows to `raw/police_crimes/run_id=<id>/crimes.parquet` (parquet specifically to survive the round-trip with nested struct columns intact). See Learnings.md, "A stub asset can silently violate a documented layer contract indefinitely" for the general lesson (second occurrence).
+- **Every call site updated**: seed script (`friendly_name`-keyed idempotency, `depends_on_feeds` resolved via `string_agg` subquery), `PostgresMetadataResource` (`get_data_feed()`, merged `log_data_feed_stage()`/`log_data_model_stage()` onto `data_processing_runs` with a new `tracking_group` parameter, rewritten `get_updates_enabled_map()`), all 4 asset files, `dbt_assets.py`, both codegen scripts (`generate_serve_views.py` now tags a view with *every* feed in `depends_on_feeds`, not just one), all 3 frontend CRUD pages (`3_Model_Feeds.py` renamed to `3_Lakehouse_Models.py`, gained a multi-select `depends_on_feeds` picker and a batch-group picker with inline "create new batch" support), `orchestration/module.just`'s `verify-pipeline`, and a stale integration test (`test_utc_consistency.py` was still querying `data_feed.code`/`staging_table_name`).
+- **Also discovered while wiring `verify-pipeline`**: a from-scratch cluster had never actually exercised `financial_transactions`' full pipeline before, because `clean_financial_transactions` silently no-ops on an empty `landing/` and nothing ever regenerated the landing CSVs this session's earlier data cleanup wiped. Fixed by adding `orchestration::seed-financial-landing` (runs `generate_financial_reports.py` once, only if `landing/financial_transactions/` is empty) to `orchestration::start`, so this can't silently recur.
+- **Verified live, not just designed**: full `just smoketest` (nuke, rebuild, live `__ASSET_JOB` run, full test suite) green — 4/4 feed-run + 4/4 model-run rows in `data_processing_runs`, 44/44 dbt tests, every pytest suite — plus a direct CRUD round-trip (insert/update/delete) against `data_feed` and `lakehouse_models` using the exact same helper functions the Streamlit pages call, since no headless browser is available in this sandbox to click through the UI itself.
 
 ---
 

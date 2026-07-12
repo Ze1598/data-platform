@@ -30,6 +30,13 @@ if mode == "Add new":
         name = st.text_input("Name")
         description = st.text_area("Description")
         system_type = st.selectbox("System type", SYSTEM_TYPES)
+        base_location = st.text_input(
+            "Base location", help="Root for connectivity: a SQL Server name, a storage account container, an API base URL"
+        )
+        connection_user = st.text_input("Connection user")
+        connection_secret = st.text_input(
+            "Connection secret", help="Not the actual secret -- a reference/path to where it lives in a vault"
+        )
         connection_config = st.text_area("Connection config (JSON)", value="{}")
         is_active = st.checkbox("Active", value=True)
         submitted = st.form_submit_button("Create")
@@ -52,6 +59,9 @@ if mode == "Add new":
                             "name": name,
                             "description": description or None,
                             "system_type": system_type,
+                            "base_location": base_location or None,
+                            "connection_user": connection_user or None,
+                            "connection_secret": connection_secret or None,
                             "connection_config": json.dumps(cfg),
                             "is_active": is_active,
                         },
@@ -74,6 +84,9 @@ elif mode == "Edit existing":
             system_type = st.selectbox(
                 "System type", SYSTEM_TYPES, index=SYSTEM_TYPES.index(row["system_type"])
             )
+            base_location = st.text_input("Base location", value=safe_str(row["base_location"]))
+            connection_user = st.text_input("Connection user", value=safe_str(row["connection_user"]))
+            connection_secret = st.text_input("Connection secret", value=safe_str(row["connection_secret"]))
             connection_config = st.text_area(
                 "Connection config (JSON)", value=to_json_text(row["connection_config"])
             )
@@ -96,6 +109,9 @@ elif mode == "Edit existing":
                             "name": name,
                             "description": description or None,
                             "system_type": system_type,
+                            "base_location": base_location or None,
+                            "connection_user": connection_user or None,
+                            "connection_secret": connection_secret or None,
                             "connection_config": json.dumps(cfg),
                             "is_active": is_active,
                         },

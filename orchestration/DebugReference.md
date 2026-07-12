@@ -72,11 +72,11 @@ for rid in ['<run_id_1>', '<run_id_2>']:
     print(rid, '->', instance.get_run_by_id(rid).status)
 "
 ```
-Cross-check the actual timestamps afterward — `data_feed_run`'s per-stage end timestamps should show zero overlap between the two runs, not just "eventually both succeeded" (which can also happen if they raced and got lucky). No more `layer` column to filter on since the redesign (see Learnings.md) collapsed landing/raw/clean into one row per feed per run — query `job_started_timestamp`/`<stage>_end_timestamp` directly instead:
+Cross-check the actual timestamps afterward — `data_processing_runs`'s per-stage end timestamps should show zero overlap between the two runs, not just "eventually both succeeded" (which can also happen if they raced and got lucky). No more `layer` column to filter on since the redesign (see Learnings.md) collapsed landing/raw/clean into one row per feed per run — query `job_started_timestamp`/`<stage>_end_timestamp` directly instead (feed-run rows have `data_feed_id is not null`):
 ```sql
 SELECT dagster_run_id, job_started_timestamp, landing_end_timestamp, raw_end_timestamp, clean_end_timestamp, job_successful
-FROM data_feed_run
-WHERE dagster_run_id IN ('<run_id_1>', '<run_id_2>') ORDER BY job_started_timestamp;
+FROM data_processing_runs
+WHERE data_feed_id IS NOT NULL AND dagster_run_id IN ('<run_id_1>', '<run_id_2>') ORDER BY job_started_timestamp;
 ```
 
 ---
@@ -88,7 +88,7 @@ WHERE dagster_run_id IN ('<run_id_1>', '<run_id_2>') ORDER BY job_started_timest
 kubectl get pods -n orchestration -w
 kubectl logs -n orchestration job/dagster-run-<run_id>
 ```
-Note: `kubectl logs` on a fast-completing Job can appear to cut off mid-line even when the run genuinely succeeded — cross-check `data_feed_run`/`data_model_run` and the run's actual `DagsterRunStatus` (see above) rather than trusting truncated pod log output alone.
+Note: `kubectl logs` on a fast-completing Job can appear to cut off mid-line even when the run genuinely succeeded — cross-check `data_processing_runs` and the run's actual `DagsterRunStatus` (see above) rather than trusting truncated pod log output alone.
 
 ### Rebuild and reload the orchestration image after a code change
 **Scenario**: `K8sRunLauncher` launches pods from a fixed image tag (`data-platform-orchestration:latest` in `orchestration/dagster_home/dagster.yaml`) — kind doesn't pull from a registry, so a code change needs an explicit rebuild + reload before a launched pod will see it.

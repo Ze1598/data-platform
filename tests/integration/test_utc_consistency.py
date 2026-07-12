@@ -22,16 +22,16 @@ def _current_feeds_with_timestamp_columns(metadata_conn):
     cur = metadata_conn.cursor()
     cur.execute(
         """
-        SELECT df.code, df.staging_table_name, sr.column_definitions
+        SELECT df.friendly_name, sr.column_definitions
         FROM schema_registry sr
         JOIN data_feed df ON df.id = sr.data_feed_id
         WHERE sr.is_current AND df.is_active
         """
     )
-    for code, staging_table_name, column_definitions in cur.fetchall():
+    for friendly_name, column_definitions in cur.fetchall():
         timestamp_columns = [c["name"] for c in column_definitions if c["data_type"] == "timestamp"]
         if timestamp_columns:
-            yield code, staging_table_name, timestamp_columns
+            yield friendly_name, timestamp_columns
 
 
 def test_clean_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
@@ -39,13 +39,13 @@ def test_clean_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
     assert feeds, "expected at least one feed with a timestamp column in schema_registry — did seeding run?"
 
     failures = []
-    for feed_code, _staging_table_name, timestamp_columns in feeds:
-        columns = describe_columns(trino_conn, "clean", feed_code)
-        assert columns, f"iceberg.clean.{feed_code} does not exist — has this feed ever been materialized?"
+    for friendly_name, timestamp_columns in feeds:
+        columns = describe_columns(trino_conn, "clean", friendly_name)
+        assert columns, f"iceberg.clean.{friendly_name} does not exist — has this feed ever been materialized?"
         for col in timestamp_columns:
             trino_type = columns.get(col)
             if trino_type is None or "with time zone" not in trino_type:
-                failures.append(f"clean.{feed_code}.{col}: expected 'timestamp(...) with time zone', got {trino_type!r}")
+                failures.append(f"clean.{friendly_name}.{col}: expected 'timestamp(...) with time zone', got {trino_type!r}")
 
     assert not failures, "\n".join(failures)
 
@@ -61,9 +61,12 @@ def test_staging_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
     assert feeds, "expected at least one feed with a timestamp column in schema_registry — did seeding run?"
 
     failures = []
-    for feed_code, staging_table_name, timestamp_columns in feeds:
-        columns = describe_columns(trino_conn, "staging", staging_table_name)
-        assert columns, f"iceberg.staging.{staging_table_name} does not exist — has stg_{feed_code} ever run?"
+    for friendly_name, timestamp_columns in feeds:
+        # Every staging model's alias equals its feed's friendly_name today
+        # (see dbt/data_platform/models/staging/stg_*.sql's `alias=` config)
+        # -- no staging_table_name metadata column to read anymore.
+        columns = describe_columns(trino_conn, "staging", friendly_name)
+        assert columns, f"iceberg.staging.{friendly_name} does not exist — has stg_{friendly_name} ever run?"
         # the feed's own passed-through column(s), plus the technical
         # _loaded_at column every staging model stamps (see
         # dbt/data_platform/models/staging/stg_*.sql)
@@ -71,7 +74,7 @@ def test_staging_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
             trino_type = columns.get(col)
             if trino_type is None or "with time zone" not in trino_type:
                 failures.append(
-                    f"staging.{staging_table_name}.{col}: expected 'timestamp(...) with time zone', got {trino_type!r}"
+                    f"staging.{friendly_name}.{col}: expected 'timestamp(...) with time zone', got {trino_type!r}"
                 )
 
     assert not failures, "\n".join(failures)

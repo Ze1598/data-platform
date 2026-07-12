@@ -1,6 +1,7 @@
 -- Platform metadata schema: source_system, data_feed, schema_registry,
--- model_feed, model_feed_source, data_feed_run, data_model_run.
--- See Roadmap.md "Metadata Schema" for the design rationale.
+-- lakehouse_models, load_type, schedule, data_processing_runs.
+-- See metadata/DataModel.md for the full design rationale and column-by-
+-- column reasoning behind this schema.
 
 create or replace function set_updated_at()
 returns trigger as $$
@@ -19,6 +20,13 @@ create table source_system (
     name               text not null,
     description        text,
     system_type        text not null check (system_type in ('database', 'api', 'file_drop', 'saas')),
+    -- root for connectivity: a SQL Server name, a storage account container, an API base URL
+    base_location      text,
+    -- auth principal for this system
+    connection_user    text,
+    -- NOT the actual secret -- a reference/path to where the real credential
+    -- lives in a vault (e.g. Azure Key Vault)
+    connection_secret  text,
     connection_config  jsonb not null default '{}'::jsonb,
     is_active          boolean not null default true,
     created_at         timestamptz not null default now(),
@@ -30,51 +38,49 @@ create trigger trg_source_system_updated_at
     for each row execute function set_updated_at();
 
 -- ---------------------------------------------------------------------------
--- data_feed (one row per source object/table/endpoint)
+-- data_feed (one row per source object/table/endpoint to extract)
 -- ---------------------------------------------------------------------------
 create table data_feed (
     id                        uuid primary key default gen_random_uuid(),
     source_system_id          uuid not null references source_system(id),
-    code                      text not null unique,
-    name                      text not null,
-    object_name               text not null,
+    -- identity: no separate code, friendly_name is the natural key used for
+    -- idempotent seeding, dbt/asset lookups, and CRUD selection
+    friendly_name             text not null unique,
+    -- the object's actual name in the source system (e.g. "schema.table" for
+    -- a database, "sales.csv" for a flat file)
+    source_object_name        text not null,
+    -- groups feeds so pipelines can run per-batch, not per-feed. Denormalized
+    -- (no lookup table) -- the same value must be entered consistently
+    -- across every feed row in that batch. Every feed must belong to a
+    -- batch (not null) -- the platform tracks and schedules runs by batch
+    -- or model schema, never by a bare individual feed; a feed with no
+    -- natural batch mate is still its own singleton batch.
+    batch_group               uuid not null,
+    batch_group_friendly_name text not null,
+    -- feeds sharing the same tier can extract in parallel; lower tiers must
+    -- complete before higher tiers within the same batch_group
+    batch_feed_hierarchy      int not null default 0,
     extraction_type           text not null check (extraction_type in ('full', 'incremental')),
-    incremental_column        text,
-    incremental_column_type   text,
-    extraction_config         jsonb not null default '{}'::jsonb,
-    landing_path_template     text,
-    raw_path_template         text,
-    business_key_columns      jsonb not null default '[]'::jsonb,
-    staging_table_name        text,
-    schedule_cron             text,
+    watermark_column          text,
+    -- arbitrary per-feed JSON for feed-specific extraction parameters (unused today)
+    extraction_config         jsonb,
+    -- column names identifying a row in the source; extraction-only, not the
+    -- same concept as a model-layer business key
+    source_pk                 jsonb not null default '[]'::jsonb,
     -- which engine runs this feed's raw->clean transform: 'polars' by
     -- default (runs inline in the Dagster op, no extra cluster
     -- infrastructure), 'spark' opt-in for feeds whose volume actually
     -- needs distributed execution (see Learnings.md, Phase 6)
     processing_engine         text not null default 'polars' check (processing_engine in ('polars', 'spark')),
-    -- mirrors model_feed.updates_enabled -- staging's clean->staging merge
-    -- is keyed off data_feed, not model_feed, so it needs its own copy of
-    -- this flag rather than reading model_feed's (which governs the
-    -- separate staging->model layer). false means this feed is treated as
-    -- insert-only in staging: attribute-hash change detection is skipped
-    -- entirely, only new business keys are ever written.
-    updates_enabled           boolean not null default true,
-    -- denormalized watermark state for the orchestrator; data_feed_run is the full run history
+    -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
     last_watermark_value      text,
-    last_run_id               uuid,
     is_active                 boolean not null default true,
-    created_at                timestamptz not null default now(),
-    updated_at                timestamptz not null default now(),
-    constraint chk_data_feed_incremental_column check (
-        extraction_type = 'full' or incremental_column is not null
+    constraint chk_data_feed_watermark_column check (
+        extraction_type = 'full' or watermark_column is not null
     )
 );
 
 create index idx_data_feed_source_system on data_feed (source_system_id);
-
-create trigger trg_data_feed_updated_at
-    before update on data_feed
-    for each row execute function set_updated_at();
 
 -- ---------------------------------------------------------------------------
 -- schema_registry (versioned expected schema of each feed's clean output)
@@ -98,60 +104,85 @@ create unique index uq_schema_registry_current
     where is_current;
 
 -- ---------------------------------------------------------------------------
--- model_feed (fact/dim config)
+-- load_type (lookup for lakehouse_models.load_type)
 -- ---------------------------------------------------------------------------
-create table model_feed (
-    id                            uuid primary key default gen_random_uuid(),
-    code                          text not null unique,
-    model_type                    text not null check (model_type in ('fact', 'dimension')),
-    staging_source_data_feed_id   uuid not null references data_feed(id),
-    business_key_columns          jsonb not null default '[]'::jsonb,
-    tracked_columns               jsonb not null default '[]'::jsonb,
-    surrogate_key_column          text not null default '_scd_id',
-    scd_type                      smallint not null default 2 check (scd_type in (1, 2)),
-    updates_enabled               boolean not null default true,
-    deletions_enabled             boolean not null default false,
-    watermark_column              text,
-    -- denormalized watermark state for the orchestrator; data_model_run is the full run history
-    last_watermark_value          text,
-    last_run_id                   uuid,
-    is_active                     boolean not null default true,
-    created_at                    timestamptz not null default now(),
-    updated_at                    timestamptz not null default now()
+create table load_type (
+    id            smallint primary key,
+    label         text not null,
+    description   text
 );
 
-create index idx_model_feed_staging_source on model_feed (staging_source_data_feed_id);
-
-create trigger trg_model_feed_updated_at
-    before update on model_feed
-    for each row execute function set_updated_at();
+insert into load_type (id, label, description) values
+    (0, 'full', 'Full reload every run'),
+    (1, 'incremental_by_id', 'Incremental, based on a source ID column'),
+    (2, 'incremental_by_timestamp', 'Incremental, based on a source timestamp column'),
+    (3, 'incremental_by_custom_query', 'Incremental, based on a custom query');
 
 -- ---------------------------------------------------------------------------
--- model_feed_source (bridge table for facts joining >1 staging source)
--- NOT used for tracking which feed(s) a staging build draws from -- that's
--- data_model_run.uses_feeds (a plain comma-separated column), deliberately
--- separate. model_feed itself is Kimball-specific (model_type constrained
--- to fact/dimension, requires scd_type/surrogate_key_column/business_key_
--- columns/tracked_columns), and staging isn't a fact or a dimension, so it
--- doesn't have a model_feed row to bridge from in the first place. Don't
--- "fix" data_model_run to route through here -- that was considered and
--- rejected, see Learnings.md.
+-- lakehouse_models (fact/dim config -- NOT staging; staging stays pure
+-- naming-convention with no metadata row of its own)
 -- ---------------------------------------------------------------------------
-create table model_feed_source (
-    model_feed_id   uuid not null references model_feed(id),
-    data_feed_id    uuid not null references data_feed(id),
-    role            text not null default 'primary',
-    primary key (model_feed_id, data_feed_id)
+create table lakehouse_models (
+    id                    uuid primary key default gen_random_uuid(),
+    -- this is what dbt ref() resolves against, so uniqueness is load-bearing
+    friendly_name         text not null unique,
+    -- which Trino/Iceberg schema this table lands in
+    model_schema          text not null,
+    batch_hierarchy       int not null default 0,
+    table_type            text not null check (table_type in ('fact', 'dimension')),
+    business_key_columns  jsonb not null default '[]'::jsonb,
+    -- attribute columns hash-compared via _attr_hash to detect a Type 2
+    -- new-version or Type 1 in-place update
+    tracked_columns       jsonb not null default '[]'::jsonb,
+    scd_type              smallint not null default 2 check (scd_type in (1, 2)),
+    -- also drives whether this model's upstream staging source(s) merge on
+    -- attribute change -- see metadata/DataModel.md "Staging update-tracking rule"
+    updates_enabled       boolean not null default true,
+    deletes_enabled       boolean not null default false,
+    watermark_column      text,
+    load_type             smallint not null references load_type(id),
+    -- comma-separated data_feed.id values that must succeed before this
+    -- model builds; replaces both staging_source_data_feed_id and the
+    -- deleted model_feed_source bridge table
+    depends_on_feeds      text,
+    -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
+    last_watermark_value  text,
+    last_run_id           uuid,
+    is_active             boolean not null default true
 );
 
 -- ---------------------------------------------------------------------------
--- data_feed_run (one row per data_feed per job run — extraction + contract
--- validation concern: landing -> raw -> clean. See Roadmap.md "Metadata
--- Schema" and Learnings.md for why this replaced a per-layer audit log.)
+-- schedule (metadata for Dagster schedules; a build-time codegen step reads
+-- this table and constructs the real Dagster ScheduleDefinition objects --
+-- not yet built as a functioning consumer, only the table structure lands
+-- in this pass)
 -- ---------------------------------------------------------------------------
-create table data_feed_run (
+create table schedule (
+    id                        uuid primary key default gen_random_uuid(),
+    cron                      text not null,
+    -- polymorphic: a data_feed.id or a lakehouse_models.id, depending on controlling_object_type
+    controlling_object_id     uuid not null,
+    controlling_object_type   text not null check (controlling_object_type in ('model', 'feed')),
+    is_active                 boolean not null default true
+);
+
+-- ---------------------------------------------------------------------------
+-- data_processing_runs (one row per feed-run or model-run per job execution
+-- -- same grain as the former data_feed_run/data_model_run, merged into one
+-- wide table spanning landing -> raw -> clean -> staging -> model -> serve.
+-- See metadata/DataModel.md for the merge rationale.)
+-- ---------------------------------------------------------------------------
+create table data_processing_runs (
     run_id                          uuid primary key default gen_random_uuid(),
-    data_feed_id                    uuid not null references data_feed(id),
+    -- populated for a feed-run row
+    data_feed_id                    uuid references data_feed(id),
+    -- populated for a model-run row; corresponds to lakehouse_models.friendly_name (not a real FK)
+    model_key                       text,
+    -- comma-separated data_feed.friendly_name values, populated alongside model_key
+    uses_feeds                      text,
+    -- either a batch_group value or a model_schema value, depending on tracking_group_type
+    tracking_group                  text not null,
+    tracking_group_type             text not null check (tracking_group_type in ('batch_group', 'model_schema')),
     dagster_run_id                  text not null,
     job_started_timestamp           timestamptz not null default now(),
     job_ended_timestamp             timestamptz,
@@ -190,33 +221,6 @@ create table data_feed_run (
     clean_watermark_value_start     text,
     clean_watermark_value_end       text,
 
-    created_at                      timestamptz not null default now(),
-    unique (data_feed_id, dagster_run_id)
-);
-
-create index idx_data_feed_run_feed on data_feed_run (data_feed_id, job_started_timestamp desc);
-create index idx_data_feed_run_dagster_run on data_feed_run (dagster_run_id);
-
--- ---------------------------------------------------------------------------
--- data_model_run (one row per model unit per job run — warehouse-building
--- concern: staging -> model -> serve. Not FK'd to model_feed: staging is
--- built per data_feed today with no model_feed involved at all, and
--- model/serve don't exist yet (Phase 7/8). `model_key` names the model
--- unit being built (e.g. 'customers' today, matching stg_customers; will
--- align with model_feed.code once Phase 7 introduces real rows).
--- `uses_feeds` is a comma-separated list of data_feed codes this model
--- unit draws from — one feed per staging model today, built to support a
--- future fact model joining multiple staging sources.
--- ---------------------------------------------------------------------------
-create table data_model_run (
-    run_id                          uuid primary key default gen_random_uuid(),
-    model_key                       text not null,
-    uses_feeds                      text not null,
-    dagster_run_id                  text not null,
-    job_started_timestamp           timestamptz not null default now(),
-    job_ended_timestamp             timestamptz,
-    job_successful                  boolean,
-
     is_staging_successful           boolean,
     staging_end_timestamp           timestamptz,
     staging_error_message           text,
@@ -251,8 +255,26 @@ create table data_model_run (
     serve_watermark_value_end       text,
 
     created_at                      timestamptz not null default now(),
-    unique (model_key, dagster_run_id)
+
+    constraint chk_data_processing_runs_one_target check (
+        (data_feed_id is not null and model_key is null) or
+        (data_feed_id is null and model_key is not null)
+    )
 );
 
-create index idx_data_model_run_model_key on data_model_run (model_key, job_started_timestamp desc);
-create index idx_data_model_run_dagster_run on data_model_run (dagster_run_id);
+create unique index uq_data_processing_runs_feed
+    on data_processing_runs (data_feed_id, dagster_run_id)
+    where data_feed_id is not null;
+
+create unique index uq_data_processing_runs_model
+    on data_processing_runs (model_key, dagster_run_id)
+    where model_key is not null;
+
+create index idx_data_processing_runs_feed_started
+    on data_processing_runs (data_feed_id, job_started_timestamp desc);
+
+create index idx_data_processing_runs_model_started
+    on data_processing_runs (model_key, job_started_timestamp desc);
+
+create index idx_data_processing_runs_dagster_run
+    on data_processing_runs (dagster_run_id);

@@ -8,8 +8,8 @@ from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResou
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
-FEED_CODE = "sales"
-FEED_POOL = f"feed:{FEED_CODE}"
+FEED_FRIENDLY_NAME = "sales"
+FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
 
 # Stub landing payload for Phase 6 — a synthetic supermarket sales run,
 # standing in for a real POS export until this feed gets a real source.
@@ -78,9 +78,10 @@ def _generate_sales_rows(n: int = 20) -> pl.DataFrame:
 def landing_sales(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
@@ -96,9 +97,10 @@ def raw_sales(
     postgres_metadata: PostgresMetadataResource,
     landing_sales: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
@@ -118,10 +120,11 @@ def clean_sales(
     iceberg_catalog: IcebergCatalogResource,
     raw_sales: pl.DataFrame,
 ) -> Output[None]:
-    data_feed = postgres_metadata.get_data_feed(FEED_CODE)
+    data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     df = raw_sales
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
+        tracking_group=data_feed["batch_group_friendly_name"],
         stage="clean",
         dagster_run_id=context.run_id,
     ) as log:

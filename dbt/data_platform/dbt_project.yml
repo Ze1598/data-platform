@@ -33,7 +33,7 @@ models:
       +materialized: incremental
       +incremental_strategy: delete+insert
     serve:
-      # `_latest`/`_historical` views, generated from model_feed by
+      # `_latest`/`_historical` views, generated from lakehouse_models by
       # scripts/generate_serve_views.py (Roadmap.md "Serve layer
       # approach") -- always `view`, never persisted, so they stay cheap
       # and always reflect the current model layer.

@@ -15,7 +15,7 @@
     of to dim_customer). Same insert/update-split pattern as
     stg_customers.sql (see there for the full reasoning) -- one mechanism
     for "only write changed rows", reused everywhere it's needed.
-    `updates_enabled` here reads from model_feed.updates_enabled (this is
+    `updates_enabled` here reads from lakehouse_models.updates_enabled (this is
     the staging->model layer, not clean->staging), via the same
     `updates_enabled_by_model` var dbt_assets.py computes for the whole
     feed's `dbt build` invocation.

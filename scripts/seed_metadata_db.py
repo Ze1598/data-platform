@@ -1,12 +1,16 @@
-"""Idempotently seeds source_system/data_feed/schema_registry rows for this
-project's feeds. These are business-configuration rows, not schema — DDL
-migrations (metadata/db/init/*.sql) create the tables, this populates them.
+"""Idempotently seeds source_system/data_feed/schema_registry/lakehouse_models
+rows for this project's feeds. These are business-configuration rows, not
+schema — DDL migrations (metadata/db/init/*.sql) create the tables, this
+populates them.
 
 Existed only as ad hoc psql commands run by hand through Phase 4-6 until
 now — not reproducible from a fresh or restarted cluster, which matters
 now that the cluster gets stopped between phases (Learnings.md). Safe to
 re-run: every insert is ON CONFLICT DO NOTHING against each table's real
 unique constraint.
+
+Idempotency key is friendly_name throughout (data_feed.code / model_feed.code
+were removed in the metadata schema redesign — see metadata/DataModel.md).
 """
 
 import os
@@ -98,84 +102,91 @@ def seed_data_feed(
     cur,
     *,
     source_system_code: str,
-    code: str,
-    name: str,
-    object_name: str,
+    friendly_name: str,
+    source_object_name: str,
     extraction_type: str,
-    business_key_columns: list[str],
-    staging_table_name: str,
+    source_pk: list[str],
     processing_engine: str,
-    incremental_column: str | None = None,
-    incremental_column_type: str | None = None,
-    landing_path_template: str | None = None,
-    schedule_cron: str | None = None,
-    updates_enabled: bool = True,
+    watermark_column: str | None = None,
+    batch_group_friendly_name: str | None = None,
 ) -> None:
+    # Every feed must belong to a batch (see metadata/DataModel.md and
+    # 01_platform_metadata.sql's batch_group not-null comment) -- none of
+    # today's feeds have a real multi-feed batch relationship yet, so each
+    # defaults to being its own singleton batch (batch_group_friendly_name
+    # = its own friendly_name) unless a real one is passed in.
+    batch_group_friendly_name = batch_group_friendly_name or friendly_name
     cur.execute(
         """
         INSERT INTO data_feed (
-            source_system_id, code, name, object_name, extraction_type,
-            business_key_columns, staging_table_name, processing_engine,
-            incremental_column, incremental_column_type, landing_path_template, schedule_cron,
-            updates_enabled
+            source_system_id, friendly_name, source_object_name, extraction_type,
+            source_pk, processing_engine, watermark_column,
+            batch_group, batch_group_friendly_name
         )
         VALUES (
             (SELECT id FROM source_system WHERE code = %s),
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s,
+            gen_random_uuid(), %s
         )
-        ON CONFLICT (code) DO NOTHING
+        ON CONFLICT (friendly_name) DO NOTHING
         """,
         (
-            source_system_code, code, name, object_name, extraction_type,
-            psycopg.types.json.Json(business_key_columns), staging_table_name, processing_engine,
-            incremental_column, incremental_column_type, landing_path_template, schedule_cron,
-            updates_enabled,
+            source_system_code, friendly_name, source_object_name, extraction_type,
+            psycopg.types.json.Json(source_pk), processing_engine, watermark_column,
+            batch_group_friendly_name,
         ),
     )
 
 
-def seed_schema_registry(cur, *, data_feed_code: str, version: int, column_definitions: list[dict], created_by: str) -> None:
+def seed_schema_registry(cur, *, data_feed_friendly_name: str, version: int, column_definitions: list[dict], created_by: str) -> None:
     cur.execute(
         """
         INSERT INTO schema_registry (data_feed_id, version, column_definitions, is_current, created_by)
-        VALUES ((SELECT id FROM data_feed WHERE code = %s), %s, %s, true, %s)
+        VALUES ((SELECT id FROM data_feed WHERE friendly_name = %s), %s, %s, true, %s)
         ON CONFLICT (data_feed_id, version) DO NOTHING
         """,
-        (data_feed_code, version, psycopg.types.json.Json(column_definitions), created_by),
+        (data_feed_friendly_name, version, psycopg.types.json.Json(column_definitions), created_by),
     )
 
 
-def seed_model_feed(
+def seed_lakehouse_model(
     cur,
     *,
-    code: str,
-    model_type: str,
-    staging_source_data_feed_code: str,
+    friendly_name: str,
+    table_type: str,
+    depends_on_feed_friendly_names: list[str],
     business_key_columns: list[str],
     tracked_columns: list[str],
     scd_type: int,
-    deletions_enabled: bool,
+    deletes_enabled: bool,
+    model_schema: str = "model",
+    load_type: int = 0,
+    updates_enabled: bool = True,
 ) -> None:
     cur.execute(
         """
-        INSERT INTO model_feed (
-            code, model_type, staging_source_data_feed_id,
-            business_key_columns, tracked_columns, scd_type, deletions_enabled
+        INSERT INTO lakehouse_models (
+            friendly_name, model_schema, table_type, business_key_columns,
+            tracked_columns, scd_type, updates_enabled, deletes_enabled,
+            load_type, depends_on_feeds
         )
         VALUES (
-            %s, %s, (SELECT id FROM data_feed WHERE code = %s),
-            %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            (SELECT string_agg(id::text, ',') FROM data_feed WHERE friendly_name = ANY(%s))
         )
-        ON CONFLICT (code) DO NOTHING
+        ON CONFLICT (friendly_name) DO NOTHING
         """,
         (
-            code,
-            model_type,
-            staging_source_data_feed_code,
+            friendly_name,
+            model_schema,
+            table_type,
             psycopg.types.json.Json(business_key_columns),
             psycopg.types.json.Json(tracked_columns),
             scd_type,
-            deletions_enabled,
+            updates_enabled,
+            deletes_enabled,
+            load_type,
+            depends_on_feed_friendly_names,
         ),
     )
 
@@ -214,102 +225,92 @@ def main() -> None:
         seed_data_feed(
             cur,
             source_system_code="phase3_manual",
-            code="customers",
-            name="Customers",
-            object_name="customers",
+            friendly_name="customers",
+            source_object_name="customers",
             extraction_type="full",
-            business_key_columns=["customer_id"],
-            staging_table_name="customers",
+            source_pk=["customer_id"],
             processing_engine="polars",
         )
         seed_data_feed(
             cur,
             source_system_code="supermarket_pos",
-            code="sales",
-            name="Supermarket Sales",
-            object_name="sales",
+            friendly_name="sales",
+            source_object_name="sales",
             extraction_type="full",
-            business_key_columns=["invoice_id"],
-            staging_table_name="sales",
+            source_pk=["invoice_id"],
             processing_engine="polars",
-            # A completed sale/invoice line is immutable in this domain --
-            # you refund or void a transaction, you don't edit one in
-            # place -- so staging never needs attribute-hash update
-            # detection for this feed, only new-key inserts.
-            updates_enabled=False,
         )
         seed_data_feed(
             cur,
             source_system_code="erp_export",
-            code="financial_transactions",
-            name="Financial Transactions",
-            object_name="financial_transactions",
+            friendly_name="financial_transactions",
+            source_object_name="financial_transactions",
             extraction_type="incremental",
-            business_key_columns=["transaction_id"],
-            staging_table_name="financial_transactions",
+            source_pk=["transaction_id"],
             processing_engine="polars",
-            incremental_column="posted_date",
-            incremental_column_type="timestamp",
-            landing_path_template="data-lake/landing/financial_transactions",
-            # A posted GL entry is immutable in real-world accounting --
-            # you post a reversing entry, you don't edit a posted line --
-            # so staging never needs attribute-hash update detection for
-            # this feed, only new-key inserts.
-            updates_enabled=False,
+            watermark_column="posted_date",
         )
         seed_data_feed(
             cur,
             source_system_code="uk_police_api",
-            code="police_crimes",
-            name="UK Police Street-Level Crimes",
-            object_name="crimes-street/all-crime",
+            friendly_name="police_crimes",
+            source_object_name="crimes-street/all-crime",
             extraction_type="incremental",
-            business_key_columns=["id"],
-            staging_table_name="police_crimes",
+            source_pk=["id"],
             processing_engine="polars",
-            incremental_column="month",
-            incremental_column_type="string",
-            schedule_cron="0 6 * * *",
+            watermark_column="month",
         )
 
-        seed_schema_registry(cur, data_feed_code="customers", version=1, column_definitions=CUSTOMERS_SCHEMA, created_by="seed_metadata_db")
-        seed_schema_registry(cur, data_feed_code="sales", version=1, column_definitions=SALES_SCHEMA, created_by="seed_metadata_db")
-        seed_schema_registry(cur, data_feed_code="financial_transactions", version=1, column_definitions=FINANCIAL_TRANSACTIONS_SCHEMA, created_by="seed_metadata_db")
-        seed_schema_registry(cur, data_feed_code="police_crimes", version=1, column_definitions=POLICE_CRIMES_SCHEMA, created_by="seed_metadata_db")
+        seed_schema_registry(cur, data_feed_friendly_name="customers", version=1, column_definitions=CUSTOMERS_SCHEMA, created_by="seed_metadata_db")
+        seed_schema_registry(cur, data_feed_friendly_name="sales", version=1, column_definitions=SALES_SCHEMA, created_by="seed_metadata_db")
+        seed_schema_registry(cur, data_feed_friendly_name="financial_transactions", version=1, column_definitions=FINANCIAL_TRANSACTIONS_SCHEMA, created_by="seed_metadata_db")
+        seed_schema_registry(cur, data_feed_friendly_name="police_crimes", version=1, column_definitions=POLICE_CRIMES_SCHEMA, created_by="seed_metadata_db")
 
         # Model layer (Phase 7): dim_customer stands alone (no real FK from
         # sales to customers in this dataset -- see Learnings.md); dim_branch
         # is conformed out of sales' own branch/city columns, and fct_sales
         # joins to it. See Roadmap.md "Model Layer: SCD Design".
-        seed_model_feed(
+        #
+        # updates_enabled=False on dim_branch/fct_sales carries forward the
+        # already-established "sales is immutable" reasoning (a posted
+        # invoice line isn't edited in place, only refunded/voided) -- this
+        # used to live on data_feed.updates_enabled, which the metadata
+        # redesign removed in favor of the "OR across depends_on_feeds"
+        # staging rule (see metadata/DataModel.md, "Staging update-tracking
+        # rule"). Setting it false on both dependents is what's required to
+        # keep that rule's outcome unchanged for the sales feed.
+        seed_lakehouse_model(
             cur,
-            code="dim_customer_snapshot",
-            model_type="dimension",
-            staging_source_data_feed_code="customers",
+            friendly_name="dim_customer_snapshot",
+            table_type="dimension",
+            depends_on_feed_friendly_names=["customers"],
             business_key_columns=["customer_id"],
             tracked_columns=["name", "email"],
             scd_type=2,
-            deletions_enabled=True,
+            deletes_enabled=True,
+            updates_enabled=True,
         )
-        seed_model_feed(
+        seed_lakehouse_model(
             cur,
-            code="dim_branch",
-            model_type="dimension",
-            staging_source_data_feed_code="sales",
+            friendly_name="dim_branch",
+            table_type="dimension",
+            depends_on_feed_friendly_names=["sales"],
             business_key_columns=["branch"],
             tracked_columns=["city"],
             scd_type=1,
-            deletions_enabled=False,
+            deletes_enabled=False,
+            updates_enabled=False,
         )
-        seed_model_feed(
+        seed_lakehouse_model(
             cur,
-            code="fct_sales",
-            model_type="fact",
-            staging_source_data_feed_code="sales",
+            friendly_name="fct_sales",
+            table_type="fact",
+            depends_on_feed_friendly_names=["sales"],
             business_key_columns=["invoice_id"],
             tracked_columns=["unit_price", "quantity", "tax_amount", "total", "cogs", "gross_income", "rating"],
             scd_type=1,
-            deletions_enabled=False,
+            deletes_enabled=False,
+            updates_enabled=False,
         )
 
         conn.commit()
