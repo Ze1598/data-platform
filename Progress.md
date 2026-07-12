@@ -264,10 +264,10 @@ Notes / deviations:
 
 ---
 
-## Phase 11 — (Stretch) Azure config swap proof
-- [ ] Real ADLS Gen2 account provisioned
-- [ ] Trino `iceberg.properties` updated (`fs.azure.enabled=true` + `azure.oauth.*`)
-- [ ] Polaris catalog storage config re-registered from `FILE` to `AZURE`
-- [ ] **Verify**: pipeline runs end-to-end against Azure storage with no dbt/model changes
+## Phase 11 — Real-time / streaming ingestion
+- [ ] Design the write path: topic/table layout, exactly-once vs. at-least-once landing semantics, whether streaming tables ever fold into `staging` proper vs. staying serve-only real-time views
+- [ ] New module (Kafka and/or Flink, exact split TBD) — Kafka as the ingest broker, Flink or Kafka Connect's Iceberg sink landing topics as append-only Iceberg tables in the same Polaris-cataloged warehouse
+- [ ] **Verify**: a real-time stream table joins straight into the already-persisted `model` layer via ordinary Trino SQL with no new query-engine integration (e.g. a `sales_events` stream joined to `model.dim_branch`/`model.dim_customer_snapshot`)
 
 Notes / deviations:
+- Not yet designed in detail — see Roadmap.md's "Phased Build Order" #11 for the current rough shape. The read/join side is already solved by every phase before this one (plain Iceberg tables in the same warehouse); the real design work is entirely on the write path.
