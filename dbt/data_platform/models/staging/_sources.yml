@@ -9,3 +9,4 @@ sources:
       - name: sales
       - name: financial_transactions
       - name: police_crimes
+      - name: metadata_runs

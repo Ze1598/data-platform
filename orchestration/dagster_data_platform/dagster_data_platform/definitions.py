@@ -4,6 +4,7 @@ from dagster import Definitions
 from dagster_dbt import DbtCliResource
 
 from dagster_data_platform.assets.dbt_assets import dbt_project
+from dagster_data_platform.assets.metadata_runs_assets import landing_metadata_runs,raw_metadata_runs, clean_metadata_runs
 from dagster_data_platform.assets.extraction_assets import clean_customers, landing_customers, raw_customers
 from dagster_data_platform.assets.financial_assets import (
     archive_financial_transactions,
@@ -20,6 +21,9 @@ from dagster_data_platform.resources.postgres_metadata_resource import PostgresM
 
 defs = Definitions(
     assets=[
+        landing_metadata_runs,
+        raw_metadata_runs,
+        clean_metadata_runs,
         landing_customers,
         raw_customers,
         clean_customers,
