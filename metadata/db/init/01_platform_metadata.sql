@@ -145,6 +145,18 @@ create table lakehouse_models (
     -- model builds; replaces both staging_source_data_feed_id and the
     -- deleted model_feed_source bridge table
     depends_on_feeds      text,
+    -- which single feed's per-feed Dagster job/dbt build actually claims
+    -- this model's AssetKey (must be one of depends_on_feeds, enforced at
+    -- the application layer -- same as depends_on_feeds itself, not a real
+    -- FK-in-a-list constraint). Real FK, not a loose comma-list, because
+    -- exactly one owner is a hard Dagster requirement, not a soft
+    -- convention: two @dbt_assets Python functions both claiming the same
+    -- AssetKey is a hard error, not just undesirable. Required even for a
+    -- single-feed model (trivially equal to that feed) so the meaning is
+    -- always well-defined, never implicit. See Learnings.md, "A dbt model
+    -- tagged with two feed tags gets claimed by two competing @dbt_assets
+    -- defs" for why this exists.
+    owning_feed_id        uuid not null references data_feed(id),
     -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
     last_watermark_value  text,
     last_run_id           uuid,

@@ -155,6 +155,7 @@ def seed_lakehouse_model(
     friendly_name: str,
     table_type: str,
     depends_on_feed_friendly_names: list[str],
+    owning_feed_friendly_name: str,
     business_key_columns: list[str],
     tracked_columns: list[str],
     scd_type: int,
@@ -163,31 +164,43 @@ def seed_lakehouse_model(
     load_type: int = 0,
     updates_enabled: bool = True,
 ) -> None:
+    # owning_feed_friendly_name is required, not defaulted from
+    # depends_on_feed_friendly_names[0] -- the whole point of this field is
+    # that "which feed owns this model" is never implicit (see
+    # 01_platform_metadata.sql's owning_feed_id comment).
+    assert owning_feed_friendly_name in depends_on_feed_friendly_names, (
+        f"owning_feed_friendly_name={owning_feed_friendly_name!r} must be one of "
+        f"depends_on_feed_friendly_names={depends_on_feed_friendly_names!r}"
+    )
     cur.execute(
         """
         INSERT INTO lakehouse_models (
             friendly_name, model_schema, table_type, business_key_columns,
             tracked_columns, scd_type, updates_enabled, deletes_enabled,
-            load_type, depends_on_feeds
+            load_type, depends_on_feeds, owning_feed_id
         )
         VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            (SELECT string_agg(id::text, ',') FROM data_feed WHERE friendly_name = ANY(%s))
+            %(friendly_name)s, %(model_schema)s, %(table_type)s, %(business_key_columns)s,
+            %(tracked_columns)s, %(scd_type)s, %(updates_enabled)s, %(deletes_enabled)s,
+            %(load_type)s,
+            (SELECT string_agg(id::text, ',') FROM data_feed WHERE friendly_name = ANY(%(depends_on)s)),
+            (SELECT id FROM data_feed WHERE friendly_name = %(owning_feed)s)
         )
         ON CONFLICT (friendly_name) DO NOTHING
         """,
-        (
-            friendly_name,
-            model_schema,
-            table_type,
-            psycopg.types.json.Json(business_key_columns),
-            psycopg.types.json.Json(tracked_columns),
-            scd_type,
-            updates_enabled,
-            deletes_enabled,
-            load_type,
-            depends_on_feed_friendly_names,
-        ),
+        {
+            "friendly_name": friendly_name,
+            "model_schema": model_schema,
+            "table_type": table_type,
+            "business_key_columns": psycopg.types.json.Json(business_key_columns),
+            "tracked_columns": psycopg.types.json.Json(tracked_columns),
+            "scd_type": scd_type,
+            "updates_enabled": updates_enabled,
+            "deletes_enabled": deletes_enabled,
+            "load_type": load_type,
+            "depends_on": depends_on_feed_friendly_names,
+            "owning_feed": owning_feed_friendly_name,
+        },
     )
 
 
@@ -311,6 +324,7 @@ def main() -> None:
             friendly_name="dim_customer_snapshot",
             table_type="dimension",
             depends_on_feed_friendly_names=["customers"],
+            owning_feed_friendly_name="customers",
             business_key_columns=["customer_id"],
             tracked_columns=["name", "email"],
             scd_type=2,
@@ -322,6 +336,7 @@ def main() -> None:
             friendly_name="dim_branch",
             table_type="dimension",
             depends_on_feed_friendly_names=["sales"],
+            owning_feed_friendly_name="sales",
             business_key_columns=["branch"],
             tracked_columns=["city"],
             scd_type=1,
@@ -333,6 +348,7 @@ def main() -> None:
             friendly_name="fct_sales",
             table_type="fact",
             depends_on_feed_friendly_names=["sales"],
+            owning_feed_friendly_name="sales",
             business_key_columns=["invoice_id"],
             tracked_columns=["unit_price", "quantity", "tax_amount", "total", "cogs", "gross_income", "rating"],
             scd_type=1,
@@ -350,6 +366,7 @@ def main() -> None:
             friendly_name="fct_daily_financial_activity",
             table_type="fact",
             depends_on_feed_friendly_names=["sales", "financial_transactions"],
+            owning_feed_friendly_name="financial_transactions",
             business_key_columns=["source_feed", "source_id"],
             tracked_columns=["activity_date", "category", "amount"],
             scd_type=1,

@@ -107,12 +107,13 @@ One row per Kimball fact/dimension table the platform builds — **not** staging
 | watermark_column | text | nullable — unchanged, already existed here |
 | **load_type** | smallint | not null, FK → `load_type(id)` (new lookup table below) |
 | **depends_on_feeds** | text | nullable — comma-separated `data_feed.id` values that must succeed before this model builds; replaces both `staging_source_data_feed_id` and the deleted `model_feed_source` bridge table |
+| **owning_feed_id** | uuid | not null, FK → `data_feed(id)` — which single feed's per-feed Dagster job/dbt build actually claims this model's AssetKey. Must be one of `depends_on_feeds` (application-enforced, same as `depends_on_feeds` itself). Required even for a single-feed model, so the meaning is never implicit — see `scripts/generate_dagster_pipeline.py` and `Learnings.md`, "A dbt model tagged with two feed tags gets claimed by two competing `@dbt_assets` defs" |
 | last_watermark_value | text | nullable — unchanged |
 | last_run_id | uuid | nullable — unchanged |
 | is_active | boolean | not null, default true — unchanged |
 | ~~created_at~~ / ~~updated_at~~ | — | **removed** — same reasoning as `data_feed`: user-authored via CRUD, not processing-driven |
 
-**Joins/lookups**: `depends_on_feeds` holds `data_feed.id` values (comma-separated text, not a real FK). `load_type` → `load_type.id`. `id` is referenced by `schedule.controlling_object_id` (when `controlling_object_type='model'`) and `data_processing_runs.model_key`.
+**Joins/lookups**: `depends_on_feeds` holds `data_feed.id` values (comma-separated text, not a real FK). `owning_feed_id` → `data_feed.id` (real FK). `load_type` → `load_type.id`. `id` is referenced by `schedule.controlling_object_id` (when `controlling_object_type='model'`) and `data_processing_runs.model_key`.
 
 ### Staging update-tracking rule
 

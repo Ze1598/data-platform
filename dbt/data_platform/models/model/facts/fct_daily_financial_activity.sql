@@ -24,18 +24,20 @@
     _build_dbt_assets_for_feed("financial_transactions") and
     _build_dbt_assets_for_feed("sales"), and Dagster rejects two different
     asset defs claiming the same AssetKey (confirmed for real: this broke
-    a `just smoketest` run before this single-tag fix -- and the same
-    duplicate-key problem independently applies to the generated serve
-    views, see generate_serve_views.py's `owning_tag = feed_tags[0]`,
-    which is why the single tag chosen here must be the alphabetically
-    first depends_on_feeds member -- 'financial_transactions' < 'sales').
-    Every generated per-feed job's AssetSelection is
-    `.groups(feed).upstream()` (see scripts/generate_dagster_pipeline.py),
+    a `just smoketest` run before this fix). This single tag must match
+    lakehouse_models.owning_feed_id for this model -- a real, required
+    metadata field (01_platform_metadata.sql), not an inferred convention
+    -- and generate_serve_views.py reads that same column for its generated
+    _latest/_historical views' tags, so there's exactly one source of truth
+    for "which feed owns this AssetKey," not two hand-picked values that
+    have to happen to agree. Every generated per-feed job's AssetSelection
+    is `.groups(feed).upstream()` (see scripts/generate_dagster_pipeline.py),
     which pulls stg_sales in as a real Dagster dependency whenever
     financial_transactions_job runs standalone -- so depends_on_feeds (the
-    metadata concept, used for gating/updates_enabled sourcing) and this
-    tag (which determines dbt-asset ownership) are allowed to diverge --
-    this comment is that divergence's documented reason, not an oversight.
+    metadata concept, used for gating/updates_enabled sourcing) and
+    owning_feed_id (which determines dbt-asset ownership) are allowed to
+    diverge; see Learnings.md, "A dbt model tagged with two feed tags gets
+    claimed by two competing @dbt_assets defs" for the full history.
 
     Both sources are business-immutable (see stg_sales.sql/
     stg_financial_transactions.sql's own reasoning) -- Type 1, no deletion

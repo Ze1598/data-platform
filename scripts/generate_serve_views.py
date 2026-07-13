@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "dbt" / "data_platform" / "models" / "serve" / "generated"
 
 
-def _render_view(*, model_name: str, feed_tags: list[str], filter_to_current: bool) -> str:
+def _render_view(*, model_name: str, owning_feed: str, filter_to_current: bool) -> str:
     # materialized='view' comes from dbt_project.yml's `serve:` block, not
     # repeated here. schema='serve' IS repeated here (matching model/*.sql's
     # own per-file config(schema='model', ...) pattern, not a project-level
@@ -41,22 +41,21 @@ def _render_view(*, model_name: str, feed_tags: list[str], filter_to_current: bo
     # target's default schema (staging), landing every generated view in
     # the wrong namespace even though it builds and tests clean.
     #
-    # tags= only the alphabetically-first feed in depends_on_feeds, not
-    # every one -- tagging with more than one would make dbt select this
-    # view under *multiple* per-feed `_build_dbt_assets_for_feed(...)`
-    # @dbt_assets defs (dbt_assets.py), each independently claiming the
-    # same AssetKey, which Dagster rejects at Definitions-construction time
-    # (confirmed for real: this broke `just smoketest` for
-    # fct_daily_financial_activity_latest/_historical before this fix). A
-    # multi-feed base model's own tags=[...] (e.g.
-    # fct_daily_financial_activity.sql) must use this same
-    # alphabetically-first convention for consistency -- depends_on_feeds
-    # itself is unaffected and keeps every dependent feed, for gating/
-    # updates_enabled-sourcing purposes.
-    owning_tag = feed_tags[0]
+    # tags= exactly the model's owning_feed_id (looked up via lakehouse_models
+    # itself, not derived here) -- never every depends_on_feeds member.
+    # Tagging with more than one would make dbt select this view under
+    # *multiple* per-feed `_build_dbt_assets_for_feed(...)` @dbt_assets defs
+    # (dbt_assets.py), each independently claiming the same AssetKey, which
+    # Dagster rejects at Definitions-construction time (confirmed for real:
+    # this broke `just smoketest` for fct_daily_financial_activity_latest/
+    # _historical before owning_feed_id existed). depends_on_feeds itself is
+    # unaffected and keeps every dependent feed, for gating/
+    # updates_enabled-sourcing purposes -- see Learnings.md, "A dbt model
+    # tagged with two feed tags gets claimed by two competing @dbt_assets
+    # defs".
     where_clause = "\nwhere _valid_to is null" if filter_to_current else ""
     return (
-        f"{{{{ config(schema='serve', tags=['{owning_tag}']) }}}}\n\n"
+        f"{{{{ config(schema='serve', tags=['{owning_feed}']) }}}}\n\n"
         f"select * from {{{{ ref('{model_name}') }}}}{where_clause}\n"
     )
 
@@ -64,11 +63,10 @@ def _render_view(*, model_name: str, feed_tags: list[str], filter_to_current: bo
 def fetch_lakehouse_models(cur) -> list[dict]:
     cur.execute(
         """
-        select lm.friendly_name, lm.scd_type, array_agg(df.friendly_name order by df.friendly_name) as feed_tags
+        select lm.friendly_name, lm.scd_type, df.friendly_name as owning_feed
         from lakehouse_models lm
-        join data_feed df on df.id::text = any(string_to_array(lm.depends_on_feeds, ','))
+        join data_feed df on df.id = lm.owning_feed_id
         where lm.is_active = true
-        group by lm.friendly_name, lm.scd_type
         order by lm.friendly_name
         """
     )
@@ -103,17 +101,17 @@ def generate(lakehouse_models: list[dict], output_dir: Path) -> list[Path]:
     written = []
     view_names = []
     for row in lakehouse_models:
-        name, scd_type, feed_tags = row["friendly_name"], row["scd_type"], row["feed_tags"]
+        name, scd_type, owning_feed = row["friendly_name"], row["scd_type"], row["owning_feed"]
 
         latest_name = f"{name}_latest"
         latest_path = output_dir / f"{latest_name}.sql"
-        latest_path.write_text(_render_view(model_name=name, feed_tags=feed_tags, filter_to_current=scd_type == 2))
+        latest_path.write_text(_render_view(model_name=name, owning_feed=owning_feed, filter_to_current=scd_type == 2))
         written.append(latest_path)
         view_names.append(latest_name)
 
         historical_name = f"{name}_historical"
         historical_path = output_dir / f"{historical_name}.sql"
-        historical_path.write_text(_render_view(model_name=name, feed_tags=feed_tags, filter_to_current=False))
+        historical_path.write_text(_render_view(model_name=name, owning_feed=owning_feed, filter_to_current=False))
         written.append(historical_path)
         view_names.append(historical_name)
 

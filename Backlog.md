@@ -12,9 +12,9 @@ No page exists for the `schedule` table — `1_Source_Systems.py`/`2_Data_Feeds.
 
 Every `data_feed` has a batch (enforced not-null), but nothing in Dagster groups or orders execution by batch/hierarchy yet — it's pure data with no behavioral consumer. Whether this becomes real (e.g. a batch-scoped job/schedule, parallel-within-tier execution) depends on whether a real multi-feed batch ever gets configured; today every feed is still its own singleton batch.
 
-### Multi-feed dbt-asset-ownership convention is a manual, undocumented-outside-comments rule
+### No automated check that a dbt model's `tags=[...]` actually matches its `owning_feed_id`
 
-A dbt model spanning >1 feed in `depends_on_feeds` must be tagged with exactly *one* feed (the alphabetically-first `depends_on_feeds` member, by convention — see `fct_daily_financial_activity.sql`'s and `generate_serve_views.py`'s comments) or Dagster rejects it as a duplicate `AssetKey`. This is enforced by nothing except two comments agreeing with each other. Worth eventually either codifying the rule in `generate_dagster_pipeline.py`/`generate_serve_views.py` itself (derive the base model's required tag and fail loudly if it doesn't match), or adding a CI-style check — right now a second multi-feed model could reintroduce the exact bug documented in `Learnings.md` ("A dbt model tagged with two feed tags...").
+Resolved the *shared-source-of-truth* problem (`lakehouse_models.owning_feed_id`, a real required column — see `Learnings.md`, "A dbt model tagged with two feed tags..."), but there's still one manual step left: a human has to write the matching single tag in the model's own `.sql` file by hand, and nothing cross-checks it against the metadata column. If they drift, the failure mode is still a loud `Definitions`-construction crash (not silent data corruption), just not caught until `just smoketest` runs. A real fix would read the compiled dbt manifest's node tags and assert they match `owning_feed_id` per row — `generate_dagster_pipeline.py` can't do this itself (it necessarily runs *before* `dbt parse`, so the manifest it would read is stale), so this would need to be a separate post-parse check, e.g. a small script run right after the Docker image's `dbt parse` step, or a dbt-side test.
 
 ### `customers`/`sales` are still synthetic in-memory stub generators
 

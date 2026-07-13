@@ -24,22 +24,37 @@ st.divider()
 
 mode = st.radio("Action", ["Add new", "Edit existing", "Delete existing"], horizontal=True)
 
+# No st.form() on this page -- see Learnings.md, "Cross-field reactivity is
+# impossible inside st.form()". Every widget is plain and reruns live;
+# nothing writes to the DB until its own st.button() is the one just
+# clicked, so this loses no safety. "Add new" replaces st.form's free
+# clear_on_submit with a session_state generation counter: bumping it after
+# a successful insert changes every widget's key, so Streamlit treats the
+# next render as brand-new widgets with fresh (blank) defaults instead of
+# remembering the just-submitted values.
 if mode == "Add new":
-    with st.form("add_source_system", clear_on_submit=True):
-        code = st.text_input("Code")
-        name = st.text_input("Name")
-        description = st.text_area("Description")
-        system_type = st.selectbox("System type", SYSTEM_TYPES)
-        base_location = st.text_input(
-            "Base location", help="Root for connectivity: a SQL Server name, a storage account container, an API base URL"
-        )
-        connection_user = st.text_input("Connection user")
-        connection_secret = st.text_input(
-            "Connection secret", help="Not the actual secret -- a reference/path to where it lives in a vault"
-        )
-        connection_config = st.text_area("Connection config (JSON)", value="{}")
-        is_active = st.checkbox("Active", value=True)
-        submitted = st.form_submit_button("Create")
+    if "add_source_system_gen" not in st.session_state:
+        st.session_state["add_source_system_gen"] = 0
+    key = f"add_ss_{st.session_state['add_source_system_gen']}"
+
+    code = st.text_input("Code", key=f"{key}_code")
+    name = st.text_input("Name", key=f"{key}_name")
+    description = st.text_area("Description", key=f"{key}_description")
+    system_type = st.selectbox("System type", SYSTEM_TYPES, key=f"{key}_system_type")
+    base_location = st.text_input(
+        "Base location",
+        help="Root for connectivity: a SQL Server name, a storage account container, an API base URL",
+        key=f"{key}_base_location",
+    )
+    connection_user = st.text_input("Connection user", key=f"{key}_connection_user")
+    connection_secret = st.text_input(
+        "Connection secret",
+        help="Not the actual secret -- a reference/path to where it lives in a vault",
+        key=f"{key}_connection_secret",
+    )
+    connection_config = st.text_area("Connection config (JSON)", value="{}", key=f"{key}_connection_config")
+    is_active = st.checkbox("Active", value=True, key=f"{key}_is_active")
+    submitted = st.button("Create", key=f"{key}_submit")
 
     if submitted:
         try:
@@ -68,6 +83,7 @@ if mode == "Add new":
                         json_columns={"connection_config"},
                     )
                     st.success(f"Created source system '{code}'")
+                    st.session_state["add_source_system_gen"] += 1
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to create: {e}")
@@ -78,20 +94,27 @@ elif mode == "Edit existing":
     else:
         selected_code = st.selectbox("Select source system", df["code"])
         row = df[df["code"] == selected_code].iloc[0]
-        with st.form("edit_source_system"):
-            name = st.text_input("Name", value=safe_str(row["name"]))
-            description = st.text_area("Description", value=safe_str(row["description"]))
-            system_type = st.selectbox(
-                "System type", SYSTEM_TYPES, index=SYSTEM_TYPES.index(row["system_type"])
-            )
-            base_location = st.text_input("Base location", value=safe_str(row["base_location"]))
-            connection_user = st.text_input("Connection user", value=safe_str(row["connection_user"]))
-            connection_secret = st.text_input("Connection secret", value=safe_str(row["connection_secret"]))
-            connection_config = st.text_area(
-                "Connection config (JSON)", value=to_json_text(row["connection_config"])
-            )
-            is_active = st.checkbox("Active", value=bool(row["is_active"]))
-            submitted = st.form_submit_button("Save changes")
+        key = f"edit_ss_{row['id']}"
+
+        name = st.text_input("Name", value=safe_str(row["name"]), key=f"{key}_name")
+        description = st.text_area("Description", value=safe_str(row["description"]), key=f"{key}_description")
+        system_type = st.selectbox(
+            "System type", SYSTEM_TYPES, index=SYSTEM_TYPES.index(row["system_type"]), key=f"{key}_system_type"
+        )
+        base_location = st.text_input(
+            "Base location", value=safe_str(row["base_location"]), key=f"{key}_base_location"
+        )
+        connection_user = st.text_input(
+            "Connection user", value=safe_str(row["connection_user"]), key=f"{key}_connection_user"
+        )
+        connection_secret = st.text_input(
+            "Connection secret", value=safe_str(row["connection_secret"]), key=f"{key}_connection_secret"
+        )
+        connection_config = st.text_area(
+            "Connection config (JSON)", value=to_json_text(row["connection_config"]), key=f"{key}_connection_config"
+        )
+        is_active = st.checkbox("Active", value=bool(row["is_active"]), key=f"{key}_is_active")
+        submitted = st.button("Save changes", key=f"{key}_submit")
 
         if submitted:
             try:
