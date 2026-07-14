@@ -24,6 +24,10 @@ Their `raw_*` assets now write real durable files (fixed this session), but the 
 
 Flagged during earlier research for the not-yet-built front-end data-viz module (Roadmap Phase 12): no `adbc-driver-trino` on PyPI, would need a separate Go-based `dbc install trino` binary installer, inconsistent with this project's all-`uv` tooling. Explicitly set aside by direct instruction — do not pick this back up without being asked; if Phase 12 resumes, the plain `trino` Python client is the fallback already identified.
 
+### JSON-list metadata fields should be comma-separated text in the frontend, not raw JSON
+
+Fields like `business_key_columns`/`tracked_columns`/`depends_on_feed_friendly_names` (and `schema_registry.column_definitions`) currently ask the user to type a raw JSON array into the CRUD forms. Reported friction from actually working through `Walkthrough_Metadata_Source_Feed.md` end-to-end (2026-07-14) — reword these fields as plain comma-separated text, parsed into a JSON list in the frontend before the insert/update call. Small, isolated frontend-only change; no schema change needed.
+
 ### Roadmap phases not started
 
 Not backlog items in the "found in passing" sense, but listed here for one-stop visibility — see `Roadmap.md` for the actual design content:

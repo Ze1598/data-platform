@@ -442,6 +442,24 @@ If a single hand-written model captures a genuinely per-feed pattern (e.g. a del
 
 **Something that looked related but wasn't**: Docker Desktop's default macOS file-sharing config (VirtioFS) exports a user's entire home directory into its VM at all times, and VirtioFS has its own documented history of real metadata-corruption bugs under heavy disk I/O ([docker/for-mac#7494](https://github.com/docker/for-mac/issues/7494)). Narrowing Docker Desktop's File Sharing scope to exclude the project directory measurably reduced (but didn't eliminate) the corruption in testing — a real, secondary contributor in a Docker-heavy workflow, worth knowing about, but not the actual root cause if the iCloud sync condition above also applies.
 
+### Before chasing either `.pth` theory above, confirm the `link-mode = "copy"` fix is actually in place and the venv was rebuilt from scratch since
+
+A later session lost real time re-chasing the iCloud-sync theory above (retry loops, killing zombie `dagster dev` processes, root-causing gRPC/webserver internals) on a machine where the `link-mode = "copy"` fix from the first section above had *already been applied* to `pyproject.toml` days earlier — but this wasn't checked before troubleshooting began. Once actually verified this later session (multiple from-scratch `.venv` rebuilds, each followed by `find .venv/lib/python*/site-packages -name "*.pth" -flags +hidden`), the fix held cleanly every time: zero hidden `.pth` files, `import raw_to_clean` succeeding, across repeated rebuilds. This doesn't contradict the iCloud-sync section above — that mechanism is real and independently documented (`astral-sh/uv#9902`) — but it means the two theories should be checked **in order**, not assumed:
+
+1. First, confirm `link-mode = "copy"` is actually present in the live `[tool.uv]` block (not just "was added at some point" — check the file).
+2. Then confirm the current `.venv` was actually rebuilt *from scratch* since that line was added (per the caveat above: an incremental `uv sync` can leave pre-existing hidden files in place and look unfixed even though the config is correct). `rm -rf .venv && uv cache clean && uv sync --all-packages` is the only way to be sure.
+3. Only if hidden `.pth` files still recur *after* both of those are genuinely true is this actually the iCloud-sync mechanism, and the mitigations in that section apply.
+
+Skipping straight to iCloud-focused troubleshooting (retry loops, Low Power Mode, moving the project) without first checking 1–2 risks spending real effort on a problem that a config fix already sitting in the repo would have resolved outright.
+
+### `uv sync --no-editable` is worse than "sidesteps the bug" — it broke the import entirely in direct testing
+
+The "tempting non-fix, explicitly rejected" paragraph above undersells the risk: in direct testing this later session, `uv sync --no-editable` didn't just remove `.pth` files and lose live source-reload — it left `raw_to_clean` completely unimportable (`ModuleNotFoundError` even though `uv pip show` still reported it installed), a strictly worse state than the bug it was meant to dodge. Recovering required a full `rm -rf .venv && uv cache clean && uv sync --all-packages`. Treat `--no-editable` as actively unsafe to try live against a working environment, not just architecturally undesirable.
+
+### `uv sync` (with or without `--reinstall`) can report false success on a broken or empty venv
+
+Compounding the workspace-root gotcha below: `uv sync`, `uv sync --reinstall`, and even `uv sync --reinstall-package <name> -v` all reported clean success (`Audited in 0.00ms` or similar) against a `.venv` that had only 1–2 entries in `site-packages` — none of the `--reinstall` variants forced a real re-resolution of workspace members that plain `uv sync` (without `--all-packages`) never installed in the first place. The reinstall flags aren't a substitute for `--all-packages` at a workspace root; check actual `site-packages` content (or just try the real `import`) rather than trusting a fast, silent "success" after any of these.
+
 ### `uv sync` at a workspace root doesn't install member dependencies by default
 
 **Symptom**: `uv run <something>` appears to work, but fails deeper in with a `ModuleNotFoundError` for a dependency that's clearly listed in a workspace member's `pyproject.toml` — or worse, silently falls back to an unrelated **global** install of the same tool name, masking the problem entirely.
