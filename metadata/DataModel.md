@@ -49,12 +49,13 @@ One row per source object/table/endpoint to extract — a database table, an API
 | **batch_feed_hierarchy** | int | not null, default 0 — feeds sharing the same tier can extract in parallel; lower tiers must complete before higher tiers within the same `batch_group` |
 | extraction_type | text | not null, check in `('full','incremental')` — unchanged |
 | **watermark_column** *(replaces `incremental_column` + `incremental_column_type`)* | text | nullable; table constraint `extraction_type = 'full' OR watermark_column IS NOT NULL` (same conditional shape as the column it replaces) |
-| extraction_config | jsonb | nullable — confirmed unused by any code today; arbitrary per-feed JSON for feed-specific extraction parameters |
+| extraction_config | jsonb | nullable — arbitrary per-feed JSON for feed-specific extraction parameters (e.g. `metadata_runs`' Postgres connector query, `{"query": "..."}`) |
 | ~~landing_path_template~~ / ~~raw_path_template~~ | — | **removed** — path is a pure code convention: `raw/<batch_group_friendly_name>/<friendly_name>/<extraction_watermark>`, where `extraction_watermark` is a `YYYY/MM/DD/HH/MM/SS` folder, computed at runtime, never stored |
 | **source_pk** *(renamed from `business_key_columns`)* | jsonb | not null, default `[]` — array of column names identifying a row in the *source*; extraction-only, not the same concept as any model-layer key |
 | ~~staging_table_name~~ | — | **removed** — staging tables follow the standard derived name `<batch_group_friendly_name>__<friendly_name>` (double underscore) |
 | ~~schedule_cron~~ | — | **removed** — moved to the new `schedule` table below |
 | processing_engine | text | not null, default `'polars'`, check in `('polars','spark')` — unchanged |
+| **pipeline_steps** | text | not null, default `'0,1,2,3'` — comma-separated `pipeline_steps.id` values naming which of the four pipeline steps (extraction/validation/transformation/serving — a different axis from the landing/raw/clean/staging/model/serve *schemas*, see `pipeline_steps` below) this feed's master pipeline actually runs. Resolved live per run by `pipeline_init_<feed>`, not baked into codegen |
 | ~~updates_enabled~~ | — | **removed** — feeds always fully reload `raw`/`clean`. Staging still merges (accumulates), but its update-tracking behavior is now sourced from `lakehouse_models`, not stored here — see "Staging update-tracking rule" below |
 | last_watermark_value | text | nullable — unchanged, denormalized current watermark |
 | ~~last_run_id~~ | — | **removed** — derivable from `data_processing_runs` (most recent row for this `data_feed_id`) |
@@ -109,6 +110,7 @@ One row per Kimball fact/dimension table the platform builds — **not** staging
 | **load_type** | smallint | not null, FK → `load_type(id)` (new lookup table below) |
 | **depends_on_feeds** | text | nullable — comma-separated `data_feed.id` values that must succeed before this model builds; replaces both `staging_source_data_feed_id` and the deleted `model_feed_source` bridge table |
 | **owning_feed_id** | uuid | not null, FK → `data_feed(id)` — which single feed's per-feed Dagster job/dbt build actually claims this model's AssetKey. Must be one of `depends_on_feeds` (application-enforced, same as `depends_on_feeds` itself). Required even for a single-feed model, so the meaning is never implicit — see `scripts/generate_dagster_pipeline.py` and `Learnings.md`, "A dbt model tagged with two feed tags gets claimed by two competing `@dbt_assets` defs" |
+| **pipeline_steps** | text | not null, default `'2,3'` — comma-separated `pipeline_steps.id` values. A model has no extraction/validation of its own (those belong to `depends_on_feeds`), so in practice this only ever meaningfully gates `serving` (transformation is all-or-nothing per owning feed, not per model — see the master pipeline design). Resolved at codegen time by `generate_serve_views.py`, not live per-run: a model with serving deselected simply never gets its `_latest`/`_historical` views generated |
 | last_watermark_value | text | nullable — unchanged |
 | last_run_id | uuid | nullable — unchanged |
 | is_active | boolean | not null, default true — unchanged |
@@ -150,6 +152,29 @@ Seed rows:
 | 3 | incremental_by_custom_query | Incremental, based on a custom query |
 
 **Joins/lookups**: referenced by `lakehouse_models.load_type`.
+
+---
+
+## `pipeline_steps` *(new)*
+
+Lookup table for `data_feed.pipeline_steps` / `lakehouse_models.pipeline_steps`. **Not the same axis as the `landing`/`raw`/`clean`/`staging`/`model`/`serve` schemas `data_processing_runs` tracks** — those are storage layers (*where* data lives), these are pipeline steps (*what process phase* is running). A single step can span multiple schemas (extraction writes both `landing` and `raw`), so the two are deliberately kept as separate vocabularies rather than collapsed into one — `data_processing_runs` is unchanged, still tracking exactly the six schemas at exactly the same grain.
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | smallint | PK |
+| label | text | not null |
+| description | text | nullable |
+
+Seed rows:
+
+| id | label | description |
+|---|---|---|
+| 0 | extraction | Fetch from the source and land/copy it durably — the only step that ever connects to a data source |
+| 1 | validation | Schema validation (and flattening, for nested sources) turning raw into clean |
+| 2 | transformation | Business logic: clean → staging → model |
+| 3 | serving | Serve-layer view generation from model |
+
+**Joins/lookups**: referenced by `data_feed.pipeline_steps` and `lakehouse_models.pipeline_steps` (both comma-separated text, not real FKs — same convention as `depends_on_feeds`).
 
 ---
 

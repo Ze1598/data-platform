@@ -90,18 +90,13 @@ def _generate_sales_rows(n: int = 20) -> pl.DataFrame:
 
 @asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
 def landing_sales(
-    context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
+    context: AssetExecutionContext,
+    postgres_metadata: PostgresMetadataResource,
+    pipeline_init_sales: set,
 ) -> Output[pl.DataFrame]:
+    if "extraction" not in pipeline_init_sales:
+        return Output(pl.DataFrame(), metadata={"skipped": True, "reason": "extraction not selected"})
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
-    # Explicit master-pipeline extraction-start step -- guaranteed before
-    # any extraction work runs, not just an incidental side effect of the
-    # stage-logging context below. Matters for any feed that queries
-    # data_processing_runs as its own source (metadata_runs).
-    postgres_metadata.record_run_started(
-        data_feed_id=str(data_feed["id"]),
-        dagster_run_id=context.run_id,
-        tracking_group=data_feed["batch_group_friendly_name"],
-    )
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         tracking_group=data_feed["batch_group_friendly_name"],
@@ -147,7 +142,10 @@ def clean_sales(
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
     raw_sales: pl.DataFrame,
+    pipeline_init_sales: set,
 ) -> Output[None]:
+    if "validation" not in pipeline_init_sales:
+        return Output(None, metadata={"skipped": True, "reason": "validation not selected"})
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     df = raw_sales
     with postgres_metadata.log_data_feed_stage(

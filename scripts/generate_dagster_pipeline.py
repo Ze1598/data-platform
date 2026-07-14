@@ -1,7 +1,9 @@
 """Generates the dynamic, metadata-driven pipeline foundation -- per-feed
-dbt assets, per-feed connector-driven landing/raw/clean assets, per-feed
-jobs, and real Dagster schedules from `data_feed` + `source_system` (+
-`schedule` + `lakehouse_models` for model-type schedules) -- as
+pipeline_init assets (the master pipeline's real entry point), per-feed
+transformation/serving dbt assets, per-feed connector-driven landing/raw/
+clean assets, per-feed jobs, and real Dagster schedules from `data_feed` +
+`source_system` (+ `schedule` + `lakehouse_models` for model-type
+schedules) -- as
 `orchestration/dagster_data_platform/dagster_data_platform/pipeline_generated.py`.
 
 Deliberately a standalone build-time script, not a Dagster op or a live
@@ -135,6 +137,29 @@ def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
     raise ValueError(f"unknown connector_kind {kind!r}")
 
 
+def _render_pipeline_init(feed: str) -> str:
+    """The master pipeline's real entry point -- one per active feed
+    (connector-driven or hand-written), depended on by that feed's
+    landing/clean assets. Registers the run (moved out of the individual
+    landing assets, which used to call this directly) and resolves which
+    of the four pipeline steps this feed's `pipeline_steps` column
+    selects, live, once per run."""
+    return f'''
+@asset(group_name="{feed}")
+def pipeline_init_{feed}(
+    context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
+) -> Output[set]:
+    data_feed = postgres_metadata.get_data_feed("{feed}")
+    postgres_metadata.record_run_started(
+        data_feed_id=str(data_feed["id"]),
+        dagster_run_id=context.run_id,
+        tracking_group=data_feed["batch_group_friendly_name"],
+    )
+    selected = parse_selected_steps(data_feed["pipeline_steps"])
+    return Output(selected, metadata={{"selected_steps": sorted(selected)}})
+'''
+
+
 def _render_tabular_assets(feed: dict) -> str:
     friendly_name = feed["feed_friendly_name"]
     kind = feed["connector_kind"]
@@ -142,18 +167,13 @@ def _render_tabular_assets(feed: dict) -> str:
     return f'''
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
 def landing_{friendly_name}(
-    context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
+    context: AssetExecutionContext,
+    postgres_metadata: PostgresMetadataResource,
+    pipeline_init_{friendly_name}: set,
 ) -> Output[pl.DataFrame]:
+    if "extraction" not in pipeline_init_{friendly_name}:
+        return Output(pl.DataFrame(), metadata={{"skipped": True, "reason": "extraction not selected"}})
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
-    # Explicit master-pipeline extraction-start step -- guaranteed before
-    # connector.fetch() runs, not just an incidental side effect of the
-    # stage-logging context below. Matters for any feed that queries
-    # data_processing_runs as its own source (metadata_runs).
-    postgres_metadata.record_run_started(
-        data_feed_id=str(data_feed["id"]),
-        dagster_run_id=context.run_id,
-        tracking_group=data_feed["batch_group_friendly_name"],
-    )
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         tracking_group=data_feed["batch_group_friendly_name"],
@@ -211,7 +231,10 @@ def clean_{friendly_name}(
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
     raw_{friendly_name}: pl.DataFrame,
+    pipeline_init_{friendly_name}: set,
 ) -> Output[None]:
+    if "validation" not in pipeline_init_{friendly_name}:
+        return Output(None, metadata={{"skipped": True, "reason": "validation not selected"}})
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
     df = raw_{friendly_name}
     with postgres_metadata.log_data_feed_stage(
@@ -248,18 +271,13 @@ def _render_json_assets(feed: dict) -> str:
     return f'''
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
 def landing_{friendly_name}(
-    context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
+    context: AssetExecutionContext,
+    postgres_metadata: PostgresMetadataResource,
+    pipeline_init_{friendly_name}: set,
 ) -> Output[pl.DataFrame]:
+    if "extraction" not in pipeline_init_{friendly_name}:
+        return Output(pl.DataFrame(), metadata={{"skipped": True, "reason": "extraction not selected"}})
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
-    # Explicit master-pipeline extraction-start step -- guaranteed before
-    # connector.fetch() runs, not just an incidental side effect of the
-    # stage-logging context below. Matters for any feed that queries
-    # data_processing_runs as its own source (metadata_runs).
-    postgres_metadata.record_run_started(
-        data_feed_id=str(data_feed["id"]),
-        dagster_run_id=context.run_id,
-        tracking_group=data_feed["batch_group_friendly_name"],
-    )
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         tracking_group=data_feed["batch_group_friendly_name"],
@@ -300,10 +318,13 @@ def clean_{friendly_name}(
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
     raw_{friendly_name}: pl.DataFrame,
+    pipeline_init_{friendly_name}: set,
 ) -> Output[None]:
     # Extraction and validation combine into this one stage for nested-JSON
     # sources -- flattening is inseparable from establishing the real
     # (flat) schema contract, see connectors/base.py's JsonConnector.
+    if "validation" not in pipeline_init_{friendly_name}:
+        return Output(None, metadata={{"skipped": True, "reason": "validation not selected"}})
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
     df = raw_{friendly_name}
     with postgres_metadata.log_data_feed_stage(
@@ -370,6 +391,23 @@ def render(feeds: list[str], connector_feeds: list[dict], feed_schedules: list[d
     connector_assets_block = "\n".join(connector_asset_blocks)
     connector_asset_names_block = ", ".join(connector_asset_names)
 
+    # pipeline_init_<feed> is the master pipeline's real entry point --
+    # generated for *every* active feed, not just connector-driven ones,
+    # since customers/sales' hand-written landing assets depend on it too
+    # (see extraction_assets.py/sales_assets.py).
+    pipeline_init_blocks = "\n".join(_render_pipeline_init(f) for f in feeds)
+    pipeline_init_names_block = ", ".join(f"pipeline_init_{f}" for f in feeds)
+
+    # Two @dbt_assets per feed now, not one -- transformation (staging+
+    # model) and serving (generated views) are independently selectable
+    # dbt build invocations (see dbt_assets.py's split).
+    transformation_assets_block = "{" + ", ".join(
+        f'"{f}": _build_transformation_assets_for_feed("{f}")' for f in feeds
+    ) + "}"
+    serving_assets_block = "{" + ", ".join(
+        f'"{f}": _build_serving_assets_for_feed("{f}")' for f in feeds
+    ) + "}"
+
     schedule_calls = []
     for row in feed_schedules:
         schedule_calls.append(
@@ -420,7 +458,8 @@ from dagster import (
 
 from connectors import CSVConnector, PostgresConnector
 {connector_imports_block}
-from dagster_data_platform.assets.dbt_assets import _build_dbt_assets_for_feed
+from dagster_data_platform.assets.dbt_assets import _build_serving_assets_for_feed, _build_transformation_assets_for_feed
+from dagster_data_platform.pipeline_steps import parse_selected_steps
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
@@ -442,11 +481,20 @@ def _data_lake_dir() -> Path:
     return Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
 
 
-# One _build_dbt_assets_for_feed(...) call per active feed, and only here --
-# calling this factory twice for the same feed would construct two @dbt_assets
-# defs both claiming the same AssetKeys, which Dagster rejects.
-DBT_ASSETS = {{f: _build_dbt_assets_for_feed(f) for f in [{feeds_repr}]}}
-ALL_DBT_ASSETS = list(DBT_ASSETS.values())
+# --- pipeline_init_<feed>: the master pipeline's real entry point ----------
+# One per active feed (connector-driven or hand-written) -- see
+# scripts/generate_dagster_pipeline.py's module docstring.
+{pipeline_init_blocks}
+
+ALL_PIPELINE_INIT_ASSETS = [{pipeline_init_names_block}]
+
+# One _build_transformation_assets_for_feed(...)/_build_serving_assets_for_feed(...)
+# call per active feed, and only here -- calling either factory twice for the
+# same feed would construct two @dbt_assets defs both claiming the same
+# AssetKeys, which Dagster rejects.
+TRANSFORMATION_ASSETS = {transformation_assets_block}
+SERVING_ASSETS = {serving_assets_block}
+ALL_DBT_ASSETS = list(TRANSFORMATION_ASSETS.values()) + list(SERVING_ASSETS.values())
 
 # --- connector-driven landing/raw/clean assets ------------------------------
 # One block per feed whose source_system.connector_kind is set (see

@@ -152,6 +152,7 @@ def seed_data_feed(
     watermark_column: str | None = None,
     batch_group_friendly_name: str | None = None,
     extraction_config: dict | None = None,
+    pipeline_steps: str = "0,1,2,3",
 ) -> None:
     # Every feed must belong to a batch (see metadata/DataModel.md and
     # 01_platform_metadata.sql's batch_group not-null comment) -- none of
@@ -164,12 +165,12 @@ def seed_data_feed(
         INSERT INTO data_feed (
             source_system_id, friendly_name, source_object_name, extraction_type,
             source_pk, processing_engine, watermark_column,
-            batch_group, batch_group_friendly_name, extraction_config
+            batch_group, batch_group_friendly_name, extraction_config, pipeline_steps
         )
         VALUES (
             (SELECT id FROM source_system WHERE code = %s),
             %s, %s, %s, %s, %s, %s,
-            gen_random_uuid(), %s, %s
+            gen_random_uuid(), %s, %s, %s
         )
         ON CONFLICT (friendly_name) DO NOTHING
         """,
@@ -178,6 +179,7 @@ def seed_data_feed(
             psycopg.types.json.Json(source_pk), processing_engine, watermark_column,
             batch_group_friendly_name,
             psycopg.types.json.Json(extraction_config) if extraction_config is not None else None,
+            pipeline_steps,
         ),
     )
 
@@ -207,6 +209,7 @@ def seed_lakehouse_model(
     model_schema: str = "model",
     load_type: int = 0,
     updates_enabled: bool = True,
+    pipeline_steps: str = "2,3",
 ) -> None:
     # owning_feed_friendly_name is required, not defaulted from
     # depends_on_feed_friendly_names[0] -- the whole point of this field is
@@ -221,14 +224,15 @@ def seed_lakehouse_model(
         INSERT INTO lakehouse_models (
             friendly_name, model_schema, table_type, business_key_columns,
             tracked_columns, scd_type, updates_enabled, deletes_enabled,
-            load_type, depends_on_feeds, owning_feed_id
+            load_type, depends_on_feeds, owning_feed_id, pipeline_steps
         )
         VALUES (
             %(friendly_name)s, %(model_schema)s, %(table_type)s, %(business_key_columns)s,
             %(tracked_columns)s, %(scd_type)s, %(updates_enabled)s, %(deletes_enabled)s,
             %(load_type)s,
             (SELECT string_agg(id::text, ',') FROM data_feed WHERE friendly_name = ANY(%(depends_on)s)),
-            (SELECT id FROM data_feed WHERE friendly_name = %(owning_feed)s)
+            (SELECT id FROM data_feed WHERE friendly_name = %(owning_feed)s),
+            %(pipeline_steps)s
         )
         ON CONFLICT (friendly_name) DO NOTHING
         """,
@@ -244,6 +248,7 @@ def seed_lakehouse_model(
             "load_type": load_type,
             "depends_on": depends_on_feed_friendly_names,
             "owning_feed": owning_feed_friendly_name,
+            "pipeline_steps": pipeline_steps,
         },
     )
 

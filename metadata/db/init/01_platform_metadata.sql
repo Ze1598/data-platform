@@ -82,6 +82,13 @@ create table data_feed (
     -- infrastructure), 'spark' opt-in for feeds whose volume actually
     -- needs distributed execution (see Learnings.md, Phase 6)
     processing_engine         text not null default 'polars' check (processing_engine in ('polars', 'spark')),
+    -- comma-separated pipeline_steps.id values -- which of the four pipeline
+    -- steps (extraction/validation/transformation/serving) this feed's
+    -- master pipeline actually runs. Resolved live, per run, not baked into
+    -- codegen (see pipeline_init_<feed>, generate_dagster_pipeline.py) --
+    -- changing this takes effect on the next run, no regen needed. All four
+    -- by default (today's existing full-chain behavior).
+    pipeline_steps            text not null default '0,1,2,3',
     -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
     last_watermark_value      text,
     is_active                 boolean not null default true,
@@ -129,6 +136,27 @@ insert into load_type (id, label, description) values
     (3, 'incremental_by_custom_query', 'Incremental, based on a custom query');
 
 -- ---------------------------------------------------------------------------
+-- pipeline_steps (lookup for data_feed.pipeline_steps / lakehouse_models.
+-- pipeline_steps). NOT the same axis as the landing/raw/clean/staging/
+-- model/serve schemas data_processing_runs tracks -- those are storage
+-- layers (where data lives), these are pipeline steps (what process phase
+-- is running). A single step can span multiple schemas (extraction writes
+-- both landing and raw), so the two are deliberately kept separate rather
+-- than collapsed into one vocabulary.
+-- ---------------------------------------------------------------------------
+create table pipeline_steps (
+    id            smallint primary key,
+    label         text not null,
+    description   text
+);
+
+insert into pipeline_steps (id, label, description) values
+    (0, 'extraction', 'Fetch from the source and land/copy it durably -- the only step that ever connects to a data source'),
+    (1, 'validation', 'Schema validation (and flattening, for nested sources) turning raw into clean'),
+    (2, 'transformation', 'Business logic: clean -> staging -> model'),
+    (3, 'serving', 'Serve-layer view generation from model');
+
+-- ---------------------------------------------------------------------------
 -- lakehouse_models (fact/dim config -- NOT staging; staging stays pure
 -- naming-convention with no metadata row of its own)
 -- ---------------------------------------------------------------------------
@@ -167,6 +195,14 @@ create table lakehouse_models (
     -- tagged with two feed tags gets claimed by two competing @dbt_assets
     -- defs" for why this exists.
     owning_feed_id        uuid not null references data_feed(id),
+    -- comma-separated pipeline_steps.id values -- a model has no extraction/
+    -- validation of its own (those belong to the feed(s) it depends on), so
+    -- this only ever meaningfully gates 'serving' (2,3 = transformation+
+    -- serving by default). Resolved at codegen time by
+    -- generate_serve_views.py, not live per-run (see the master pipeline
+    -- addendum) -- a model's own serve views simply aren't generated when
+    -- serving isn't selected.
+    pipeline_steps        text not null default '2,3',
     -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
     last_watermark_value  text,
     last_run_id           uuid,

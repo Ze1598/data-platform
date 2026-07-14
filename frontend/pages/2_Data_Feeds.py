@@ -25,6 +25,15 @@ NEW_BATCH_OPTION = "<New batch>"
 engine = get_engine()
 df = fetch_table(engine, "data_feed", order_by="friendly_name")
 source_systems = fetch_lookup(engine, "source_system")
+pipeline_steps_df = pd.read_sql(text("select id, label from pipeline_steps order by id"), engine)
+pipeline_step_label_by_id = dict(zip(pipeline_steps_df["id"], pipeline_steps_df["label"]))
+pipeline_step_id_by_label = {v: k for k, v in pipeline_step_label_by_id.items()}
+
+
+def _pipeline_step_ids_to_labels(pipeline_steps: str | None) -> list[str]:
+    if not pipeline_steps or pd.isna(pipeline_steps):
+        return []
+    return [pipeline_step_label_by_id[int(s)] for s in str(pipeline_steps).split(",") if s.strip()]
 
 st.dataframe(df, use_container_width=True, hide_index=True)
 st.divider()
@@ -105,6 +114,12 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "Processing engine", PROCESSING_ENGINES, index=PROCESSING_ENGINES.index(defaults["processing_engine"]),
         key=f"{key_prefix}_processing_engine",
     )
+    pipeline_step_labels = st.multiselect(
+        "Pipeline steps", list(pipeline_step_id_by_label.keys()), default=defaults["pipeline_step_labels"],
+        help="Which of the four pipeline steps this feed's master pipeline actually runs -- resolved "
+        "live, per run, by pipeline_init_<feed>. See metadata/DataModel.md, 'pipeline_steps'.",
+        key=f"{key_prefix}_pipeline_steps",
+    )
     is_active = st.checkbox("Active", value=defaults["is_active"], key=f"{key_prefix}_is_active")
     submitted = st.button(submit_label, key=f"{key_prefix}_submit")
     return submitted, {
@@ -119,6 +134,7 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "extraction_config": extraction_config,
         "source_pk": source_pk,
         "processing_engine": processing_engine,
+        "pipeline_step_labels": pipeline_step_labels,
         "is_active": is_active,
     }
 
@@ -143,6 +159,10 @@ def build_values(form_values: dict) -> dict | None:
         st.error("Watermark column is required when extraction type is 'incremental'.")
         return None
 
+    if not form_values["pipeline_step_labels"]:
+        st.error("At least one pipeline step is required.")
+        return None
+
     return {
         "source_system_id": source_systems[form_values["source_code"]],
         "friendly_name": form_values["friendly_name"],
@@ -155,6 +175,7 @@ def build_values(form_values: dict) -> dict | None:
         "extraction_config": json.dumps(extraction_config),
         "source_pk": json.dumps(source_pk),
         "processing_engine": form_values["processing_engine"],
+        "pipeline_steps": ",".join(str(pipeline_step_id_by_label[label]) for label in form_values["pipeline_step_labels"]),
         "is_active": form_values["is_active"],
     }
 
@@ -179,6 +200,7 @@ if mode == "Add new":
             "extraction_config": "{}",
             "source_pk": "[]",
             "processing_engine": "polars",
+            "pipeline_step_labels": ["extraction", "validation", "transformation", "serving"],
             "is_active": True,
         },
         "Create",
@@ -218,6 +240,7 @@ elif mode == "Edit existing":
                 "extraction_config": to_json_text(row["extraction_config"]),
                 "source_pk": to_json_text(row["source_pk"], default="[]"),
                 "processing_engine": row["processing_engine"],
+                "pipeline_step_labels": _pipeline_step_ids_to_labels(row["pipeline_steps"]),
                 "is_active": bool(row["is_active"]),
             },
             "Save changes",

@@ -29,6 +29,15 @@ data_feed_extraction_type = dict(zip(data_feeds_df["friendly_name"], data_feeds_
 load_types_df = pd.read_sql(text("select id, label from load_type order by id"), engine)
 load_type_label_by_id = dict(zip(load_types_df["id"], load_types_df["label"]))
 load_type_id_by_label = {v: k for k, v in load_type_label_by_id.items()}
+pipeline_steps_df = pd.read_sql(text("select id, label from pipeline_steps order by id"), engine)
+pipeline_step_label_by_id = dict(zip(pipeline_steps_df["id"], pipeline_steps_df["label"]))
+pipeline_step_id_by_label = {v: k for k, v in pipeline_step_label_by_id.items()}
+
+
+def _pipeline_step_ids_to_labels(pipeline_steps: str | None) -> list[str]:
+    if not pipeline_steps or pd.isna(pipeline_steps):
+        return []
+    return [pipeline_step_label_by_id[int(s)] for s in str(pipeline_steps).split(",") if s.strip()]
 
 st.dataframe(df, use_container_width=True, hide_index=True)
 st.divider()
@@ -131,6 +140,13 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "Load type", list(load_type_id_by_label.keys()),
         index=list(load_type_id_by_label.keys()).index(defaults["load_type_label"]), key=f"{key_prefix}_load_type",
     )
+    pipeline_step_labels = st.multiselect(
+        "Pipeline steps", list(pipeline_step_id_by_label.keys()), default=defaults["pipeline_step_labels"],
+        help="A model has no extraction/validation of its own -- in practice this only ever "
+        "meaningfully gates 'serving' (whether this model's _latest/_historical views get generated). "
+        "See metadata/DataModel.md, 'pipeline_steps'.",
+        key=f"{key_prefix}_pipeline_steps",
+    )
     is_active = st.checkbox("Active", value=defaults["is_active"], key=f"{key_prefix}_is_active")
     submitted = st.button(submit_label, key=f"{key_prefix}_submit")
     return submitted, {
@@ -147,6 +163,7 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "deletes_enabled": deletes_enabled,
         "watermark_column": watermark_column,
         "load_type_label": load_type_label,
+        "pipeline_step_labels": pipeline_step_labels,
         "is_active": is_active,
     }
 
@@ -165,6 +182,10 @@ def build_values(form_values: dict) -> dict | None:
 
     if not form_values["depends_on_feed_names"]:
         st.error("At least one dependent feed is required.")
+        return None
+
+    if not form_values["pipeline_step_labels"]:
+        st.error("At least one pipeline step is required.")
         return None
 
     # Should be unreachable via the UI now -- "Owning feed" is live-filtered
@@ -206,6 +227,7 @@ def build_values(form_values: dict) -> dict | None:
         "deletes_enabled": form_values["deletes_enabled"],
         "watermark_column": form_values["watermark_column"] or None,
         "load_type": load_type_id_by_label[form_values["load_type_label"]],
+        "pipeline_steps": ",".join(str(pipeline_step_id_by_label[label]) for label in form_values["pipeline_step_labels"]),
         "is_active": form_values["is_active"],
     }
 
@@ -233,6 +255,7 @@ if mode == "Add new":
             "deletes_enabled": False,
             "watermark_column": "",
             "load_type_label": "full",
+            "pipeline_step_labels": ["transformation", "serving"],
             "is_active": True,
         },
         "Create",
@@ -276,6 +299,7 @@ elif mode == "Edit existing":
                 "deletes_enabled": bool(row["deletes_enabled"]),
                 "watermark_column": safe_str(row["watermark_column"]),
                 "load_type_label": load_type_label_by_id[int(row["load_type"])],
+                "pipeline_step_labels": _pipeline_step_ids_to_labels(row["pipeline_steps"]),
                 "is_active": bool(row["is_active"]),
             },
             "Save changes",

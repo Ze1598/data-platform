@@ -13,7 +13,7 @@ from dagster import (
     sensor,
 )
 
-from dagster_data_platform.pipeline_generated import DBT_ASSETS, FEED_JOBS
+from dagster_data_platform.pipeline_generated import FEED_JOBS, TRANSFORMATION_ASSETS
 
 FEED_FRIENDLY_NAME = "financial_transactions"
 FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
@@ -54,14 +54,17 @@ def _archive_dir() -> Path:
     return _data_lake_dir() / ARCHIVE_SUBDIR
 
 
-@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME, deps=[DBT_ASSETS[FEED_FRIENDLY_NAME]])
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME, deps=[TRANSFORMATION_ASSETS[FEED_FRIENDLY_NAME]])
 def archive_financial_transactions(context: AssetExecutionContext) -> Output[None]:
     """Archives this run's raw snapshot and wipes the landing files it
-    came from -- only reachable once dbt_financial_transactions_assets has
-    fully succeeded (a plain `deps=` dependency; Dagster skips a downstream
-    asset entirely if any of its dependencies failed, so a clean/dbt
-    failure anywhere upstream leaves landing completely untouched for a
-    retry -- no separate error handling needed here for that case).
+    came from -- only reachable once dbt_financial_transactions_transformation_assets
+    has fully succeeded (a plain `deps=` dependency; Dagster skips a
+    downstream asset entirely if any of its dependencies failed, so a
+    clean/dbt failure anywhere upstream leaves landing completely
+    untouched for a retry -- no separate error handling needed here for
+    that case). Deliberately depends on transformation, not serving --
+    the batch is considered "fully processed" once the model layer is
+    built; serve views are just a read-side convenience on top.
 
     archive holds the long-term, disaster-recovery copy: one
     watermark-style timestamped folder (YYYY/MM/DD/HH/MM/SS) per run,

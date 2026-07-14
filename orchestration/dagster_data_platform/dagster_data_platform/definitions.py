@@ -7,7 +7,13 @@ from dagster_data_platform.assets.dbt_assets import dbt_project
 from dagster_data_platform.assets.extraction_assets import clean_customers, landing_customers, raw_customers
 from dagster_data_platform.assets.financial_assets import archive_financial_transactions, financial_transactions_sensor
 from dagster_data_platform.assets.sales_assets import clean_sales, landing_sales, raw_sales
-from dagster_data_platform.pipeline_generated import ALL_CONNECTOR_ASSETS, ALL_DBT_ASSETS, ALL_FEED_JOBS, ALL_SCHEDULES
+from dagster_data_platform.pipeline_generated import (
+    ALL_CONNECTOR_ASSETS,
+    ALL_DBT_ASSETS,
+    ALL_FEED_JOBS,
+    ALL_PIPELINE_INIT_ASSETS,
+    ALL_SCHEDULES,
+)
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 
@@ -27,6 +33,7 @@ defs = Definitions(
         raw_sales,
         clean_sales,
         archive_financial_transactions,
+        *ALL_PIPELINE_INIT_ASSETS,
         *ALL_CONNECTOR_ASSETS,
         *ALL_DBT_ASSETS,
     ],

@@ -368,15 +368,33 @@ verify-schedule:
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
     cd dagster_data_platform
 
-    run_id=$(uv run python -m dagster_data_platform.trigger_schedule_run --feed police_crimes)
+    # `tail -1`, not a bare capture -- importing pipeline_generated.py
+    # (trigger_schedule_run.py's own import chain) evaluates every feed's
+    # @dbt_assets select=/exclude= at import time, and a feed genuinely
+    # owning no lakehouse_models rows (metadata_runs, police_crimes) makes
+    # dbt print a "does not match any enabled nodes" WARNING straight to
+    # stdout -- confirmed for real: this corrupted a bare `run_id=$(...)`
+    # capture into multi-line garbage, breaking job_name below even though
+    # the actual run completed successfully every time. print(run_id) is
+    # always the script's last statement for a feed-type schedule (exactly
+    # one RunRequest), so the true id is always the last line.
+    run_id=$(uv run python -m dagster_data_platform.trigger_schedule_run --feed police_crimes | tail -1)
     job_name="dagster-run-$run_id"
 
     # Submitting via GraphQL only queues the run -- the daemon picks it up
     # and creates the actual k8s Job a moment later (same asynchronous gap
     # verify-pipeline's before/after job-name diffing loop exists for), so
     # `kubectl wait` can't target it immediately. Poll for existence first.
+    # 90x2s=180s, not 30x2s=60s -- the master pipeline addition (pipeline_init
+    # + splitting each feed's dbt asset into transformation+serving) made
+    # the code server's asset graph meaningfully bigger, and confirmed for
+    # real: a schedule-triggered run's k8s Job legitimately took longer than
+    # 60s to appear even though the run itself completed successfully
+    # (kubectl showed it Complete, just too late for the old window) --
+    # same "real cold-start overhead, not a bug" pattern already hit once
+    # for verify-pipeline's own timeout.
     job_found=false
-    for i in $(seq 1 30); do
+    for i in $(seq 1 90); do
         if kubectl get "job/$job_name" -n orchestration >/dev/null 2>&1; then
             job_found=true
             break
