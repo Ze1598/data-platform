@@ -330,14 +330,15 @@ verify-pipeline:
     model_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
         "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and model_key is not null and job_successful = true;")
-    # 4 + 4, not 2 + 2 -- Phase 9 added financial_transactions and
-    # police_crimes as two more feeds __ASSET_JOB always includes
-    # alongside customers/sales.
-    if [[ "$feed_ok" -ne 4 || "$model_ok" -ne 4 ]]; then
-        echo "Expected 4 successful feed-run + 4 successful model-run rows in data_processing_runs for run $run_id, got $feed_ok + $model_ok" >&2
+    # 5 + 5, not 4 + 4 -- the connector library migration added metadata_runs
+    # as a fifth feed __ASSET_JOB always includes alongside customers/sales/
+    # financial_transactions/police_crimes, with its own stg_metadata_runs
+    # model giving it a model-run row too.
+    if [[ "$feed_ok" -ne 5 || "$model_ok" -ne 5 ]]; then
+        echo "Expected 5 successful feed-run + 5 successful model-run rows in data_processing_runs for run $run_id, got $feed_ok + $model_ok" >&2
         exit 1
     fi
-    echo "Pipeline run $run_id succeeded: 4/4 feed-run + 4/4 model-run rows successful in data_processing_runs."
+    echo "Pipeline run $run_id succeeded: 5/5 feed-run + 5/5 model-run rows successful in data_processing_runs."
 
     # customers/sales raw durability fix -- confirms raw_customers/raw_sales
     # actually write a verbatim file now, not just pass the DataFrame

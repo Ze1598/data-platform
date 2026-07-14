@@ -14,12 +14,14 @@ dependencies = [
     "trino>=0.330",
     "psycopg[binary]>=3.2",
     "raw-to-clean",
+    "connectors",
     "requests>=2.32",
     "numpy>=1.26",
 ]
 
 [tool.uv.sources]
 raw-to-clean = { workspace = true }
+connectors = { workspace = true }
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

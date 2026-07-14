@@ -22,7 +22,7 @@ dbt_project.prepare_if_dev()
 # the landing -> raw -> clean chain and dbt's staging model share one asset
 # graph instead of two coincidentally-ordered ones. Add an entry here when
 # a new feed's staging model is added.
-_CLEAN_SOURCE_TABLES = {"customers", "sales", "financial_transactions", "police_crimes"}
+_CLEAN_SOURCE_TABLES = {"customers", "sales", "financial_transactions", "police_crimes", "metadata_runs"}
 
 # `dbt build --select tag:<feed>` builds staging, model-layer, AND serve
 # objects together in one DAG-ordered invocation (Phase 7 added dim_*/

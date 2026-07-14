@@ -30,6 +30,11 @@ Fields like `business_key_columns`/`tracked_columns`/`depends_on_feed_friendly_n
 
 ### Roadmap phases not started
 
-Not backlog items in the "found in passing" sense, but listed here for one-stop visibility — see `Roadmap.md` for the actual design content:
-- **Phase 11 — Streaming ingestion**: barely designed, rough shape only (Kafka/Flink or Kafka Connect Iceberg sink).
-- **Phase 12 — Front-end data visualization module**: two open decisions (ADBC vs. plain `trino` client — see above; ephemeral vs. saveable charts).
+Not backlog items in the "found in passing" sense, but listed here for one-stop visibility — see `Roadmap.md` for the actual design content.
+
+**Current priority (2026-07-14)**: platform solidity over new capability surface area. Phases 13 and 14, plus working through this backlog, are next; 11 and 12 are deliberately deprioritized until that's done.
+
+- **Phase 13 — Master pipeline architecture (extraction/validation/transformation/serving as child pipelines)**: next up, restructured 2026-07-14 from the earlier "connector library" framing into the full four-child-pipeline design (see `Roadmap.md`), including the dbt-default/Polars-optional transformation-engine decision (verified feasible against PyIceberg 0.11.1's real `upsert()` API) and cherry-pick-able stage execution.
+- **Phase 14 — Reconsider Dagster as the orchestrator**: next up, alongside 13 (same structural gap, see Roadmap's 2026-07-14 update on that phase).
+- **Phase 11 — Streaming ingestion** (deprioritized): barely designed, rough shape only (Kafka/Flink or Kafka Connect Iceberg sink).
+- **Phase 12 — Front-end data visualization module** (deprioritized): two open decisions (ADBC vs. plain `trino` client — see above; ephemeral vs. saveable charts).

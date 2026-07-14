@@ -5,8 +5,10 @@ import polars as pl
 # schema_registry.column_definitions data_type -> Polars dtype, per
 # Roadmap.md "Metadata Schema". Kept deliberately small and Iceberg-shaped
 # (not every Polars dtype) since these are also the types PyIceberg tables
-# in `clean` are created with.
-_TYPE_MAP: dict[str, type] = {
+# in `clean` are created with. Public (not underscore-prefixed): the
+# connectors package's schema-discovery inference must speak this exact
+# vocabulary too, see connectors/inference.py.
+TYPE_MAP: dict[str, type] = {
     "string": pl.Utf8,
     "long": pl.Int64,
     "double": pl.Float64,
@@ -39,7 +41,7 @@ def validate_schema(df: pl.DataFrame, column_definitions: list[dict[str, Any]]) 
         if name not in actual_columns:
             continue
 
-        expected_dtype = _TYPE_MAP.get(col_def["data_type"])
+        expected_dtype = TYPE_MAP.get(col_def["data_type"])
         if expected_dtype is None:
             errors.append(f"column '{name}': unknown schema_registry data_type {col_def['data_type']!r}")
         elif df.schema[name].base_type() != expected_dtype:

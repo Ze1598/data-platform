@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [tool.uv.workspace]
-members = ["frontend", "dbt/data_platform", "query-engine/polaris_client", "orchestration/dagster_data_platform", "processing/raw_to_clean", "scripts", "tests/integration"]
+members = ["frontend", "dbt/data_platform", "query-engine/polaris_client", "orchestration/dagster_data_platform", "processing/raw_to_clean", "processing/connectors", "scripts", "tests/integration"]
 
 [tool.uv]
 package = false

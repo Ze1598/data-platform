@@ -19,7 +19,8 @@ One row per upstream system this platform extracts from (a database, an API, a f
 | name | text | not null |
 | description | text | nullable |
 | system_type | text | not null, check in `('database','api','file_drop','saas')` |
-| **base_location** | text | nullable — root for connectivity: a SQL Server name, a storage account container, an API base URL |
+| **connector_kind** | text | nullable, check in `('postgres','csv','json_file','rest')` — which `processing/connectors/` implementation extracts from this system. NULL means this system's feeds keep a fully hand-written asset file, not connector/codegen-driven (e.g. `customers`/`sales`' synthetic stub generators). See `scripts/generate_dagster_pipeline.py` and the connector library plan. |
+| **base_location** | text | nullable — root for connectivity: a SQL Server name, a storage account container, an API base URL. For `connector_kind='rest'`, this is the connector's `base_url`. |
 | **connection_user** | text | nullable — auth principal for this system (renamed from the originally-proposed `user`, which is a reserved word in Postgres) |
 | **connection_secret** | text | nullable — **not** the actual secret; a reference/path to where the real credential lives in a vault (e.g. Azure Key Vault) |
 | connection_config | jsonb | not null, default `{}` — unchanged |

@@ -4,7 +4,7 @@ Tracks implementation of [Roadmap.md](Roadmap.md), phase by phase. Update checkb
 
 **Status legend**: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 
-**Current phase**: Phase 10 complete (metadata schema redesign), Phase 11 (streaming) not started
+**Current phase**: Phases 1–10 complete (through the metadata schema redesign + dynamic pipeline foundation). **Priority as of 2026-07-14**: Phases 11 (streaming) and 12 (data viz) deliberately deprioritized — see `Roadmap.md`'s "Current priority" note. Phases 13 (connector library/schema discovery) and 14 (reconsider Dagster), plus working through `Backlog.md`, are next.
 
 ---
 

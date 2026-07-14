@@ -87,14 +87,56 @@ POLICE_CRIMES_SCHEMA = [
 ]
 
 
-def seed_source_system(cur, *, code: str, name: str, description: str, system_type: str) -> None:
+# Connector library plan: metadata_runs (Postgres source, this platform's
+# own metadata DB) -- moved verbatim from the now-deleted
+# metadata_runs_assets.py, which existed only via
+# Walkthrough_Metadata_Source_Feed.md's manual setup. Stored as
+# data_feed.extraction_config, read live by the generated PostgresConnector
+# at landing time -- never baked into generated code.
+METADATA_RUNS_QUERY = """
+    select
+        r.run_id::text as run_id, r.data_feed_id::text as data_feed_id, r.model_key,
+        r.tracking_group, r.tracking_group_type, r.dagster_run_id,
+        r.job_started_timestamp, r.job_ended_timestamp, r.job_successful,
+        r.landing_rows_read, r.raw_rows_read, r.clean_rows_inserted,
+        r.staging_rows_updated, r.model_rows_updated, r.serve_rows_read,
+        df.friendly_name as feed_friendly_name,
+        df.batch_group_friendly_name as feed_batch_group_friendly_name,
+        df.extraction_type as feed_extraction_type,
+        df.processing_engine as feed_processing_engine,
+        df.is_active as feed_is_active,
+        lm.friendly_name as model_friendly_name,
+        lm.model_schema as model_model_schema,
+        lm.table_type as model_table_type,
+        lm.scd_type as model_scd_type,
+        lm.updates_enabled as model_updates_enabled,
+        lm.deletes_enabled as model_deletes_enabled
+    from data_processing_runs r
+    left join data_feed df on df.id = r.data_feed_id
+    left join lakehouse_models lm on lm.friendly_name = r.model_key
+"""
+
+
+def seed_source_system(
+    cur,
+    *,
+    code: str,
+    name: str,
+    description: str,
+    system_type: str,
+    connector_kind: str | None = None,
+    base_location: str | None = None,
+) -> None:
+    # connector_kind=None means this system's feeds keep a fully
+    # hand-written asset file (customers/sales' synthetic stub generators)
+    # -- see processing/connectors/ and scripts/generate_dagster_pipeline.py.
     cur.execute(
         """
-        INSERT INTO source_system (code, name, description, system_type)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO source_system (code, name, description, system_type, connector_kind, base_location)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (code) DO NOTHING
         """,
-        (code, name, description, system_type),
+        (code, name, description, system_type, connector_kind, base_location),
     )
 
 
@@ -109,6 +151,7 @@ def seed_data_feed(
     processing_engine: str,
     watermark_column: str | None = None,
     batch_group_friendly_name: str | None = None,
+    extraction_config: dict | None = None,
 ) -> None:
     # Every feed must belong to a batch (see metadata/DataModel.md and
     # 01_platform_metadata.sql's batch_group not-null comment) -- none of
@@ -121,12 +164,12 @@ def seed_data_feed(
         INSERT INTO data_feed (
             source_system_id, friendly_name, source_object_name, extraction_type,
             source_pk, processing_engine, watermark_column,
-            batch_group, batch_group_friendly_name
+            batch_group, batch_group_friendly_name, extraction_config
         )
         VALUES (
             (SELECT id FROM source_system WHERE code = %s),
             %s, %s, %s, %s, %s, %s,
-            gen_random_uuid(), %s
+            gen_random_uuid(), %s, %s
         )
         ON CONFLICT (friendly_name) DO NOTHING
         """,
@@ -134,6 +177,7 @@ def seed_data_feed(
             source_system_code, friendly_name, source_object_name, extraction_type,
             psycopg.types.json.Json(source_pk), processing_engine, watermark_column,
             batch_group_friendly_name,
+            psycopg.types.json.Json(extraction_config) if extraction_config is not None else None,
         ),
     )
 
@@ -253,6 +297,7 @@ def main() -> None:
             name="ERP financial export",
             description="Periodic CSV export of general-ledger transactions, dropped into data-lake/landing/financial_transactions/",
             system_type="file_drop",
+            connector_kind="csv",
         )
         seed_source_system(
             cur,
@@ -260,6 +305,20 @@ def main() -> None:
             name="UK Police API",
             description="https://data.police.uk/docs/ -- street-level crime data",
             system_type="api",
+            connector_kind="rest",
+            base_location="https://data.police.uk/api",
+        )
+        # Connector library plan: metadata_runs queries this platform's own
+        # data_processing_runs table (a real Postgres source, previously
+        # only reachable by hand-following Walkthrough_Metadata_Source_Feed.md's
+        # manual SQL -- not reproducible from a fresh cluster until now).
+        seed_source_system(
+            cur,
+            code="platform_metadata_db",
+            name="Platform metadata database",
+            description="This platform's own platform_metadata Postgres instance, queried as a source",
+            system_type="database",
+            connector_kind="postgres",
         )
 
         seed_data_feed(
@@ -299,6 +358,20 @@ def main() -> None:
             source_pk=["id"],
             processing_engine="polars",
             watermark_column="month",
+        )
+        # No schema_registry seed row for metadata_runs -- deliberately, to
+        # prove the connector library's actual point: schema discovery
+        # bootstraps schema_registry on its own on the first real run, no
+        # hand-written baseline needed (see connectors/schema_registry_sync.py).
+        seed_data_feed(
+            cur,
+            source_system_code="platform_metadata_db",
+            friendly_name="metadata_runs",
+            source_object_name="data_processing_runs",
+            extraction_type="full",
+            source_pk=["run_id"],
+            processing_engine="polars",
+            extraction_config={"query": METADATA_RUNS_QUERY},
         )
 
         seed_schema_registry(cur, data_feed_friendly_name="customers", version=1, column_definitions=CUSTOMERS_SCHEMA, created_by="seed_metadata_db")

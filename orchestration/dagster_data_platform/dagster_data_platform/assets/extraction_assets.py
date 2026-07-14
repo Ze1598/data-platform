@@ -7,6 +7,7 @@ from dagster import AssetExecutionContext, Output, asset
 
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
+from connectors import infer_column_definitions
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
 FEED_FRIENDLY_NAME = "customers"
@@ -56,6 +57,15 @@ def landing_customers(
     context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
 ) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
+    # Explicit master-pipeline extraction-start step -- guaranteed before
+    # any extraction work runs, not just an incidental side effect of the
+    # stage-logging context below. Matters for any feed that queries
+    # data_processing_runs as its own source (metadata_runs).
+    postgres_metadata.record_run_started(
+        data_feed_id=str(data_feed["id"]),
+        dagster_run_id=context.run_id,
+        tracking_group=data_feed["batch_group_friendly_name"],
+    )
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         tracking_group=data_feed["batch_group_friendly_name"],
@@ -122,19 +132,13 @@ def clean_customers(
         # exist to guard against) with no schema validation at all — see
         # Learnings.md for why this got migrated onto raw_to_clean instead
         # of staying a special case.
-        column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
-        reconciliation = reconcile_schema(df, column_definitions)
-        df = reconciliation.df
-        schema_changed = reconciliation.updated_column_definitions is not None
-        if schema_changed:
-            postgres_metadata.update_schema_registry(
-                data_feed_id=str(data_feed["id"]),
-                column_definitions=reconciliation.updated_column_definitions,
-                created_by="clean_customers",
-            )
-            column_definitions = reconciliation.updated_column_definitions
-
-        validate_schema(df, column_definitions)
+        sync_result = postgres_metadata.sync_schema_registry(
+            data_feed_id=str(data_feed["id"]),
+            discovered_column_definitions=infer_column_definitions(df),
+            created_by="clean_customers",
+        )
+        df = reconcile_schema(df, sync_result.column_definitions)
+        validate_schema(df, sync_result.column_definitions)
 
         catalog = iceberg_catalog.get_catalog()
         write_clean_snapshot(
@@ -142,8 +146,7 @@ def clean_customers(
             namespace="clean",
             table_name="customers",
             df=df,
-            column_definitions=column_definitions,
-            schema_changed=schema_changed,
+            column_definitions=sync_result.column_definitions,
         )
         log.set_counts(rows_inserted=df.height)
 

@@ -20,6 +20,16 @@ create table source_system (
     name               text not null,
     description        text,
     system_type        text not null check (system_type in ('database', 'api', 'file_drop', 'saas')),
+    -- which connector implementation (processing/connectors/) extracts from
+    -- this system: 'postgres'/'csv' are tabular (extraction and validation
+    -- stay two separate stages); 'rest'/'json_file' are nested-JSON sources
+    -- where flattening+discovery+validation combine into one stage, since
+    -- flattening is inseparable from establishing the real (flat) schema
+    -- contract for this source shape -- see Learnings.md and the connector
+    -- library plan for the full reasoning. NULL means this system's feeds
+    -- keep a fully hand-written asset file, not connector/codegen-driven
+    -- (e.g. customers/sales' synthetic in-memory stub generators).
+    connector_kind     text check (connector_kind in ('postgres', 'csv', 'json_file', 'rest')),
     -- root for connectivity: a SQL Server name, a storage account container, an API base URL
     base_location      text,
     -- auth principal for this system

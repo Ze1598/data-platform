@@ -15,6 +15,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "connectors",
     "dagster-data-platform",
     "data-platform",
     "data-platform-dbt",
@@ -514,6 +515,33 @@ wheels = [
 ]
 
 [[package]]
+name = "connectors"
+version = "0.1.0"
+source = { editable = "processing/connectors" }
+dependencies = [
+    { name = "polars" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "raw-to-clean" },
+    { name = "requests" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "polars", specifier = ">=1.30" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "raw-to-clean", editable = "processing/raw_to_clean" },
+    { name = "requests", specifier = ">=2.32" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
 name = "cryptography"
 version = "49.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -616,6 +644,7 @@ name = "dagster-data-platform"
 version = "0.1.0"
 source = { editable = "orchestration/dagster_data_platform" }
 dependencies = [
+    { name = "connectors" },
     { name = "dagster" },
     { name = "dagster-dbt" },
     { name = "dagster-graphql" },
@@ -638,6 +667,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "connectors", editable = "processing/connectors" },
     { name = "dagster", specifier = ">=1.13" },
     { name = "dagster-dbt", specifier = ">=0.29" },
     { name = "dagster-graphql", specifier = ">=1.13" },

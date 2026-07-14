@@ -46,7 +46,6 @@ def write_clean_snapshot(
     table_name: str,
     df: pl.DataFrame,
     column_definitions: list[dict[str, Any]],
-    schema_changed: bool = False,
 ) -> Table:
     """Writes `df` as `namespace.table_name`'s entire current content — one
     atomic commit (pyiceberg Table.overwrite), not a delete-then-insert
@@ -55,31 +54,41 @@ def write_clean_snapshot(
     Phase 5, not just pool-protected. Creates the table on first run using
     the current schema_registry definition; every later run just overwrites.
 
-    `schema_changed=True` (set when raw_to_clean.reconcile_schema() returns
-    a non-None updated_column_definitions) drops and recreates the table
-    against the new schema instead of overwriting in place. `clean` never
-    retains history across runs — it's a snapshot of just this run's batch,
-    nothing downstream reads an old clean snapshot once a new one lands —
-    so there's nothing to lose by recreating it; this sidesteps Iceberg's
-    schema evolution rules entirely (which don't allow arbitrary type
-    changes like string→long in place, only a narrow set of "safe"
-    promotions) rather than needing an in-place-evolve-with-fallback path.
+    Self-determines whether the table's schema needs to change, by
+    comparing the existing table's live Iceberg schema against
+    `column_definitions` (PyIceberg's Schema supports structural equality,
+    confirmed directly) -- rather than requiring the caller to compute and
+    pass a schema_changed flag. This matters because schema *discovery*
+    can now happen in an entirely different asset/stage than the one that
+    writes clean (tabular connectors discover at landing, write at clean --
+    see the connector library plan), so there's no longer one function
+    call with both pieces of information in scope to hand-compute the flag
+    from. `clean` never retains history across runs -- it's a snapshot of
+    just this run's batch, nothing downstream reads an old clean snapshot
+    once a new one lands -- so there's nothing to lose by dropping and
+    recreating on a schema change; this sidesteps Iceberg's schema
+    evolution rules entirely (which don't allow arbitrary type changes
+    like string->long in place, only a narrow set of "safe" promotions)
+    rather than needing an in-place-evolve-with-fallback path.
     """
     identifier = (namespace, table_name)
-    if schema_changed and catalog.table_exists(identifier):
-        catalog.drop_table(identifier)
+    target_schema = _schema_from_column_definitions(column_definitions)
 
-    if not catalog.table_exists(identifier):
+    table = None
+    if catalog.table_exists(identifier):
+        table = catalog.load_table(identifier)
+        if table.schema() != target_schema:
+            catalog.drop_table(identifier)
+            table = None
+
+    if table is None:
         # Every prior test this session silently relied on `clean` already
         # existing as a namespace, left over from Phase 3's original manual
         # setup — never hit on a genuinely fresh catalog until a full
         # cluster rebuild exposed it. create_table() requires the
         # namespace to exist first; it doesn't create one implicitly.
         catalog.create_namespace_if_not_exists(namespace)
-        schema = _schema_from_column_definitions(column_definitions)
-        table = catalog.create_table(identifier, schema=schema)
-    else:
-        table = catalog.load_table(identifier)
+        table = catalog.create_table(identifier, schema=target_schema)
 
     table.overwrite(df.to_arrow())
     return table

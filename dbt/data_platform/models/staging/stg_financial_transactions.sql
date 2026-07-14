@@ -33,7 +33,14 @@ with source_raw as (
 
     select
         cast(transaction_id as varchar) as transaction_id,
-        cast(posted_date as timestamp(6) with time zone) as posted_date,
+        -- clean/schema_registry holds posted_date as a plain string
+        -- (Polars' CSV inference has no way to know a string column is
+        -- "meant" to be a timestamp -- schema_registry reflects that
+        -- reality, it isn't staging's target type). Trino's plain `cast`
+        -- doesn't parse ISO 8601 ("...T...Z") strings; from_iso8601_timestamp
+        -- does, and `at time zone 'UTC'` normalizes the zone explicitly
+        -- rather than relying on the source string always carrying Z.
+        cast(from_iso8601_timestamp(posted_date) at time zone 'UTC' as timestamp(6) with time zone) as posted_date,
         cast(account_code as varchar) as account_code,
         cast(account_name as varchar) as account_name,
         cast(description as varchar) as description,

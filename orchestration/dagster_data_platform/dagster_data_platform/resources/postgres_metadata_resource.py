@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
 import psycopg
+from connectors import SchemaSyncResult, compute_schema_sync
 from dagster import ConfigurableResource
 
 _DATA_FEED_STAGES = ("landing", "raw", "clean")
@@ -194,6 +195,33 @@ class PostgresMetadataResource(ConfigurableResource):
                 raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
             return row["column_definitions"]
 
+    def sync_schema_registry(
+        self, *, data_feed_id: str, discovered_column_definitions: list[dict[str, Any]], created_by: str
+    ) -> SchemaSyncResult:
+        """Establishes/updates a feed's schema_registry contract from a
+        freshly discovered schema (connector.discover_schema() /
+        connectors.infer_column_definitions()) -- the extraction-time
+        schema *discovery* step, run once before raw_to_clean.
+        reconcile_schema()/validate_schema() ever check a batch against
+        the contract. Diffing itself is connectors.compute_schema_sync()
+        (pure, no I/O); this method owns the Postgres read/write around
+        it. Call with the result's .column_definitions as the now-current
+        contract for raw_to_clean.reconcile_schema()/validate_schema()/
+        write_clean_snapshot() -- the latter self-determines whether the
+        physical Iceberg table's schema needs to change, so .changed here
+        is informational only, not something callers need to thread
+        through."""
+        try:
+            current = self.get_current_schema(data_feed_id)
+        except ValueError:
+            current = None
+        result = compute_schema_sync(discovered_column_definitions, current)
+        if result.changed:
+            self.update_schema_registry(
+                data_feed_id=data_feed_id, column_definitions=result.column_definitions, created_by=created_by
+            )
+        return result
+
     def is_schedule_active(self, schedule_id: str) -> bool:
         """Live re-check at schedule-tick time -- lets a schedule be
         disabled via the metadata DB and take effect immediately, without
@@ -206,6 +234,33 @@ class PostgresMetadataResource(ConfigurableResource):
             cur.execute("SELECT is_active FROM schedule WHERE id = %s", (schedule_id,))
             row = cur.fetchone()
             return bool(row and row[0])
+
+    def record_run_started(self, *, data_feed_id: str, dagster_run_id: str, tracking_group: str) -> None:
+        """Explicit master-pipeline extraction-start step: guarantees a
+        data_processing_runs row exists for (data_feed_id, dagster_run_id)
+        before extraction's connector.fetch() ever runs, not just as an
+        incidental side effect of log_data_feed_stage()'s own bookkeeping.
+        Matters concretely for metadata_runs, which queries
+        data_processing_runs as its own source: on a fresh cluster's very
+        first run, every feed (including metadata_runs itself) is running
+        for the first time simultaneously, so without an explicit,
+        guaranteed-first write, metadata_runs' own extraction has nothing
+        to report and never creates `clean.metadata_runs`, and the
+        downstream dbt build fails outright with TABLE_NOT_FOUND rather
+        than building on an empty/thin first run. Idempotent against
+        log_data_feed_stage()'s own row-ensure (ON CONFLICT DO UPDATE) --
+        calling both for the same (data_feed_id, dagster_run_id) is always
+        safe, the second call is a no-op insert-wise."""
+        self._ensure_run(
+            insert_columns={
+                "data_feed_id": data_feed_id,
+                "tracking_group": tracking_group,
+                "tracking_group_type": "batch_group",
+            },
+            conflict_columns=("data_feed_id", "dagster_run_id"),
+            conflict_where="data_feed_id IS NOT NULL",
+            dagster_run_id=dagster_run_id,
+        )
 
     # --- public API: one context manager per row kind, same table ----------
     # data_feed_run and data_model_run were merged into one wide
