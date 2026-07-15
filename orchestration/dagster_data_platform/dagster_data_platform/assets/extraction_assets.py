@@ -14,8 +14,8 @@ FEED_FRIENDLY_NAME = "customers"
 RAW_SUBDIR = "raw/customers"
 
 # .../orchestration/dagster_data_platform/dagster_data_platform/assets/extraction_assets.py
-# -> repo root is 4 parents up, same convention as financial_assets.py/
-# police_assets.py's REPO_ROOT.
+# -> repo root is 4 parents up, same convention as financial_assets.py's
+# REPO_ROOT.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 

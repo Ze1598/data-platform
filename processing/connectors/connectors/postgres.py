@@ -16,8 +16,6 @@ so its connection details come from the same environment variables every
 other resource in this codebase already uses.
 """
 
-from typing import Any
-
 import polars as pl
 import psycopg
 
@@ -41,9 +39,3 @@ class PostgresConnector(TabularConnector):
             columns = [d.name for d in cur.description]
             rows = cur.fetchall()
         return pl.DataFrame(rows, schema=columns, orient="row") if rows else pl.DataFrame()
-
-    @staticmethod
-    def from_extraction_config(extraction_config: dict[str, Any], *, host: str, port: int, dbname: str, user: str, password: str) -> "PostgresConnector":
-        return PostgresConnector(
-            host=host, port=port, dbname=dbname, user=user, password=password, query=extraction_config["query"]
-        )

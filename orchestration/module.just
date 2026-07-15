@@ -16,6 +16,7 @@ start:
     just orchestration::generate-pipeline-jobs
     just orchestration::generate-serve-views
     just orchestration::generate-deletion-synthesis-views
+    just orchestration::generate-model-scaffolds
     just orchestration::build-image
     kubectl create configmap dagster-instance \
         --from-file=dagster.yaml=dagster_home/dagster.yaml \
@@ -192,9 +193,11 @@ seed-financial-landing:
 # pipeline_generated.py -- must run before build-image/dagster dev, same
 # "structural decisions are a build-time codegen artifact, never a live
 # Postgres read at Python import time" rule as generate-serve-views below.
-# financial_assets.py/police_assets.py import from pipeline_generated.py
-# directly, so it must exist on disk before dagster dev's own import even
-# starts. Also runnable standalone after a schedule/data_feed change.
+# financial_assets.py imports from pipeline_generated.py directly (as do
+# the connector-driven landing/raw/clean assets pipeline_generated.py
+# itself renders, e.g. for police_crimes/metadata_runs), so it must exist
+# on disk before dagster dev's own import even starts. Also runnable
+# standalone after a schedule/data_feed change.
 generate-pipeline-jobs:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -231,6 +234,22 @@ generate-deletion-synthesis-views:
     set -euo pipefail
     just _ensure-venv-visible
     cd {{justfile_directory()}} && uv run python scripts/generate_deletion_synthesis_views.py
+
+# Scaffold new model-layer .sql/.yml files (Type 1 dimension/fact models,
+# Type 2 dimension snapshots) from lakehouse_models
+# (scripts/generate_model_scaffolds.py) -- must run before build-image/
+# dagster dev, same "must exist on disk before dbt parse builds
+# target/manifest.json" reasoning as generate-serve-views above. Unlike
+# every other generate-* recipe here, this one NEVER overwrites an
+# existing file -- only creates scaffolds for lakehouse_models rows whose
+# target file is missing, so a hand-filled-in model is always safe to
+# re-run this against. Also runnable standalone after adding a new
+# lakehouse_models row.
+generate-model-scaffolds:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_model_scaffolds.py
 
 # Launch the full pipeline via the real K8sRunLauncher (not `dagster asset
 # materialize`, which never touches it -- see DebugReference.md) and verify

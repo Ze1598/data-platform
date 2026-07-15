@@ -102,9 +102,9 @@ class PostgresMetadataResource(ConfigurableResource):
 
     def update_schema_registry(self, *, data_feed_id: str, column_definitions: list[dict[str, Any]], created_by: str) -> None:
         """Writes a new current schema_registry version for a feed --
-        called by raw_to_clean's schema reconciliation (schema_evolution.py)
-        when incoming data adds a column or changes an existing column's
-        type (see Roadmap.md "Metadata Schema"). Both writes happen in one
+        called by connectors.schema_registry_sync.sync_schema_registry()
+        when discovery finds a new column or a changed column type (see
+        Roadmap.md "Metadata Schema"). Both writes happen in one
         transaction: flip the existing is_current row to false first, then
         insert the new one -- required by uq_schema_registry_current (a
         partial unique index allowing only one is_current=true row per

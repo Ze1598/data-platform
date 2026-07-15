@@ -12,7 +12,8 @@
     is Phase 9's incremental UK Police API feed -- clean only ever holds
     *this run's* new crimes, which can span several months in one run
     (landing_police_crimes pulls everything since the last watermark
-    through the latest available month, see police_assets.py), staging
+    through the latest available month, see
+    dagster_data_platform/connectors/police_crimes_connector.py), staging
     accumulates every month ever pulled by business key (the crime's own
     numeric id). Note: a given crime's outcome_category/outcome_date can
     genuinely change between API pulls of the same month (an
