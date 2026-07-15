@@ -18,7 +18,11 @@ generate_serve_views.py/generate_deletion_synthesis_views.py, not the
 write-once-then-freeze pattern generate_model_scaffolds.py uses for
 hand-filled dimension/fact files.
 
-Two files per candidate feed:
+Two files per candidate feed, landing inside that feed's own ODS domain
+project (dbt/domains/<batch_ods_name>/...) -- each batch group producing
+ODS output is its own legitimate individual ODS lakehouse model, not one
+shared pseudo-project (see data_feed.batch_ods_name,
+metadata/DataModel.md, Roadmap.md "multi-project dbt split"):
   - models/staging/generated/<feed>.sql  (dbt name stg_<feed>_ods,
     alias='<feed>' -> physical staging.<feed>)
   - models/model/ods/generated/<feed>.sql (dbt name <feed>_ods,
@@ -51,6 +55,8 @@ from pathlib import Path
 
 import psycopg
 
+from generate_domain_projects import slugify_domain
+
 CONN_KWARGS = dict(
     host=os.environ.get("POSTGRES_HOST", "localhost"),
     port=int(os.environ.get("POSTGRES_PORT", "5432")),
@@ -60,18 +66,24 @@ CONN_KWARGS = dict(
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-STAGING_OUTPUT_DIR = REPO_ROOT / "dbt" / "data_platform" / "models" / "staging" / "generated"
-MODEL_OUTPUT_DIR = REPO_ROOT / "dbt" / "data_platform" / "models" / "model" / "ods" / "generated"
+DOMAINS_DIR = REPO_ROOT / "dbt" / "domains"
 
 
 def fetch_ods_candidates(cur) -> list[dict]:
+    # batch_ods_name is what derives this feed's ODS domain (see
+    # data_feed.batch_ods_name, metadata/DataModel.md) -- required
+    # non-null here since an ods_enabled feed with no batch_ods_name set
+    # yet has nowhere to land (same "not configured yet" skip as the
+    # inner join against schema_registry below).
     cur.execute(
         """
-        select df.friendly_name, df.extraction_type, sr.column_definitions, sr.primary_key_columns
+        select df.friendly_name, df.batch_ods_name, df.extraction_type,
+               sr.column_definitions, sr.primary_key_columns
         from data_feed df
         join schema_registry sr on sr.data_feed_id = df.id and sr.is_current
         where df.ods_enabled = true
           and df.is_active = true
+          and df.batch_ods_name is not null
           and not exists (select 1 from lakehouse_models lm where lm.owning_feed_id = df.id)
         order by df.friendly_name
         """
@@ -333,43 +345,50 @@ from {{{{ 'to_merge' if is_incremental() else 'hashed' }}}}
 """
 
 
-def generate(candidates: list[dict], staging_dir: Path, model_dir: Path) -> tuple[list[Path], list[Path]]:
-    for output_dir in (staging_dir, model_dir):
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-        output_dir.mkdir(parents=True)
+def generate(candidates: list[dict], domains_dir: Path) -> tuple[list[Path], list[Path]]:
+    by_domain: dict[str, list[dict]] = {}
+    for row in candidates:
+        by_domain.setdefault(slugify_domain(row["batch_ods_name"]), []).append(row)
 
     staging_written, model_written = [], []
-    for row in candidates:
-        feed = row["friendly_name"]
-        all_columns = [c["name"] for c in sorted(row["column_definitions"], key=lambda c: c["ordinal"])]
-        primary_key_columns = row["primary_key_columns"]
-        extraction_type = row["extraction_type"]
+    for domain, rows in by_domain.items():
+        staging_dir = domains_dir / domain / "models" / "staging" / "generated"
+        model_dir = domains_dir / domain / "models" / "model" / "ods" / "generated"
+        for output_dir in (staging_dir, model_dir):
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            output_dir.mkdir(parents=True)
 
-        # dbt derives a model's NAME from its filename (never from
-        # `alias=`, which only sets the physical table name) -- these must
-        # be distinct project-wide, so the files themselves are named
-        # stg_<feed>_ods.sql / <feed>_ods.sql, not <feed>.sql in both
-        # folders (confirmed the hard way: dbt parse rejected two models
-        # both literally named "police_crimes" when both files were named
-        # police_crimes.sql, one per folder).
-        staging_path = staging_dir / f"stg_{feed}_ods.sql"
-        staging_path.write_text(
-            _render_ods_staging(
-                feed=feed, all_columns=all_columns, primary_key_columns=primary_key_columns,
-                extraction_type=extraction_type,
-            )
-        )
-        staging_written.append(staging_path)
+        for row in rows:
+            feed = row["friendly_name"]
+            all_columns = [c["name"] for c in sorted(row["column_definitions"], key=lambda c: c["ordinal"])]
+            primary_key_columns = row["primary_key_columns"]
+            extraction_type = row["extraction_type"]
 
-        model_path = model_dir / f"{feed}_ods.sql"
-        model_path.write_text(
-            _render_ods_model(
-                feed=feed, all_columns=all_columns, primary_key_columns=primary_key_columns,
-                extraction_type=extraction_type,
+            # dbt derives a model's NAME from its filename (never from
+            # `alias=`, which only sets the physical table name) -- these must
+            # be distinct project-wide, so the files themselves are named
+            # stg_<feed>_ods.sql / <feed>_ods.sql, not <feed>.sql in both
+            # folders (confirmed the hard way: dbt parse rejected two models
+            # both literally named "police_crimes" when both files were named
+            # police_crimes.sql, one per folder).
+            staging_path = staging_dir / f"stg_{feed}_ods.sql"
+            staging_path.write_text(
+                _render_ods_staging(
+                    feed=feed, all_columns=all_columns, primary_key_columns=primary_key_columns,
+                    extraction_type=extraction_type,
+                )
             )
-        )
-        model_written.append(model_path)
+            staging_written.append(staging_path)
+
+            model_path = model_dir / f"{feed}_ods.sql"
+            model_path.write_text(
+                _render_ods_model(
+                    feed=feed, all_columns=all_columns, primary_key_columns=primary_key_columns,
+                    extraction_type=extraction_type,
+                )
+            )
+            model_written.append(model_path)
 
     return staging_written, model_written
 
@@ -378,7 +397,7 @@ def main() -> None:
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         candidates = fetch_ods_candidates(cur)
 
-    staging_written, model_written = generate(candidates, STAGING_OUTPUT_DIR, MODEL_OUTPUT_DIR)
+    staging_written, model_written = generate(candidates, DOMAINS_DIR)
     print(
         f"Generated {len(staging_written)} ODS staging model(s) and {len(model_written)} ODS model-layer "
         f"table(s) for {len(candidates)} ods_enabled data_feed row(s)."

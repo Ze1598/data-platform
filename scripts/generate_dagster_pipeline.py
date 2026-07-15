@@ -34,6 +34,8 @@ from pathlib import Path
 
 import psycopg
 
+from generate_domain_projects import slugify_domain
+
 CONN_KWARGS = dict(
     host=os.environ.get("POSTGRES_HOST", "localhost"),
     port=int(os.environ.get("POSTGRES_PORT", "5432")),
@@ -78,6 +80,41 @@ def fetch_connector_feeds(cur) -> list[dict]:
     )
     columns = [desc.name for desc in cur.description]
     return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def fetch_domain_dependent_feeds(cur) -> dict[str, list[str]]:
+    """domain -> sorted list of feed friendly_names that domain's
+    transformation+serving job spans (Roadmap.md "multi-project dbt
+    split"). Real domains: union of depends_on_feeds across that domain's
+    lakehouse_models rows. ODS domains: feeds sharing that batch_ods_name.
+    Same union-query shape as generate_sources.py::fetch_domain_feeds(),
+    mirrored (not imported -- these live in the same scripts/ package
+    already, but each generator stays self-contained on purpose, matching
+    the rest of this module's existing standalone-fetch-function style)."""
+    domain_feeds: dict[str, set[str]] = {}
+
+    cur.execute(
+        """
+        SELECT lm.model_schema, df.friendly_name
+        FROM lakehouse_models lm
+        JOIN data_feed df ON df.id::text = ANY(string_to_array(lm.depends_on_feeds, ','))
+        WHERE lm.is_active = true AND df.is_active = true
+        """
+    )
+    for model_schema, feed_name in cur.fetchall():
+        domain_feeds.setdefault(slugify_domain(model_schema), set()).add(feed_name)
+
+    cur.execute(
+        """
+        SELECT batch_ods_name, friendly_name
+        FROM data_feed
+        WHERE ods_enabled = true AND batch_ods_name IS NOT NULL AND is_active = true
+        """
+    )
+    for batch_ods_name, feed_name in cur.fetchall():
+        domain_feeds.setdefault(slugify_domain(batch_ods_name), set()).add(feed_name)
+
+    return {domain: sorted(feeds) for domain, feeds in domain_feeds.items()}
 
 
 def fetch_feed_schedules(cur) -> list[dict]:
@@ -385,7 +422,10 @@ def clean_{friendly_name}(
 '''
 
 
-def render(feeds: list[str], connector_feeds: list[dict], feed_schedules: list[dict], model_schedules: list[dict]) -> str:
+def render(
+    feeds: list[str], connector_feeds: list[dict], feed_schedules: list[dict], model_schedules: list[dict],
+    domain_feeds: dict[str, list[str]],
+) -> str:
     feeds_repr = ", ".join(f'"{f}"' for f in feeds)
 
     connector_imports = []
@@ -419,14 +459,24 @@ def render(feeds: list[str], connector_feeds: list[dict], feed_schedules: list[d
     pipeline_init_blocks = "\n".join(_render_pipeline_init(f) for f in feeds)
     pipeline_init_names_block = ", ".join(f"pipeline_init_{f}" for f in feeds)
 
-    # Two @dbt_assets per feed now, not one -- transformation (staging+
-    # model) and serving (generated views) are independently selectable
-    # dbt build invocations (see dbt_assets.py's split).
-    transformation_assets_block = "{" + ", ".join(
-        f'"{f}": _build_transformation_assets_for_feed("{f}")' for f in feeds
-    ) + "}"
-    serving_assets_block = "{" + ", ".join(
-        f'"{f}": _build_serving_assets_for_feed("{f}")' for f in feeds
+    # Per DOMAIN now, not per feed -- a domain's transformation/serving dbt
+    # assets are compile-isolated in their own dbt project
+    # (dbt/domains/<domain>/, see Roadmap.md "multi-project dbt split") and
+    # can span several feeds' models. DOMAIN_FEEDS is baked in as a literal
+    # dict (structural: which domains exist and which feeds each spans,
+    # resolved from Postgres at codegen time) -- DBT_PROJECTS itself is
+    # NOT baked in here, it's built by the rendered module body via its own
+    # filesystem glob over dbt/domains/*/ at Dagster-import time (mirrors
+    # definitions.py's own independent glob -- both must agree, enforced by
+    # `just start`'s ordering: generate-domain-projects always runs before
+    # either glob ever executes, not by a shared source at runtime, see
+    # that script's module docstring).
+    def _domain_feeds_entry(domain: str, feeds_for_domain: list[str]) -> str:
+        feed_list_repr = "[" + ", ".join(f'"{f}"' for f in feeds_for_domain) + "]"
+        return f'"{domain}": {feed_list_repr}'
+
+    domain_feeds_repr = "{" + ", ".join(
+        _domain_feeds_entry(domain, feeds_for_domain) for domain, feeds_for_domain in domain_feeds.items()
     ) + "}"
 
     schedule_calls = []
@@ -476,10 +526,12 @@ from dagster import (
     define_asset_job,
     schedule,
 )
+from dagster_dbt import DbtProject
+from dagster_k8s.executor import k8s_job_executor
 
 from connectors import CSVConnector, PostgresConnector
 {connector_imports_block}
-from dagster_data_platform.assets.dbt_assets import _build_serving_assets_for_feed, _build_transformation_assets_for_feed
+from dagster_data_platform.assets.dbt_assets import _build_serving_assets_for_domain, _build_transformation_assets_for_domain
 from dagster_data_platform.pipeline_steps import parse_selected_steps
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
@@ -509,12 +561,42 @@ def _data_lake_dir() -> Path:
 
 ALL_PIPELINE_INIT_ASSETS = [{pipeline_init_names_block}]
 
-# One _build_transformation_assets_for_feed(...)/_build_serving_assets_for_feed(...)
-# call per active feed, and only here -- calling either factory twice for the
-# same feed would construct two @dbt_assets defs both claiming the same
-# AssetKeys, which Dagster rejects.
-TRANSFORMATION_ASSETS = {transformation_assets_block}
-SERVING_ASSETS = {serving_assets_block}
+# DOMAIN_FEEDS: which domains exist and which feeds each spans (structural,
+# resolved from Postgres at codegen time -- see
+# scripts/generate_dagster_pipeline.py::fetch_domain_dependent_feeds()).
+DOMAIN_FEEDS = {domain_feeds_repr}
+
+# DBT_PROJECTS: one DbtProject per domain, built HERE via a filesystem glob
+# over dbt/domains/*/ at Dagster-import time -- NOT baked in as codegen
+# output, since it's filesystem state (which domain directories actually
+# exist on disk), not Postgres state. definitions.py does its own
+# independent identical glob for the SAME reason dbt_assets.py's
+# _build_transformation_assets_for_domain closes over its own DbtCliResource
+# instead of taking one via Dagster resource injection (see that function's
+# docstring) -- two independently-computed lists that must agree, enforced
+# by `just start`'s ordering (generate-domain-projects always runs before
+# either glob ever executes), not by a shared source at runtime.
+DOMAINS_DIR = REPO_ROOT / "dbt" / "domains"
+DBT_PROJECTS = {{}}
+for _domain_dir in sorted(DOMAINS_DIR.glob("*")):
+    if not (_domain_dir / "dbt_project.yml").exists():
+        continue
+    _project = DbtProject(project_dir=_domain_dir, profiles_dir=_domain_dir / "profiles")
+    _project.prepare_if_dev()
+    DBT_PROJECTS[_domain_dir.name] = _project
+
+# One _build_transformation_assets_for_domain(...)/_build_serving_assets_for_domain(...)
+# call per resolved domain, and only here -- calling either factory twice for
+# the same domain would construct two @dbt_assets defs both claiming the
+# same AssetKeys, which Dagster rejects.
+TRANSFORMATION_ASSETS = {{
+    domain: _build_transformation_assets_for_domain(domain, feeds, DBT_PROJECTS[domain])
+    for domain, feeds in DOMAIN_FEEDS.items()
+}}
+SERVING_ASSETS = {{
+    domain: _build_serving_assets_for_domain(domain, feeds, DBT_PROJECTS[domain])
+    for domain, feeds in DOMAIN_FEEDS.items()
+}}
 ALL_DBT_ASSETS = list(TRANSFORMATION_ASSETS.values()) + list(SERVING_ASSETS.values())
 
 # --- connector-driven landing/raw/clean assets ------------------------------
@@ -531,12 +613,36 @@ ALL_CONNECTOR_ASSETS = [{connector_asset_names_block}]
 # ownership (see that model's own comment for why), but sales_job still
 # needs to build stg_financial_transactions first when run standalone, not
 # just under the full __ASSET_JOB. A no-op for every feed with no
-# cross-feed dependents.
+# cross-feed dependents. NARROWS TO EXTRACTION+VALIDATION ONLY now, a
+# natural consequence of dbt assets carrying group_name=<domain> instead of
+# group_name=<feed> (see dbt_assets.py's DataPlatformDbtTranslator) -- dbt
+# assets are downstream of a feed's clean_<feed> (via source()), never
+# upstream of it, so .upstream() never pulls them in regardless; this just
+# stops AssetSelection.groups(f) itself from including them the way it used
+# to when both shared one group name.
 FEED_JOBS = {{
     f: define_asset_job(f"{{f}}_job", selection=AssetSelection.groups(f).upstream())
     for f in [{feeds_repr}]
 }}
 ALL_FEED_JOBS = list(FEED_JOBS.values())
+
+# One per resolved domain -- the ephemeral, k8s_job_executor-run
+# transformation+serving build for that domain (Roadmap.md "multi-project
+# dbt split"). k8s_job_executor launches each STEP (here: the domain's one
+# or two dbt @dbt_assets steps) as its own k8s Job/pod, inheriting
+# K8sRunLauncher's existing volume/env config automatically (confirmed via
+# K8sStepHandler._get_container_context() in the installed dagster_k8s
+# source -- it builds from the live run launcher config, not a fresh empty
+# one).
+DOMAIN_JOBS = {{
+    domain: define_asset_job(
+        f"{{domain}}_transformation_serving_job",
+        selection=AssetSelection.groups(domain),
+        executor_def=k8s_job_executor,
+    )
+    for domain in DOMAIN_FEEDS
+}}
+ALL_DOMAIN_JOBS = list(DOMAIN_JOBS.values())
 
 
 def _make_feed_schedule(
@@ -577,6 +683,40 @@ def _make_feed_schedule(
 ALL_SCHEDULES = [
 {schedules_block}
 ]
+
+
+# --- trigger resolvers ------------------------------------------------------
+# Plain functions, not asset/job/schedule factories -- these resolve WHICH
+# jobs to launch and in what order, live, per call (same "structural vs.
+# runtime" split as everything else in this file: FEED_JOBS/DOMAIN_JOBS
+# themselves are structural/codegen'd, but which of them a given trigger
+# invocation needs is runtime-only information, resolved via
+# PostgresMetadataResource). Dagster jobs are independently launched runs,
+# not a native job-DAG in this version -- callers are expected to launch the
+# returned jobs SEQUENTIALLY (e.g. via DagsterGraphQLClient.submit_job_execution,
+# same pattern as trigger_schedule_run.py), waiting for each to complete
+# before launching the next. True dependency-aware sequencing is a possible
+# hardening follow-up if races are observed in practice, not built here.
+
+def resolve_run_plan_for_model(model_friendly_name: str, postgres_metadata: PostgresMetadataResource) -> list:
+    """'Trigger by lakehouse model': resolves the model's domain, unions
+    depends_on_feeds across every active lakehouse_models row sharing that
+    domain (one level, not recursive), returns that domain's feed jobs
+    followed by the domain job itself -- the user shouldn't have to know or
+    care which feeds a model depends on, only that triggering the model
+    keeps every dependent feed fresh first."""
+    domain, feeds = postgres_metadata.resolve_model_domain_and_feeds(model_friendly_name)
+    return [FEED_JOBS[f] for f in feeds] + [DOMAIN_JOBS[domain]]
+
+
+def resolve_run_plan_for_batch_group(batch_group_friendly_name: str, postgres_metadata: PostgresMetadataResource) -> list:
+    """'Trigger by batch group': every active feed sharing this batch_group,
+    feed jobs only -- no domain job implied. batch_group and model_schema
+    stay two structurally separate axes (a batch's feeds may span multiple
+    domains), matching data_processing_runs.tracking_group_type's existing
+    design."""
+    feeds = postgres_metadata.get_batch_group_feeds(batch_group_friendly_name)
+    return [FEED_JOBS[f] for f in feeds]
 '''
 
 
@@ -606,12 +746,13 @@ def main() -> None:
         connector_feeds = fetch_connector_feeds(cur)
         feed_schedules = fetch_feed_schedules(cur)
         model_schedules = fetch_model_schedules(cur)
+        domain_feeds = fetch_domain_dependent_feeds(cur)
 
-    OUTPUT_PATH.write_text(render(feeds, connector_feeds, feed_schedules, model_schedules))
+    OUTPUT_PATH.write_text(render(feeds, connector_feeds, feed_schedules, model_schedules, domain_feeds))
     CLEAN_SOURCE_TABLES_OUTPUT_PATH.write_text(_render_clean_source_tables(feeds))
     print(
-        f"Generated {OUTPUT_PATH} -- {len(feeds)} feed job(s), {len(connector_feeds)} connector-driven feed(s), "
-        f"{len(feed_schedules) + len(model_schedules)} schedule(s)."
+        f"Generated {OUTPUT_PATH} -- {len(feeds)} feed job(s), {len(domain_feeds)} domain job(s), "
+        f"{len(connector_feeds)} connector-driven feed(s), {len(feed_schedules) + len(model_schedules)} schedule(s)."
     )
     print(f"Generated {CLEAN_SOURCE_TABLES_OUTPUT_PATH} -- {len(feeds)} clean source table(s).")
 

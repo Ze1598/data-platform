@@ -4,6 +4,14 @@ Things explicitly deferred, not forgotten. Unlike `Roadmap.md` (planned phases) 
 
 ---
 
+### Superseded design: single shared dbt project + `tag:<model_schema>` selectors, as a fallback if full domain isolation proves premature
+
+Before landing on genuine per-domain dbt project isolation (separate `dbt_project.yml`/manifest/image per `model_schema` domain — see `Roadmap.md`), a lighter-weight alternative was fully designed and explicitly rejected in favor of real isolation, not because it doesn't work: **one shared dbt project** (today's structure, unchanged), with each domain's `staging`/`model`/`serve` models tagged `tag:<model_schema>` — the exact same mechanism already splitting transformation from serving today (`_build_transformation_assets_for_feed`/`_build_serving_assets_for_feed`) — giving independently-triggerable `dbt build` invocations per domain, physical naming-convention differentiation (`<model_schema>_<fct|dim>_<name>`) instead of separate schemas, and Dagster `pool=` (already used per feed) to avoid concurrency races between domains. This gets domain-scoped triggering and naming-collision avoidance without any new manifests/images — real, viable, much less infrastructure than full isolation.
+
+**Rejected because**: it doesn't solve `dbt parse`'s full-project compile cost (paid by every domain's build regardless of `--select` scope) or deployment blast radius (one shared manifest/image means every domain's build/deploy is coupled, even if not literally blocked by another domain's broken model). Given this platform is explicitly meant to validate feasibility at real enterprise scale, those were judged worth solving now rather than deferring.
+
+Noted here in case genuine per-domain project isolation turns out to be more than is needed and this lighter mechanism becomes the better fit after all — it's a complete, ready-to-build fallback, not abandoned reasoning.
+
 ### Frontend CRUD for `schedule`
 
 No page exists for the `schedule` table — `1_Source_Systems.py`/`2_Data_Feeds.py`/`3_Lakehouse_Models.py` establish the per-table CRUD pattern (one file per table, numbered); a future `4_Schedules.py` would follow that same shape. `load_type` almost certainly doesn't need one (fixed 4-row lookup, seeded once via DDL, never edited).

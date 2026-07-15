@@ -1,32 +1,28 @@
-"""Generates the dbt `clean` source declarations (models/staging/_sources.yml)
-from every active data_feed row.
+"""Generates the dbt `clean` source declarations
+(dbt/domains/<domain>/models/staging/_sources.yml) from every active
+data_feed row -- one file per domain now, not one shared file, since each
+domain is its own dbt project (see Roadmap.md "multi-project dbt split").
 
-Previously a hand-maintained file at this same path -- any new feed's
-models (hand-written staging, or an ODS passthrough, see
-scripts/generate_ods_models.py) reading `source('clean', '<feed>')` would
-silently fail `dbt parse` ("depends on a source ... which was not found")
-until a human remembered to add an entry here by hand. Same "must exist on
-disk before dbt parse builds target/manifest.json" category as every other
-generate_*.py script in this project.
+Previously a hand-maintained single file; any new feed's models (hand-
+written staging, or an ODS passthrough) reading `source('clean', '<feed>')`
+would silently fail `dbt parse` ("depends on a source ... which was not
+found") until a human remembered to add an entry here by hand.
 
-Deliberately NOT placed under models/staging/generated/ -- that directory
-is generate_ods_models.py's own exclusive output, which it wipes and fully
-recreates every run; sharing it would mean this file gets silently deleted
-every time ODS regenerates (confirmed the hard way). A single generated
-*file* living directly in its normal folder (with a "DO NOT EDIT" header),
-same convention as pipeline_generated.py/clean_source_tables_generated.py,
-avoids the collision entirely -- only a script that owns a whole
-*directory* of many generated files needs its own generated/ subfolder.
+A feed can legitimately appear in more than one domain's _sources.yml --
+`clean.<feed>` is a plain physical source() any domain project can declare,
+not something one project owns exclusively.
 
-Fully regenerates on every run (wipe-and-rewrite) -- 100% derived from
-data_feed, nothing hand-written to protect, same reasoning as
-generate_serve_views.py's schema.yml.
+Fully regenerates every domain's _sources.yml on every run (wipe-and-
+rewrite) -- 100% derived from data_feed/lakehouse_models, nothing
+hand-written to protect.
 """
 
 import os
 from pathlib import Path
 
 import psycopg
+
+from generate_domain_projects import slugify_domain
 
 CONN_KWARGS = dict(
     host=os.environ.get("POSTGRES_HOST", "localhost"),
@@ -37,12 +33,38 @@ CONN_KWARGS = dict(
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_PATH = REPO_ROOT / "dbt" / "data_platform" / "models" / "staging" / "_sources.yml"
+DOMAINS_DIR = REPO_ROOT / "dbt" / "domains"
 
 
-def fetch_active_feed_names(cur) -> list[str]:
-    cur.execute("select friendly_name from data_feed where is_active = true order by friendly_name")
-    return [row[0] for row in cur.fetchall()]
+def fetch_domain_feeds(cur) -> dict[str, set[str]]:
+    """domain -> set of feed friendly_names that domain's _sources.yml
+    needs to declare. Real domains: union of depends_on_feeds across that
+    domain's lakehouse_models rows. ODS domains: feeds sharing that
+    batch_ods_name."""
+    domain_feeds: dict[str, set[str]] = {}
+
+    cur.execute(
+        """
+        select lm.model_schema, df.friendly_name
+        from lakehouse_models lm
+        join data_feed df on df.id::text = any(string_to_array(lm.depends_on_feeds, ','))
+        where lm.is_active = true and df.is_active = true
+        """
+    )
+    for model_schema, feed_name in cur.fetchall():
+        domain_feeds.setdefault(slugify_domain(model_schema), set()).add(feed_name)
+
+    cur.execute(
+        """
+        select batch_ods_name, friendly_name
+        from data_feed
+        where ods_enabled = true and batch_ods_name is not null and is_active = true
+        """
+    )
+    for batch_ods_name, feed_name in cur.fetchall():
+        domain_feeds.setdefault(slugify_domain(batch_ods_name), set()).add(feed_name)
+
+    return domain_feeds
 
 
 def render_sources_yml(feed_names: list[str]) -> str:
@@ -62,18 +84,24 @@ def render_sources_yml(feed_names: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def generate(feed_names: list[str], output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_sources_yml(feed_names))
-    return output_path
+def generate(domain_feeds: dict[str, set[str]], domains_dir: Path) -> list[Path]:
+    written = []
+    for domain, feed_names in domain_feeds.items():
+        output_path = domains_dir / domain / "models" / "staging" / "_sources.yml"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(render_sources_yml(sorted(feed_names)))
+        written.append(output_path)
+    return written
 
 
 def main() -> None:
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
-        feed_names = fetch_active_feed_names(cur)
+        domain_feeds = fetch_domain_feeds(cur)
 
-    path = generate(feed_names, OUTPUT_PATH)
-    print(f"Generated clean source declarations for {len(feed_names)} active data_feed row(s) at {path.relative_to(REPO_ROOT)}.")
+    written = generate(domain_feeds, DOMAINS_DIR)
+    print(f"Generated {len(written)} domain _sources.yml file(s) across {len(domain_feeds)} domain(s).")
+    for p in written:
+        print(f"  {p.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":

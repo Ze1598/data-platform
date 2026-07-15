@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from typing import Any, Mapping
 
 from dagster import AssetExecutionContext, AssetKey
@@ -9,15 +8,13 @@ from dagster_data_platform.clean_source_tables_generated import CLEAN_SOURCE_TAB
 from dagster_data_platform.pipeline_steps import parse_selected_steps
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 
-# .../orchestration/dagster_data_platform/dagster_data_platform/assets/dbt_assets.py
-# -> repo root is 4 parents up. Kept as a repo-relative path (not an
-# absolute one) so it resolves the same way both in local dev and inside
-# the orchestration Docker image, which preserves this same relative
-# layout (see orchestration/Dockerfile).
-REPO_ROOT = Path(__file__).resolve().parents[4]
-_DBT_PROJECT_DIR = REPO_ROOT / "dbt" / "data_platform"
-dbt_project = DbtProject(project_dir=_DBT_PROJECT_DIR, profiles_dir=_DBT_PROJECT_DIR / "profiles")
-dbt_project.prepare_if_dev()
+# No module-level single DbtProject anymore -- each domain
+# (dbt/domains/<domain>/, see Roadmap.md "multi-project dbt split") is its
+# own dbt project with its own manifest, genuinely compile-isolated from
+# every other domain. definitions.py discovers one DbtProject per domain
+# directory (glob + prepare_if_dev() per instance) and passes it into
+# _build_transformation_assets_for_domain/_build_serving_assets_for_domain
+# below, rather than this module owning one hardcoded project.
 
 # CLEAN_SOURCE_TABLES is generated (scripts/generate_dagster_pipeline.py,
 # clean_source_tables_generated.py) from every active data_feed row --
@@ -67,14 +64,18 @@ class DataPlatformDbtTranslator(DagsterDbtTranslator):
         return super().get_asset_key(dbt_resource_props)
 
     def get_group_name(self, dbt_resource_props: Mapping[str, Any]) -> str | None:
-        # Lets every dbt-layer asset for a feed share group_name=<feed
-        # friendly_name> with that feed's hand-written landing/raw/clean
-        # assets (see extraction_assets.py etc.) -- AssetSelection.groups()
-        # then selects a feed's entire chain purely from a metadata string,
-        # no hardcoded per-feed asset lists needed (see
-        # scripts/generate_dagster_pipeline.py). None keeps superclass
-        # behavior, so a bare DataPlatformDbtTranslator() (e.g.
-        # tests/test_dbt_assets.py) is unaffected.
+        # group_name=<domain> (NOT the owning feed anymore -- that split
+        # moved to DOMAIN_JOBS/FEED_JOBS, see
+        # scripts/generate_dagster_pipeline.py) is what lets
+        # AssetSelection.groups(domain) select a whole domain's
+        # transformation+serving dbt assets purely from a metadata string,
+        # no hardcoded per-domain asset lists needed. Feed-level
+        # landing/raw/clean assets (extraction_assets.py etc.) keep
+        # group_name=<feed friendly_name>, unchanged -- these are two
+        # different axes now (see Roadmap.md "multi-project dbt split").
+        # None keeps superclass behavior, so a bare
+        # DataPlatformDbtTranslator() (e.g. tests/test_dbt_assets.py) is
+        # unaffected.
         if self._group_name is not None:
             return self._group_name
         return super().get_group_name(dbt_resource_props)
@@ -101,21 +102,52 @@ def _run_dbt_build_and_log_stages(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
     postgres_metadata: PostgresMetadataResource,
-    feed_friendly_name: str,
+    domain: str,
+    feeds: list[str],
     stages: tuple[str, ...],
     earliest_stage: str,
+    step_name: str,
 ):
     """Shared body for both the transformation and serving dbt asset
     factories below -- same dbt-build-then-log-per-stage shape as before
-    the split, just parameterized by which stage subset each one owns.
-    `dbt.cli(..., context=context)` derives the matching dbt `--select`/
-    `--exclude` automatically from the decorator's own select=/exclude=
-    (see _build_transformation_assets_for_feed/_build_serving_assets_for_feed
-    below) -- no need to pass them again here.
+    the domain split, now parameterized by domain + the feeds that domain
+    spans (a domain job can bundle several feeds' models, see Roadmap.md
+    "multi-project dbt split"). `dbt.cli(..., context=context)` derives the
+    matching dbt `--select`/`--exclude` automatically from the decorator's
+    own select=/exclude= (see _build_transformation_assets_for_domain/
+    _build_serving_assets_for_domain below) -- no need to pass them again
+    here, only the per-feed cherry-pick excludes below are extra.
+
+    Per-feed cherry-picking: pipeline_steps gating used to be a static
+    per-feed check before this ever ran (one feed, one @dbt_assets def).
+    Now that a domain job can span multiple feeds, which of them have
+    `step_name` deselected has to be resolved live, per run, and passed as
+    `--exclude tag:<feed>` extra CLI args -- the per-feed `tag:<feed>` tag
+    generate_model_scaffolds.py/generate_ods_models.py/
+    generate_serve_views.py already stamp on every generated file is what
+    makes this possible without any new dbt tagging convention.
     """
-    updates_enabled_map = postgres_metadata.get_updates_enabled_map(feed_friendly_name)
+    data_feeds = {feed: postgres_metadata.get_data_feed(feed) for feed in feeds}
+    excluded_feeds = [
+        feed for feed, data_feed in data_feeds.items()
+        if step_name not in parse_selected_steps(data_feed["pipeline_steps"])
+    ]
+    if len(excluded_feeds) == len(feeds):
+        # Every feed in this domain has this step deselected this run --
+        # skip dbt entirely, same no-op behavior the old static per-feed
+        # check gave for a single-feed build, just resolved dynamically.
+        return
+
+    updates_enabled_map: dict[str, bool] = {}
+    for feed in feeds:
+        updates_enabled_map.update(postgres_metadata.get_updates_enabled_map(feed))
+
+    extra_args = []
+    for feed in excluded_feeds:
+        extra_args += ["--exclude", f"tag:{feed}"]
+
     invocation = dbt.cli(
-        ["build", "--vars", json.dumps({"updates_enabled_by_model": updates_enabled_map})],
+        ["build", "--vars", json.dumps({"updates_enabled_by_model": updates_enabled_map}), *extra_args],
         context=context,
     )
     yield from invocation.stream()
@@ -149,20 +181,14 @@ def _run_dbt_build_and_log_stages(
     if not run_results.get("results") and not invocation.is_successful():
         stage_ok[earliest_stage] = False
         stage_error[earliest_stage] = str(
-            invocation.get_error() or f"dbt build failed for feed '{feed_friendly_name}' before any node ran"
+            invocation.get_error() or f"dbt build failed for domain '{domain}' before any node ran"
         )
 
     for stage in stages:
         with postgres_metadata.log_data_model_stage(
-            model_key=feed_friendly_name,
-            uses_feeds=feed_friendly_name,
-            # Every lakehouse_models row built today uses model_schema
-            # 'model' (staging/serve are naming-convention-only, not
-            # separately tracked lakehouse_models rows) -- hardcoded rather
-            # than looked up per stage since a single data_processing_runs
-            # row spans all three stages and needs one tracking_group
-            # value. Revisit once a second model_schema is actually in use.
-            tracking_group="model",
+            model_key=domain,
+            uses_feeds=",".join(feeds),
+            tracking_group=domain,
             stage=stage,
             dagster_run_id=context.run_id,
         ) as log:
@@ -171,82 +197,112 @@ def _run_dbt_build_and_log_stages(
             log.set_counts(rows_updated=stage_rows.get(stage))
 
 
-def _build_transformation_assets_for_feed(feed_friendly_name: str):
-    """clean -> staging -> model for one feed -- the 'transformation'
+def _build_transformation_assets_for_domain(domain: str, feeds: list[str], dbt_project: DbtProject):
+    """clean -> staging -> model for one domain -- the 'transformation'
     pipeline step. Excludes the generated serve views (see
-    _build_serving_assets_for_feed) so transformation and serving are two
+    _build_serving_assets_for_domain) so transformation and serving are two
     independently selectable dbt build invocations, not one bundled
-    command -- required for a feed to genuinely skip serving while still
+    command -- required for a domain to genuinely skip serving while still
     running transformation (see the master pipeline / cherry-picking
     design, metadata/DataModel.md's `pipeline_steps` section).
 
-    One @dbt_assets function per feed, not one for the whole project, same
-    reasoning as before the split: a single function running `dbt build`
-    across every feed's models would have to sit under one concurrency
-    pool, wrongly serializing unrelated feeds (Learnings.md, Phase 5).
+    select=/exclude= no longer need a `tag:<feed>` term to scope down to
+    one feed out of a shared manifest -- this domain's manifest ONLY ever
+    contains this domain's own models (compile isolation, see Roadmap.md
+    "multi-project dbt split"), so exclude=_SERVING_LAYER_TAG alone is
+    already the full transformation set. Per-feed tags still matter for the
+    cherry-picking done inside _run_dbt_build_and_log_stages, just not for
+    this selector.
+
+    One @dbt_assets function per domain, not one for the whole platform,
+    same reasoning as before the split: a single function running
+    `dbt build` across every domain's models would have to sit under one
+    concurrency pool, wrongly serializing unrelated domains (Learnings.md,
+    Phase 5).
+
+    dbt_cli is constructed HERE, directly (`DbtCliResource(project_dir=dbt_project)`,
+    a plain object, not injected via Dagster's `resources={}` DI), and closed
+    over by the returned function rather than taken as a `dbt: DbtCliResource`
+    parameter. This deliberately diverges from the multi-project-dbt-split
+    plan's original proposal (N uniquely-keyed DbtCliResource resources in
+    Definitions) -- confirmed against the installed dagster-dbt source that
+    Dagster resolves a function's resource parameters by NAME against the
+    Definitions-level resources={} dict, so every domain's function using the
+    literal parameter name `dbt` would collide on one shared key/project dir.
+    DbtCliResource is a plain ConfigurableResource (pydantic model with a
+    .cli() method) and works identically whether Dagster-injected or
+    hand-constructed, so closing over a per-domain instance sidesteps the
+    naming collision entirely with no resources={} wiring needed for it at
+    all -- only postgres_metadata (still genuinely shared/singleton) stays a
+    real injected resource parameter.
     """
+    dbt_cli = DbtCliResource(project_dir=dbt_project)
 
     @dbt_assets(
         manifest=dbt_project.manifest_path,
-        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=feed_friendly_name),
-        select=f"tag:{feed_friendly_name}",
+        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=domain),
         exclude=_SERVING_LAYER_TAG,
-        pool=f"feed:{feed_friendly_name}",
-        name=f"dbt_{feed_friendly_name}_transformation_assets",
+        pool=f"domain:{domain}",
+        name=f"dbt_{domain}_transformation_assets",
     )
-    def _transformation_assets_for_feed(
-        context: AssetExecutionContext, dbt: DbtCliResource, postgres_metadata: PostgresMetadataResource
+    def _transformation_assets_for_domain(
+        context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
     ):
-        data_feed = postgres_metadata.get_data_feed(feed_friendly_name)
-        if "transformation" not in parse_selected_steps(data_feed["pipeline_steps"]):
-            return
         yield from _run_dbt_build_and_log_stages(
             context=context,
-            dbt=dbt,
+            dbt=dbt_cli,
             postgres_metadata=postgres_metadata,
-            feed_friendly_name=feed_friendly_name,
+            domain=domain,
+            feeds=feeds,
             stages=("staging", "model"),
             earliest_stage="staging",
+            step_name="transformation",
         )
 
-    return _transformation_assets_for_feed
+    return _transformation_assets_for_domain
 
 
-def _build_serving_assets_for_feed(feed_friendly_name: str):
-    """model -> serve for one feed -- the 'serving' pipeline step.
-    Intersection select (comma = AND in dbt's selector syntax): only this
-    feed's generated `_latest`/`_historical` views, nothing else."""
+def _build_serving_assets_for_domain(domain: str, feeds: list[str], dbt_project: DbtProject):
+    """model -> serve for one domain -- the 'serving' pipeline step.
+    select=_SERVING_LAYER_TAG alone (no `tag:<feed>` intersection needed,
+    same compile-isolation reasoning as the transformation factory above):
+    every generated `_latest`/`_historical` view in this domain's own
+    manifest, nothing else. Same closed-over dbt_cli construction as
+    _build_transformation_assets_for_domain above -- see its docstring for
+    why this isn't a Dagster-injected resource parameter."""
+    dbt_cli = DbtCliResource(project_dir=dbt_project)
 
     @dbt_assets(
         manifest=dbt_project.manifest_path,
-        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=feed_friendly_name),
-        select=f"tag:{feed_friendly_name},{_SERVING_LAYER_TAG}",
-        pool=f"feed:{feed_friendly_name}",
-        name=f"dbt_{feed_friendly_name}_serving_assets",
+        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=domain),
+        select=_SERVING_LAYER_TAG,
+        pool=f"domain:{domain}",
+        name=f"dbt_{domain}_serving_assets",
     )
-    def _serving_assets_for_feed(
-        context: AssetExecutionContext, dbt: DbtCliResource, postgres_metadata: PostgresMetadataResource
+    def _serving_assets_for_domain(
+        context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
     ):
-        data_feed = postgres_metadata.get_data_feed(feed_friendly_name)
-        if "serving" not in parse_selected_steps(data_feed["pipeline_steps"]):
-            return
         yield from _run_dbt_build_and_log_stages(
             context=context,
-            dbt=dbt,
+            dbt=dbt_cli,
             postgres_metadata=postgres_metadata,
-            feed_friendly_name=feed_friendly_name,
+            domain=domain,
+            feeds=feeds,
             stages=("serve",),
             earliest_stage="serve",
+            step_name="serving",
         )
 
-    return _serving_assets_for_feed
+    return _serving_assets_for_domain
 
 
-# No hardcoded per-feed calls here anymore -- scripts/generate_dagster_pipeline.py
-# calls _build_transformation_assets_for_feed(...)/_build_serving_assets_for_feed(...)
-# once per active data_feed row (a live Postgres read at build/start time, not
+# No hardcoded per-domain calls here anymore -- scripts/generate_dagster_pipeline.py
+# calls _build_transformation_assets_for_domain(...)/_build_serving_assets_for_domain(...)
+# once per resolved domain (a live Postgres read at build/start time, not
 # at this module's import time) and writes the results into
-# pipeline_generated.TRANSFORMATION_ASSETS/SERVING_ASSETS. Call each factory at most once per feed
-# anywhere in the codebase -- calling either twice for the same feed would
-# construct two different @dbt_assets defs both claiming the same AssetKeys,
-# which Dagster rejects.
+# pipeline_generated.TRANSFORMATION_ASSETS/SERVING_ASSETS, constructing one
+# DbtProject per domain itself (see that script for why, not definitions.py --
+# a deliberate deviation from the original plan). Call each factory at most
+# once per domain anywhere in the codebase -- calling either twice for the
+# same domain would construct two different @dbt_assets defs both claiming
+# the same AssetKeys, which Dagster rejects.

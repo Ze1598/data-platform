@@ -1,0 +1,14 @@
+name: "shared"
+version: "1.0.0"
+config-version: 2
+
+# Macros only -- no models/profiles of its own. Never `dbt parse`d
+# standalone; only ever installed into a domain project via that
+# project's dependencies.yml (packages: - local: ../../_shared). See
+# Roadmap.md "multi-project dbt split" for why macros live here instead
+# of being duplicated per domain.
+macro-paths: ["macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"

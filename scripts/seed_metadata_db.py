@@ -199,6 +199,8 @@ def seed_lakehouse_model(
     cur,
     *,
     friendly_name: str,
+    table_name: str,
+    model_schema: str,
     table_type: str,
     depends_on_feed_friendly_names: list[str],
     owning_feed_friendly_name: str,
@@ -206,7 +208,6 @@ def seed_lakehouse_model(
     tracked_columns: list[str],
     scd_type: int,
     deletes_enabled: bool,
-    model_schema: str = "model",
     load_type: int = 0,
     updates_enabled: bool = True,
     pipeline_steps: str = "2,3",
@@ -219,15 +220,20 @@ def seed_lakehouse_model(
         f"owning_feed_friendly_name={owning_feed_friendly_name!r} must be one of "
         f"depends_on_feed_friendly_names={depends_on_feed_friendly_names!r}"
     )
+    # table_name/model_schema have no default (unlike model_schema's old
+    # 'model' default, pre multi-project-dbt-split) -- every caller must be
+    # explicit about which domain (dbt/domains/<model_schema>/) a model
+    # belongs to and what its technical identifier is, see
+    # metadata/DataModel.md, lakehouse_models.table_name/model_schema.
     cur.execute(
         """
         INSERT INTO lakehouse_models (
-            friendly_name, model_schema, table_type, business_key_columns,
+            friendly_name, table_name, model_schema, table_type, business_key_columns,
             tracked_columns, scd_type, updates_enabled, deletes_enabled,
             load_type, depends_on_feeds, owning_feed_id, pipeline_steps
         )
         VALUES (
-            %(friendly_name)s, %(model_schema)s, %(table_type)s, %(business_key_columns)s,
+            %(friendly_name)s, %(table_name)s, %(model_schema)s, %(table_type)s, %(business_key_columns)s,
             %(tracked_columns)s, %(scd_type)s, %(updates_enabled)s, %(deletes_enabled)s,
             %(load_type)s,
             (SELECT string_agg(id::text, ',') FROM data_feed WHERE friendly_name = ANY(%(depends_on)s)),
@@ -238,6 +244,7 @@ def seed_lakehouse_model(
         """,
         {
             "friendly_name": friendly_name,
+            "table_name": table_name,
             "model_schema": model_schema,
             "table_type": table_type,
             "business_key_columns": psycopg.types.json.Json(business_key_columns),
@@ -400,6 +407,8 @@ def main() -> None:
         seed_lakehouse_model(
             cur,
             friendly_name="dim_customer_snapshot",
+            table_name="sales_dim_customer",
+            model_schema="sales",
             table_type="dimension",
             depends_on_feed_friendly_names=["customers"],
             owning_feed_friendly_name="customers",
@@ -412,6 +421,8 @@ def main() -> None:
         seed_lakehouse_model(
             cur,
             friendly_name="dim_branch",
+            table_name="sales_dim_branch",
+            model_schema="sales",
             table_type="dimension",
             depends_on_feed_friendly_names=["sales"],
             owning_feed_friendly_name="sales",
@@ -424,6 +435,8 @@ def main() -> None:
         seed_lakehouse_model(
             cur,
             friendly_name="fct_sales",
+            table_name="sales_fct_sales",
+            model_schema="sales",
             table_type="fact",
             depends_on_feed_friendly_names=["sales"],
             owning_feed_friendly_name="sales",
@@ -442,6 +455,8 @@ def main() -> None:
         seed_lakehouse_model(
             cur,
             friendly_name="fct_daily_financial_activity",
+            table_name="sales_fct_daily_financial_activity",
+            model_schema="sales",
             table_type="fact",
             depends_on_feed_friendly_names=["sales", "financial_transactions"],
             owning_feed_friendly_name="financial_transactions",

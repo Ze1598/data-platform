@@ -1,3 +1,4 @@
+import re
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
@@ -7,6 +8,24 @@ from dagster import ConfigurableResource
 
 _DATA_FEED_STAGES = ("landing", "raw", "clean")
 _DATA_MODEL_STAGES = ("staging", "model", "serve")
+
+# Mirrors scripts/generate_domain_projects.py::slugify_domain() exactly --
+# not imported, since scripts/ and this orchestration package are separate
+# uv workspace members with no shared module today (same "mirrored, not
+# imported" convention as this project's other cross-script helpers). Used
+# by resolve_model_domain_and_feeds() below to compute the same domain key
+# DOMAIN_JOBS (pipeline_generated.py) is keyed by, from a live
+# lakehouse_models.model_schema read.
+_SLUG_INVALID = re.compile(r"[^a-z0-9_]+")
+
+
+def _slugify_domain(raw: str) -> str:
+    slug = _SLUG_INVALID.sub("_", raw.strip().lower()).strip("_")
+    if not slug:
+        raise ValueError(f"model_schema {raw!r} has no valid characters for a domain name")
+    if slug[0].isdigit():
+        slug = f"d_{slug}"
+    return slug
 
 
 class IngestionStepLog:
@@ -79,6 +98,58 @@ class PostgresMetadataResource(ConfigurableResource):
             if row is None:
                 raise ValueError(f"No data_feed with friendly_name={friendly_name!r}")
             return row
+
+    def resolve_model_domain_and_feeds(self, model_friendly_name: str) -> tuple[str, list[str]]:
+        """Resolves a lakehouse_models row's domain (its model_schema value,
+        slugified the same way dbt/domains/<domain>/ itself is named -- see
+        Roadmap.md "multi-project dbt split") plus the union of
+        depends_on_feeds across every active lakehouse_models row sharing
+        that same model_schema -- one level, not recursive (confirmed
+        design: a model_schema's own dependent feeds only, not a transitive
+        closure). Backs pipeline_generated.py's resolve_run_plan_for_model()
+        -- "trigger by lakehouse model" launches these feed jobs, then the
+        resolved domain's job."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT model_schema FROM lakehouse_models WHERE friendly_name = %s AND is_active = true",
+                (model_friendly_name,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"No active lakehouse_models row with friendly_name={model_friendly_name!r}")
+            model_schema = row[0]
+
+            cur.execute(
+                """
+                SELECT DISTINCT df.friendly_name
+                FROM lakehouse_models lm
+                JOIN data_feed df ON df.id::text = ANY(string_to_array(lm.depends_on_feeds, ','))
+                WHERE lm.model_schema = %s AND lm.is_active = true AND df.is_active = true
+                ORDER BY df.friendly_name
+                """,
+                (model_schema,),
+            )
+            feeds = [r[0] for r in cur.fetchall()]
+        return _slugify_domain(model_schema), feeds
+
+    def get_batch_group_feeds(self, batch_group_friendly_name: str) -> list[str]:
+        """Every active feed sharing this batch_group -- backs
+        pipeline_generated.py's resolve_run_plan_for_batch_group()
+        ("trigger by batch group"): feed jobs only, no domain job implied.
+        batch_group and model_schema stay two structurally separate axes
+        (see data_processing_runs.tracking_group_type's existing design) --
+        a batch's feeds may span multiple domains, so there is no single
+        domain job to launch here."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT friendly_name FROM data_feed
+                WHERE batch_group_friendly_name = %s AND is_active = true
+                ORDER BY friendly_name
+                """,
+                (batch_group_friendly_name,),
+            )
+            return [r[0] for r in cur.fetchall()]
 
     def update_watermark(self, *, data_feed_id: str, watermark_value: str, run_id: str) -> None:
         """Advances data_feed.last_watermark_value (Phase 9, Roadmap.md

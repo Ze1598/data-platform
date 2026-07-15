@@ -101,6 +101,19 @@ create table data_feed (
     -- "forgot to disable the flag", not an error) -- a hand-modeled
     -- data model always takes precedence.
     ods_enabled               boolean not null default false,
+    -- which ODS "domain" (dbt project, see dbt/domains/) this feed's ODS
+    -- table belongs to -- each batch group producing ODS output is its own
+    -- legitimate individual ODS lakehouse model, same role
+    -- lakehouse_models.model_schema plays for hand-modeled domains. Only
+    -- meaningful when ods_enabled=true. Defaults to this row's own
+    -- batch_group_friendly_name when a feed first enables ODS (frontend
+    -- convenience), but is a real, independently-stored, independently
+    -- editable value from that point on, not a live derivation -- multiple
+    -- ods_enabled feeds sharing the same batch_ods_name group into one ODS
+    -- domain project. Allowed to collide with a real model_schema value
+    -- (both would just mean that domain hosts hand-modeled and
+    -- auto-generated ODS tables together); not guarded against.
+    batch_ods_name            text,
     constraint chk_data_feed_watermark_column check (
         extraction_type = 'full' or watermark_column is not null
     )
@@ -180,9 +193,28 @@ insert into pipeline_steps (id, label, description) values
 -- ---------------------------------------------------------------------------
 create table lakehouse_models (
     id                    uuid primary key default gen_random_uuid(),
-    -- this is what dbt ref() resolves against, so uniqueness is load-bearing
+    -- human-readable display label only -- CRUD/UI identity, not a
+    -- technical identifier. table_name below is what dbt ref()/the
+    -- physical alias/the dbt model filename actually key off.
     friendly_name         text not null unique,
-    -- which Trino/Iceberg schema this table lands in
+    -- the technical identifier: drives both the physical table alias and
+    -- the dbt model's own filename, following the
+    -- "<model_schema>_<fct|dim>_<name>" convention verbatim (entered as a
+    -- complete string, not composed from parts) -- see
+    -- scripts/generate_model_scaffolds.py. This is what makes
+    -- cross-domain naming collisions structurally impossible: two
+    -- domains' scaffolded files are never named the same thing, since the
+    -- domain prefix is baked into the filename itself, not just the alias.
+    table_name            text not null unique,
+    -- which "domain" (dbt project, see dbt/domains/) this model belongs
+    -- to -- a business/domain grouping of related lakehouse model tables,
+    -- not tied to a single source system (a domain's models can depend on
+    -- feeds from multiple different source_system rows). Physical
+    -- staging/model/serve Trino/Iceberg schema NAMES are unaffected by
+    -- this -- those stay exactly as today (pipeline-stage boundaries, not
+    -- domain boundaries); domain identity is expressed via table_name's
+    -- naming convention above, and via which dbt project a model's files
+    -- physically live in, not via a separate physical schema per domain.
     model_schema          text not null,
     batch_hierarchy       int not null default 0,
     table_type            text not null check (table_type in ('fact', 'dimension')),

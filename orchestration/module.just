@@ -14,6 +14,7 @@ start:
     just _ensure-venv-visible
     just orchestration::seed-financial-landing
     just orchestration::generate-pipeline-jobs
+    just orchestration::generate-domain-projects
     just orchestration::generate-sources
     just orchestration::generate-serve-views
     just orchestration::generate-deletion-synthesis-views
@@ -209,6 +210,22 @@ generate-pipeline-jobs:
     set -euo pipefail
     just _ensure-venv-visible
     cd {{justfile_directory()}} && uv run python scripts/generate_dagster_pipeline.py
+
+# Scaffold any new domain's dbt project skeleton (dbt/domains/<domain>/) from
+# lakehouse_models.model_schema + data_feed.batch_ods_name
+# (scripts/generate_domain_projects.py) -- must run before every other
+# generate-* recipe below, since they all write INTO a domain's own
+# directory tree (models/staging/, models/model/, etc.) and expect it to
+# already exist. Create-if-missing, same philosophy as
+# generate-model-scaffolds -- an existing domain's dbt_project.yml may have
+# been hand-edited (materialization overrides, etc.), so it's never
+# touched, only genuinely new domains get scaffolded. Also runnable
+# standalone after a new model_schema/batch_ods_name value appears.
+generate-domain-projects:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_domain_projects.py
 
 # Regenerate the dbt `clean` source declarations
 # (models/staging/_sources.yml) from every active data_feed row

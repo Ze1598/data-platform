@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 
 import pandas as pd
@@ -21,6 +22,11 @@ st.title("Data Feeds")
 EXTRACTION_TYPES = ["full", "incremental"]
 PROCESSING_ENGINES = ["polars", "spark"]
 NEW_BATCH_OPTION = "<New batch>"
+# Same shape scripts/generate_domain_projects.py::slugify_domain() expects
+# to receive -- validated HERE (not shared cross-package) so a value
+# reaching that script's live SELECT DISTINCT is already a valid dbt
+# project/directory name. See 3_Lakehouse_Models.py's identical constant.
+_DOMAIN_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 engine = get_engine()
 df = fetch_table(engine, "data_feed", order_by="friendly_name")
@@ -128,6 +134,26 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "always take precedence. See Roadmap.md, 'ODS layer'.",
         key=f"{key_prefix}_ods_enabled",
     )
+    # Only shown once ODS is enabled -- no st.form() means this appears/
+    # disappears live in the same rerun, same reactive pattern as
+    # render_batch_picker's "New batch friendly name" field. Defaults to
+    # this feed's own batch group name the FIRST time ODS is enabled (a
+    # sensible starting point -- the feed's batch is already a natural
+    # grouping), but is a real, independently-stored column thereafter --
+    # defaults["batch_ods_name"] (the stored value) always wins over the
+    # batch-group-derived default when present, so editing this field never
+    # gets silently overwritten by a later batch_group rename. See
+    # data_feed.batch_ods_name, Roadmap.md "multi-project dbt split".
+    if ods_enabled:
+        batch_ods_name = st.text_input(
+            "ODS domain name", value=defaults["batch_ods_name"] or batch_group_friendly_name or "",
+            help="Which domain/dbt project (dbt/domains/<domain>/) this feed's ODS table lands in -- "
+            "each batch group producing ODS output is its own legitimate individual ODS lakehouse "
+            "model. Defaults to this feed's batch group name but is stored and editable independently.",
+            key=f"{key_prefix}_batch_ods_name",
+        )
+    else:
+        batch_ods_name = None
     is_active = st.checkbox("Active", value=defaults["is_active"], key=f"{key_prefix}_is_active")
     submitted = st.button(submit_label, key=f"{key_prefix}_submit")
     return submitted, {
@@ -144,6 +170,7 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "processing_engine": processing_engine,
         "pipeline_step_labels": pipeline_step_labels,
         "ods_enabled": ods_enabled,
+        "batch_ods_name": batch_ods_name,
         "is_active": is_active,
     }
 
@@ -172,6 +199,18 @@ def build_values(form_values: dict) -> dict | None:
         st.error("At least one pipeline step is required.")
         return None
 
+    if form_values["ods_enabled"]:
+        if not form_values["batch_ods_name"]:
+            st.error("ODS domain name is required when ODS is enabled.")
+            return None
+        if not _DOMAIN_SLUG_RE.match(form_values["batch_ods_name"]):
+            st.error(
+                f"ODS domain name {form_values['batch_ods_name']!r} must be lowercase letters, digits, "
+                "and underscores, starting with a letter -- it becomes a dbt project directory name "
+                "verbatim."
+            )
+            return None
+
     return {
         "source_system_id": source_systems[form_values["source_code"]],
         "friendly_name": form_values["friendly_name"],
@@ -186,6 +225,7 @@ def build_values(form_values: dict) -> dict | None:
         "processing_engine": form_values["processing_engine"],
         "pipeline_steps": ",".join(str(pipeline_step_id_by_label[label]) for label in form_values["pipeline_step_labels"]),
         "ods_enabled": form_values["ods_enabled"],
+        "batch_ods_name": form_values["batch_ods_name"] if form_values["ods_enabled"] else None,
         "is_active": form_values["is_active"],
     }
 
@@ -212,6 +252,7 @@ if mode == "Add new":
             "processing_engine": "polars",
             "pipeline_step_labels": ["extraction", "validation", "transformation", "serving"],
             "ods_enabled": False,
+            "batch_ods_name": None,
             "is_active": True,
         },
         "Create",
@@ -253,6 +294,7 @@ elif mode == "Edit existing":
                 "processing_engine": row["processing_engine"],
                 "pipeline_step_labels": _pipeline_step_ids_to_labels(row["pipeline_steps"]),
                 "ods_enabled": bool(row["ods_enabled"]),
+                "batch_ods_name": safe_str(row["batch_ods_name"]),
                 "is_active": bool(row["is_active"]),
             },
             "Save changes",

@@ -1,15 +1,14 @@
 import os
 
 from dagster import Definitions
-from dagster_dbt import DbtCliResource
 
-from dagster_data_platform.assets.dbt_assets import dbt_project
 from dagster_data_platform.assets.extraction_assets import clean_customers, landing_customers, raw_customers
 from dagster_data_platform.assets.financial_assets import archive_financial_transactions, financial_transactions_sensor
 from dagster_data_platform.assets.sales_assets import clean_sales, landing_sales, raw_sales
 from dagster_data_platform.pipeline_generated import (
     ALL_CONNECTOR_ASSETS,
     ALL_DBT_ASSETS,
+    ALL_DOMAIN_JOBS,
     ALL_FEED_JOBS,
     ALL_PIPELINE_INIT_ASSETS,
     ALL_SCHEDULES,
@@ -24,6 +23,20 @@ from dagster_data_platform.resources.postgres_metadata_resource import PostgresM
 # (see ALL_CONNECTOR_ASSETS in pipeline_generated.py). customers/sales stay
 # hand-written -- their source_system.connector_kind is NULL (synthetic
 # in-memory stub generators, not a real connector-backed source).
+#
+# No "dbt" resource entry here anymore, and no per-domain DbtProject/
+# DbtCliResource wiring either (see Roadmap.md "multi-project dbt split") --
+# each domain's dbt assets close over their own DbtCliResource instance
+# directly inside dbt_assets.py's _build_transformation_assets_for_domain/
+# _build_serving_assets_for_domain (constructed from a DbtProject discovered
+# via pipeline_generated.py's own dbt/domains/*/ glob), rather than being
+# Dagster-injected via a resources={} key. That's a deliberate deviation
+# from registering N uniquely-keyed resources here: every domain's
+# @dbt_assets function would otherwise need a uniquely-NAMED parameter (not
+# just a unique resource instance) for Dagster's by-name resource matching
+# to route each domain to its own project dir -- see
+# _build_transformation_assets_for_domain's docstring for the full
+# reasoning, confirmed against the installed dagster-dbt source.
 defs = Definitions(
     assets=[
         landing_customers,
@@ -37,11 +50,10 @@ defs = Definitions(
         *ALL_CONNECTOR_ASSETS,
         *ALL_DBT_ASSETS,
     ],
-    jobs=ALL_FEED_JOBS,
+    jobs=ALL_FEED_JOBS + ALL_DOMAIN_JOBS,
     sensors=[financial_transactions_sensor],
     schedules=ALL_SCHEDULES,
     resources={
-        "dbt": DbtCliResource(project_dir=dbt_project.project_dir, profiles_dir=dbt_project.profiles_dir),
         "postgres_metadata": PostgresMetadataResource(
             host=os.environ.get("POSTGRES_HOST", "localhost"),
             port=int(os.environ.get("POSTGRES_PORT", "5432")),

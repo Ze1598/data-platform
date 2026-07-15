@@ -1,4 +1,5 @@
 import json
+import re
 
 import pandas as pd
 import streamlit as st
@@ -19,9 +20,20 @@ st.title("Lakehouse Models")
 
 TABLE_TYPES = ["fact", "dimension"]
 SCD_TYPES = [1, 2]
+NEW_SCHEMA_OPTION = "<New schema>"
+# Same shape as scripts/generate_domain_projects.py::slugify_domain() expects
+# to receive -- validated HERE (not shared cross-package, frontend/ and
+# scripts/ are separate uv workspace members) so a value reaching that
+# script's live SELECT DISTINCT is already a valid dbt project/directory
+# name, not just whatever free text a user typed (see Roadmap.md
+# "multi-project dbt split").
+_DOMAIN_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 engine = get_engine()
 df = fetch_table(engine, "lakehouse_models", order_by="friendly_name")
+existing_model_schemas = sorted(
+    df["model_schema"].dropna().unique().tolist()
+) if not df.empty else []
 data_feeds_df = fetch_table(engine, "data_feed", order_by="friendly_name")
 data_feed_lookup = fetch_lookup(engine, "data_feed", code_col="friendly_name")
 data_feed_name_by_id = {str(v): k for k, v in data_feed_lookup.items()}
@@ -64,16 +76,45 @@ mode = st.radio("Action", ["Add new", "Edit existing", "Delete existing"], horiz
 # 1_Source_Systems.py's identical pattern/comment).
 
 
+def render_model_schema_picker(default_schema: str | None, key_prefix: str):
+    # Mirrors 2_Data_Feeds.py::render_batch_picker's exact pattern --
+    # simpler here since model_schema has no backing UUID, just a bare
+    # string (a domain/business grouping of related lakehouse model
+    # tables, see metadata/DataModel.md -- NOT a physical Trino/Iceberg
+    # schema anymore, that meaning moved to a fixed 'model' literal once
+    # the multi-project dbt split landed).
+    options = [NEW_SCHEMA_OPTION] + existing_model_schemas
+    default_index = options.index(default_schema) if default_schema in existing_model_schemas else 0
+    choice = st.selectbox(
+        "Model schema (domain)", options, index=default_index, key=f"{key_prefix}_model_schema_choice",
+        help="Which domain/dbt project (dbt/domains/<domain>/) this model belongs to -- a business "
+        "grouping, not tied to any single source. Pick an existing domain or create a new one.",
+    )
+    if choice == NEW_SCHEMA_OPTION:
+        return st.text_input(
+            "New domain name", value=default_schema or "", key=f"{key_prefix}_new_model_schema",
+            help="lowercase letters, digits, underscores, starting with a letter -- becomes the dbt "
+            "project directory name verbatim.",
+        )
+    return choice
+
+
 def render_form(defaults: dict, submit_label: str, key_prefix: str):
     feed_names = list(data_feed_lookup.keys())
     friendly_name = st.text_input(
         "Friendly name", value=defaults["friendly_name"], disabled=defaults["friendly_name_locked"],
+        help="Pure display label -- not a technical identifier. See 'Table name' below for that.",
         key=f"{key_prefix}_friendly_name",
     )
-    model_schema = st.text_input(
-        "Model schema", value=defaults["model_schema"], help="Which Trino/Iceberg schema this table lands in",
-        key=f"{key_prefix}_model_schema",
+    table_name = st.text_input(
+        "Table name", value=defaults["table_name"], disabled=defaults["table_name_locked"],
+        help="The technical identifier -- drives both the physical table alias and the dbt model's own "
+        "filename. Enter the complete name following the '<model_schema>_<fct|dim>_<name>' convention "
+        "(e.g. sales_dim_customer). Locked after creation: renaming here would orphan the already-"
+        "scaffolded file rather than rename it (see scripts/generate_model_scaffolds.py).",
+        key=f"{key_prefix}_table_name",
     )
+    model_schema = render_model_schema_picker(defaults["model_schema"], key_prefix)
     batch_hierarchy = st.number_input(
         "Batch hierarchy", value=defaults["batch_hierarchy"], min_value=0, step=1, key=f"{key_prefix}_batch_hierarchy"
     )
@@ -151,6 +192,7 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
     submitted = st.button(submit_label, key=f"{key_prefix}_submit")
     return submitted, {
         "friendly_name": friendly_name,
+        "table_name": table_name,
         "model_schema": model_schema,
         "batch_hierarchy": int(batch_hierarchy),
         "table_type": table_type,
@@ -178,6 +220,17 @@ def build_values(form_values: dict) -> dict | None:
 
     if not form_values["friendly_name"] or not form_values["model_schema"]:
         st.error("Friendly name and model schema are required.")
+        return None
+
+    if not form_values["table_name"]:
+        st.error("Table name is required.")
+        return None
+
+    if not _DOMAIN_SLUG_RE.match(form_values["model_schema"]):
+        st.error(
+            f"Model schema {form_values['model_schema']!r} must be lowercase letters, digits, and "
+            "underscores, starting with a letter -- it becomes a dbt project directory name verbatim."
+        )
         return None
 
     if not form_values["depends_on_feed_names"]:
@@ -215,6 +268,7 @@ def build_values(form_values: dict) -> dict | None:
 
     return {
         "friendly_name": form_values["friendly_name"],
+        "table_name": form_values["table_name"],
         "model_schema": form_values["model_schema"],
         "batch_hierarchy": form_values["batch_hierarchy"],
         "table_type": form_values["table_type"],
@@ -243,7 +297,9 @@ if mode == "Add new":
         {
             "friendly_name": "",
             "friendly_name_locked": False,
-            "model_schema": "model",
+            "table_name": "",
+            "table_name_locked": False,
+            "model_schema": "",
             "batch_hierarchy": 0,
             "table_type": "dimension",
             "depends_on_feed_names": [],
@@ -285,6 +341,8 @@ elif mode == "Edit existing":
             {
                 "friendly_name": selected_name,
                 "friendly_name_locked": True,
+                "table_name": safe_str(row["table_name"]),
+                "table_name_locked": True,
                 "model_schema": safe_str(row["model_schema"]),
                 "batch_hierarchy": int(row["batch_hierarchy"]),
                 "table_type": row["table_type"],
@@ -310,6 +368,7 @@ elif mode == "Edit existing":
             values = build_values(form_values)
             if values is not None:
                 values.pop("friendly_name")  # friendly_name is immutable once created
+                values.pop("table_name")  # table_name is immutable once created -- see the field's own help text
                 try:
                     update_row(engine, "lakehouse_models", "id", row["id"], values, json_columns=JSON_COLUMNS)
                     st.success(f"Updated '{selected_name}'")

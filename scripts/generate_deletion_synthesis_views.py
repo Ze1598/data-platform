@@ -1,7 +1,17 @@
 """Generates the model layer's deletion-synthesis intermediate models
-(`int_<feed>_with_deletes.sql`) from `lakehouse_models` + `schema_registry` —
-one per `deletes_enabled=true` lakehouse_models row, so nobody hand-authors
-this model per feed (Roadmap.md "Deletion mechanism").
+(`int_<table_name>_with_deletes.sql`) from `lakehouse_models` +
+`schema_registry` -- one per `deletes_enabled=true` lakehouse_models row, so
+nobody hand-authors this model per feed (Roadmap.md "Deletion mechanism").
+Lands inside the row's own domain project
+(dbt/domains/<model_schema>/models/model/dimensions/generated/), not a
+single shared project -- see Roadmap.md "multi-project dbt split". Filename
+keyed by table_name (not the dependent feed's name): domains are separate
+dbt projects with no cross-project ref(), so two lakehouse_models rows in
+different domains that happen to depend on the same feed each need their
+own copy -- table_name is unique per row by construction, so this also
+removes the old feed-name-keyed dedup collision case entirely (see git
+history for the prior "two rows against the same feed would collide"
+limitation).
 
 Deliberately a standalone build-time script, not a Dagster op — same
 reasoning as generate_serve_views.py (dagster-dbt's `@dbt_assets` reads
@@ -22,9 +32,9 @@ feeds has no well-defined "the" clean source to compare against, so it's a
 hard error, not a silent skip (no such row exists today; this generator
 can't correctly handle one until that concept is designed).
 
-Fully regenerates `models/model/dimensions/generated/` on every run (clears
-first) so stale files never linger after a lakehouse_models row's
-deletes_enabled flips or a row is removed.
+Fully regenerates each domain's `models/model/dimensions/generated/` on
+every run (clears first) so stale files never linger after a
+lakehouse_models row's deletes_enabled flips or a row is removed.
 """
 
 import os
@@ -32,6 +42,8 @@ import shutil
 from pathlib import Path
 
 import psycopg
+
+from generate_domain_projects import slugify_domain
 
 CONN_KWARGS = dict(
     host=os.environ.get("POSTGRES_HOST", "localhost"),
@@ -42,13 +54,14 @@ CONN_KWARGS = dict(
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = REPO_ROOT / "dbt" / "data_platform" / "models" / "model" / "dimensions" / "generated"
+DOMAINS_DIR = REPO_ROOT / "dbt" / "domains"
 
 
 def fetch_deletion_synthesis_feeds(cur) -> list[dict]:
     cur.execute(
         """
-        select lm.friendly_name as model_name, lm.depends_on_feeds, lm.business_key_columns
+        select lm.friendly_name as model_name, lm.table_name, lm.model_schema,
+               lm.depends_on_feeds, lm.business_key_columns
         from lakehouse_models lm
         where lm.is_active = true and lm.deletes_enabled = true
         order by lm.friendly_name
@@ -77,6 +90,8 @@ def fetch_deletion_synthesis_feeds(cur) -> list[dict]:
         (feed_id,) = dependency_ids[row["model_name"]]
         feeds.append(
             {
+                "table_name": row["table_name"],
+                "domain": slugify_domain(row["model_schema"]),
                 "feed_id": feed_id,
                 "feed_friendly_name": feed_names[feed_id],
                 "business_key_columns": row["business_key_columns"],
@@ -162,31 +177,28 @@ select * from deleted
 """
 
 
-def generate(feeds: list[dict], columns_by_feed_id: dict[str, list[str]], output_dir: Path) -> list[Path]:
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True)
+def generate(feeds: list[dict], columns_by_feed_id: dict[str, list[str]], domains_dir: Path) -> list[Path]:
+    by_domain: dict[str, list[dict]] = {}
+    for row in feeds:
+        by_domain.setdefault(row["domain"], []).append(row)
 
     written = []
-    seen_feeds = set()
-    for row in feeds:
-        feed_friendly_name = row["feed_friendly_name"]
-        if feed_friendly_name in seen_feeds:
-            # Two lakehouse_models rows deletes_enabled against the same
-            # feed would collide on this filename -- not a case that
-            # exists today, same limitation the original 1:1
-            # staging_source_data_feed_id design had.
-            continue
-        seen_feeds.add(feed_friendly_name)
-        path = output_dir / f"int_{feed_friendly_name}_with_deletes.sql"
-        path.write_text(
-            _render_model(
-                feed_friendly_name=feed_friendly_name,
-                all_columns=columns_by_feed_id[row["feed_id"]],
-                business_key_columns=row["business_key_columns"],
+    for domain, rows in by_domain.items():
+        output_dir = domains_dir / domain / "models" / "model" / "dimensions" / "generated"
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True)
+
+        for row in rows:
+            path = output_dir / f"int_{row['table_name']}_with_deletes.sql"
+            path.write_text(
+                _render_model(
+                    feed_friendly_name=row["feed_friendly_name"],
+                    all_columns=columns_by_feed_id[row["feed_id"]],
+                    business_key_columns=row["business_key_columns"],
+                )
             )
-        )
-        written.append(path)
+            written.append(path)
 
     return written
 
@@ -196,8 +208,8 @@ def main() -> None:
         feeds = fetch_deletion_synthesis_feeds(cur)
         columns_by_feed_id = {row["feed_id"]: fetch_current_columns(cur, row["feed_id"]) for row in feeds}
 
-    written = generate(feeds, columns_by_feed_id, OUTPUT_DIR)
-    print(f"Generated {len(written)} deletion-synthesis model(s) for {len(feeds)} deletes_enabled lakehouse_models row(s) in {OUTPUT_DIR}.")
+    written = generate(feeds, columns_by_feed_id, DOMAINS_DIR)
+    print(f"Generated {len(written)} deletion-synthesis model(s) for {len(feeds)} deletes_enabled lakehouse_models row(s).")
 
 
 if __name__ == "__main__":
