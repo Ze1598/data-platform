@@ -157,6 +157,8 @@ def clean_sales(
         sync_result = postgres_metadata.sync_schema_registry(
             data_feed_id=str(data_feed["id"]),
             discovered_column_definitions=infer_column_definitions(df),
+            metadata_source_pk=data_feed["source_pk"],
+            discovered_primary_key_columns=None,
             created_by="clean_sales",
         )
         df = reconcile_schema(df, sync_result.column_definitions)

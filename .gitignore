@@ -12,7 +12,11 @@ dbt/data_platform/logs/
 dbt/data_platform/profiles/.user.yml
 dbt/data_platform/models/serve/generated/
 dbt/data_platform/models/model/dimensions/generated/
+dbt/data_platform/models/model/ods/generated/
+dbt/data_platform/models/staging/generated/
 orchestration/dagster_data_platform/dagster_data_platform/pipeline_generated.py
+orchestration/dagster_data_platform/dagster_data_platform/clean_source_tables_generated.py
+dbt/data_platform/models/staging/_sources.yml
 
 # DAGSTER_HOME runtime state (telemetry, compute logs, IO manager pickled
 # storage, log queue) — only dagster.yaml itself is source, everything

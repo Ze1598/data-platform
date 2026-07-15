@@ -92,6 +92,15 @@ create table data_feed (
     -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
     last_watermark_value      text,
     is_active                 boolean not null default true,
+    -- when true and this feed owns zero lakehouse_models rows, the platform
+    -- automatically delivers an ODS (Operational Data Store) table: clean
+    -- data pushed as-is (no casts, no transformations) through an
+    -- auto-generated staging + Type 1 model layer, driven purely by
+    -- schema_registry -- see scripts/generate_ods_models.py. Silently
+    -- ignored if any lakehouse_models row references this feed (treated as
+    -- "forgot to disable the flag", not an error) -- a hand-modeled
+    -- data model always takes precedence.
+    ods_enabled               boolean not null default false,
     constraint chk_data_feed_watermark_column check (
         extraction_type = 'full' or watermark_column is not null
     )
@@ -107,6 +116,15 @@ create table schema_registry (
     data_feed_id         uuid not null references data_feed(id),
     version              int not null,
     column_definitions   jsonb not null,
+    -- resolved primary key for this feed, precedence: data_feed.source_pk
+    -- (manual metadata entry) wins if non-empty; else a live-discovered key
+    -- (see connectors.postgres.PostgresConnector.discover_primary_key());
+    -- else empty, meaning no key is known at all. Persisted here (not read
+    -- from data_feed.source_pk directly at runtime) so every consumer reads
+    -- one resolved source of truth. Currently only consumed by the ODS
+    -- layer (scripts/generate_ods_models.py) to decide upsert-by-key vs.
+    -- insert-only.
+    primary_key_columns  jsonb not null default '[]'::jsonb,
     is_current           boolean not null default true,
     effective_from       timestamptz not null default now(),
     effective_to         timestamptz,

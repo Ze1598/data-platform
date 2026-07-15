@@ -5,6 +5,7 @@ from typing import Any, Mapping
 from dagster import AssetExecutionContext, AssetKey
 from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_assets
 
+from dagster_data_platform.clean_source_tables_generated import CLEAN_SOURCE_TABLES
 from dagster_data_platform.pipeline_steps import parse_selected_steps
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 
@@ -18,12 +19,15 @@ _DBT_PROJECT_DIR = REPO_ROOT / "dbt" / "data_platform"
 dbt_project = DbtProject(project_dir=_DBT_PROJECT_DIR, profiles_dir=_DBT_PROJECT_DIR / "profiles")
 dbt_project.prepare_if_dev()
 
-# Every feed with dbt models needs its `clean.<table>` source mapped onto
-# the matching stub asset key (extraction_assets.py / sales_assets.py) so
-# the landing -> raw -> clean chain and dbt's staging model share one asset
-# graph instead of two coincidentally-ordered ones. Add an entry here when
-# a new feed's staging model is added.
-_CLEAN_SOURCE_TABLES = {"customers", "sales", "financial_transactions", "police_crimes", "metadata_runs"}
+# CLEAN_SOURCE_TABLES is generated (scripts/generate_dagster_pipeline.py,
+# clean_source_tables_generated.py) from every active data_feed row --
+# previously a hardcoded set here requiring a manual edit per new feed
+# (the exact same category of gap _sources.yml's own codegen closed, see
+# generate_sources.py). Maps `clean.<table>` sources onto their matching
+# Dagster asset key so the landing -> raw -> clean chain and dbt's
+# staging/ODS models share one asset graph instead of two
+# coincidentally-ordered ones.
+_CLEAN_SOURCE_TABLES = CLEAN_SOURCE_TABLES
 
 # `dbt build --select tag:<feed>` builds staging, model-layer, AND serve
 # objects together in one DAG-ordered invocation (Phase 7 added dim_*/

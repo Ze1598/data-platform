@@ -1429,6 +1429,7 @@ name = "integration-tests"
 version = "0.1.0"
 source = { virtual = "tests/integration" }
 dependencies = [
+    { name = "connectors" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
     { name = "trino" },
@@ -1436,6 +1437,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "connectors", editable = "processing/connectors" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "trino", specifier = ">=0.330" },

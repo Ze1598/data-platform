@@ -120,6 +120,14 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "live, per run, by pipeline_init_<feed>. See metadata/DataModel.md, 'pipeline_steps'.",
         key=f"{key_prefix}_pipeline_steps",
     )
+    ods_enabled = st.checkbox(
+        "ODS enabled", value=defaults["ods_enabled"],
+        help="Deliver an automatic ODS (Operational Data Store) table for this feed -- clean data pushed "
+        "as-is (no casts) through an auto-generated staging + Type 1 model layer, driven purely by "
+        "schema_registry. Silently ignored if this feed already owns any Lakehouse Models rows -- those "
+        "always take precedence. See Roadmap.md, 'ODS layer'.",
+        key=f"{key_prefix}_ods_enabled",
+    )
     is_active = st.checkbox("Active", value=defaults["is_active"], key=f"{key_prefix}_is_active")
     submitted = st.button(submit_label, key=f"{key_prefix}_submit")
     return submitted, {
@@ -135,6 +143,7 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "source_pk": source_pk,
         "processing_engine": processing_engine,
         "pipeline_step_labels": pipeline_step_labels,
+        "ods_enabled": ods_enabled,
         "is_active": is_active,
     }
 
@@ -176,6 +185,7 @@ def build_values(form_values: dict) -> dict | None:
         "source_pk": json.dumps(source_pk),
         "processing_engine": form_values["processing_engine"],
         "pipeline_steps": ",".join(str(pipeline_step_id_by_label[label]) for label in form_values["pipeline_step_labels"]),
+        "ods_enabled": form_values["ods_enabled"],
         "is_active": form_values["is_active"],
     }
 
@@ -201,6 +211,7 @@ if mode == "Add new":
             "source_pk": "[]",
             "processing_engine": "polars",
             "pipeline_step_labels": ["extraction", "validation", "transformation", "serving"],
+            "ods_enabled": False,
             "is_active": True,
         },
         "Create",
@@ -241,6 +252,7 @@ elif mode == "Edit existing":
                 "source_pk": to_json_text(row["source_pk"], default="[]"),
                 "processing_engine": row["processing_engine"],
                 "pipeline_step_labels": _pipeline_step_ids_to_labels(row["pipeline_steps"]),
+                "ods_enabled": bool(row["ods_enabled"]),
                 "is_active": bool(row["is_active"]),
             },
             "Save changes",

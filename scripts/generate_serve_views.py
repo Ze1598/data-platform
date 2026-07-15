@@ -93,49 +93,87 @@ def fetch_lakehouse_models(cur) -> list[dict]:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
-def _render_schema_yml(view_names: list[str]) -> str:
+def fetch_ods_feeds(cur) -> list[dict]:
+    # ODS tables (scripts/generate_ods_models.py) have no lakehouse_models
+    # row -- consumers still need standard serve views over them though
+    # (consumers never touch `model` directly, see the ODS design,
+    # Roadmap.md), so this is a second, parallel candidate source feeding
+    # the same generate() loop below. scd_type is always 1 (ODS is always
+    # Type 1) -- both generated views collapse to identical content, same
+    # Type-1-collapse rule any lakehouse_models row already gets.
+    # has_primary_key distinguishes a keyed ODS table (has _key_hash) from
+    # an insert-only one (doesn't) -- lakehouse_models-sourced rows always
+    # have a real _key_hash, so they don't carry this field at all
+    # (generate() defaults it to True for them). Same not-exists guard as
+    # generate_ods_models.py's own candidate query, so a feed with both
+    # ods_enabled=true and a real lakehouse_models row never double-generates.
+    cur.execute(
+        """
+        select df.friendly_name || '_ods' as friendly_name,
+               1 as scd_type,
+               df.friendly_name as owning_feed,
+               (jsonb_array_length(sr.primary_key_columns) > 0) as has_primary_key
+        from data_feed df
+        join schema_registry sr on sr.data_feed_id = df.id and sr.is_current
+        where df.ods_enabled = true
+          and df.is_active = true
+          and not exists (select 1 from lakehouse_models lm where lm.owning_feed_id = df.id)
+        order by df.friendly_name
+        """
+    )
+    columns = [desc.name for desc in cur.description]
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def _render_schema_yml(views: list[tuple[str, bool]]) -> str:
     # Generated alongside the views themselves, not hand-authored --
     # otherwise a new lakehouse_models row would need its test coverage
     # added by hand in a completely different file, exactly the per-table
     # manual step this codegen exists to avoid. _key_hash not_null is the
     # one check that applies uniformly to every generated view regardless
     # of scd_type (the base tables already carry the full test suite; this
-    # is just confirming the passthrough didn't silently drop rows/columns).
+    # is just confirming the passthrough didn't silently drop rows/columns)
+    # -- except an insert-only ODS view, which has no _key_hash column at
+    # all, so emitting that test for one would compile fine but fail for
+    # real at `dbt build` time with a genuine "column does not exist"
+    # error from Trino. has_key_hash skips the test block in that case.
     lines = ["version: 2", "", "models:"]
-    for name in view_names:
-        lines += [
-            f"  - name: {name}",
-            "    columns:",
-            "      - name: _key_hash",
-            "        tests: [not_null]",
-        ]
+    for name, has_key_hash in views:
+        lines.append(f"  - name: {name}")
+        if has_key_hash:
+            lines += [
+                "    columns:",
+                "      - name: _key_hash",
+                "        tests: [not_null]",
+            ]
     return "\n".join(lines) + "\n"
 
 
-def generate(lakehouse_models: list[dict], output_dir: Path) -> list[Path]:
+def generate(candidates: list[dict], output_dir: Path) -> list[Path]:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
 
     written = []
-    view_names = []
-    for row in lakehouse_models:
+    views: list[tuple[str, bool]] = []
+    for row in candidates:
         name, scd_type, owning_feed = row["friendly_name"], row["scd_type"], row["owning_feed"]
+        has_primary_key = row.get("has_primary_key", True)
 
         latest_name = f"{name}_latest"
         latest_path = output_dir / f"{latest_name}.sql"
         latest_path.write_text(_render_view(model_name=name, owning_feed=owning_feed, filter_to_current=scd_type == 2))
         written.append(latest_path)
-        view_names.append(latest_name)
+        views.append((latest_name, has_primary_key))
 
         historical_name = f"{name}_historical"
         historical_path = output_dir / f"{historical_name}.sql"
         historical_path.write_text(_render_view(model_name=name, owning_feed=owning_feed, filter_to_current=False))
         written.append(historical_path)
-        view_names.append(historical_name)
+        views.append((historical_name, has_primary_key))
 
     schema_path = output_dir / "schema.yml"
-    schema_path.write_text(_render_schema_yml(view_names))
+    schema_path.write_text(_render_schema_yml(views))
     written.append(schema_path)
 
     return written
@@ -143,10 +181,10 @@ def generate(lakehouse_models: list[dict], output_dir: Path) -> list[Path]:
 
 def main() -> None:
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
-        lakehouse_models = fetch_lakehouse_models(cur)
+        candidates = fetch_lakehouse_models(cur) + fetch_ods_feeds(cur)
 
-    written = generate(lakehouse_models, OUTPUT_DIR)
-    print(f"Generated {len(written)} file(s) ({2 * len(lakehouse_models)} views + schema.yml) for {len(lakehouse_models)} lakehouse_models row(s) in {OUTPUT_DIR}.")
+    written = generate(candidates, OUTPUT_DIR)
+    print(f"Generated {len(written)} file(s) ({2 * len(candidates)} views + schema.yml) for {len(candidates)} lakehouse_models/ods_enabled row(s) in {OUTPUT_DIR}.")
 
 
 if __name__ == "__main__":

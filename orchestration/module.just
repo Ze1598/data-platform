@@ -14,9 +14,11 @@ start:
     just _ensure-venv-visible
     just orchestration::seed-financial-landing
     just orchestration::generate-pipeline-jobs
+    just orchestration::generate-sources
     just orchestration::generate-serve-views
     just orchestration::generate-deletion-synthesis-views
     just orchestration::generate-model-scaffolds
+    just orchestration::generate-ods-models
     just orchestration::build-image
     kubectl create configmap dagster-instance \
         --from-file=dagster.yaml=dagster_home/dagster.yaml \
@@ -196,13 +198,32 @@ seed-financial-landing:
 # financial_assets.py imports from pipeline_generated.py directly (as do
 # the connector-driven landing/raw/clean assets pipeline_generated.py
 # itself renders, e.g. for police_crimes/metadata_runs), so it must exist
-# on disk before dagster dev's own import even starts. Also runnable
-# standalone after a schedule/data_feed change.
+# on disk before dagster dev's own import even starts. Also writes the
+# small companion clean_source_tables_generated.py (dbt_assets.py imports
+# CLEAN_SOURCE_TABLES from it -- a separate file specifically to avoid a
+# circular import with pipeline_generated.py, which itself imports from
+# dbt_assets.py). Also runnable standalone after a schedule/data_feed
+# change.
 generate-pipeline-jobs:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
     cd {{justfile_directory()}} && uv run python scripts/generate_dagster_pipeline.py
+
+# Regenerate the dbt `clean` source declarations
+# (models/staging/_sources.yml) from every active data_feed row
+# (scripts/generate_sources.py) -- same "must exist on disk before dbt
+# parse builds target/manifest.json" reasoning as generate-serve-views
+# below. Previously a hand-maintained file requiring a manual edit per new
+# feed; any new feed's staging (hand-written or ODS-generated, see
+# generate-ods-models below) reading source('clean', '<feed>') would
+# otherwise fail `dbt parse` until someone remembered to add it by hand.
+# Also runnable standalone after a data_feed change.
+generate-sources:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_sources.py
 
 # Regenerate the serve layer's `_latest`/`_historical` dbt view models from
 # lakehouse_models (scripts/generate_serve_views.py) -- must run before
@@ -250,6 +271,21 @@ generate-model-scaffolds:
     set -euo pipefail
     just _ensure-venv-visible
     cd {{justfile_directory()}} && uv run python scripts/generate_model_scaffolds.py
+
+# Regenerate the ODS (Operational Data Store) layer's staging + model-layer
+# .sql files from data_feed.ods_enabled + schema_registry
+# (scripts/generate_ods_models.py) -- same "must exist on disk before dbt
+# parse builds target/manifest.json" reasoning as generate-serve-views
+# above. Unlike generate-model-scaffolds, this ALWAYS fully regenerates
+# (wipe-and-rewrite) -- ODS output has zero hand-written content ever, by
+# design, so there's nothing to protect from being overwritten when
+# schema_registry evolves. Also runnable standalone after an ods_enabled
+# flip.
+generate-ods-models:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_ods_models.py
 
 # Launch the full pipeline via the real K8sRunLauncher (not `dagster asset
 # materialize`, which never touches it -- see DebugReference.md) and verify

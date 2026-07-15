@@ -100,16 +100,20 @@ class PostgresMetadataResource(ConfigurableResource):
                 {"watermark_value": watermark_value, "data_feed_id": data_feed_id},
             )
 
-    def update_schema_registry(self, *, data_feed_id: str, column_definitions: list[dict[str, Any]], created_by: str) -> None:
+    def update_schema_registry(
+        self, *, data_feed_id: str, column_definitions: list[dict[str, Any]],
+        primary_key_columns: list[str], created_by: str,
+    ) -> None:
         """Writes a new current schema_registry version for a feed --
         called by connectors.schema_registry_sync.sync_schema_registry()
-        when discovery finds a new column or a changed column type (see
-        Roadmap.md "Metadata Schema"). Both writes happen in one
-        transaction: flip the existing is_current row to false first, then
-        insert the new one -- required by uq_schema_registry_current (a
-        partial unique index allowing only one is_current=true row per
-        data_feed_id), so the old row must stop being current before the
-        new one can become current."""
+        when discovery finds a new column, a changed column type, or a
+        different resolved primary key (see Roadmap.md "Metadata Schema").
+        Both writes happen in one transaction: flip the existing
+        is_current row to false first, then insert the new one --
+        required by uq_schema_registry_current (a partial unique index
+        allowing only one is_current=true row per data_feed_id), so the
+        old row must stop being current before the new one can become
+        current."""
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
@@ -122,11 +126,12 @@ class PostgresMetadataResource(ConfigurableResource):
             )
             cur.execute(
                 """
-                INSERT INTO schema_registry (data_feed_id, version, column_definitions, is_current, effective_from, created_by)
+                INSERT INTO schema_registry (data_feed_id, version, column_definitions, primary_key_columns, is_current, effective_from, created_by)
                 VALUES (
                     %(data_feed_id)s,
                     coalesce((SELECT max(version) FROM schema_registry WHERE data_feed_id = %(data_feed_id)s), 0) + 1,
                     %(column_definitions)s,
+                    %(primary_key_columns)s,
                     true,
                     now(),
                     %(created_by)s
@@ -135,6 +140,7 @@ class PostgresMetadataResource(ConfigurableResource):
                 {
                     "data_feed_id": data_feed_id,
                     "column_definitions": psycopg.types.json.Json(column_definitions),
+                    "primary_key_columns": psycopg.types.json.Json(primary_key_columns),
                     "created_by": created_by,
                 },
             )
@@ -195,8 +201,25 @@ class PostgresMetadataResource(ConfigurableResource):
                 raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
             return row["column_definitions"]
 
+    def get_current_primary_key_columns(self, data_feed_id: str) -> list[str]:
+        """The current schema_registry.primary_key_columns for a feed --
+        the ODS layer's (scripts/generate_ods_models.py) only consumer
+        today, deciding upsert-by-key vs. insert-only. Mirrors
+        get_current_schema()'s shape/error handling exactly."""
+        with self._connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                "SELECT primary_key_columns FROM schema_registry WHERE data_feed_id = %s AND is_current",
+                (data_feed_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
+            return row["primary_key_columns"]
+
     def sync_schema_registry(
-        self, *, data_feed_id: str, discovered_column_definitions: list[dict[str, Any]], created_by: str
+        self, *, data_feed_id: str, discovered_column_definitions: list[dict[str, Any]],
+        metadata_source_pk: list[str], discovered_primary_key_columns: Optional[list[str]],
+        created_by: str,
     ) -> SchemaSyncResult:
         """Establishes/updates a feed's schema_registry contract from a
         freshly discovered schema (connector.discover_schema() /
@@ -210,15 +233,36 @@ class PostgresMetadataResource(ConfigurableResource):
         write_clean_snapshot() -- the latter self-determines whether the
         physical Iceberg table's schema needs to change, so .changed here
         is informational only, not something callers need to thread
-        through."""
+        through.
+
+        Primary key precedence, resolved here (not in the pure
+        compute_schema_sync()) since it needs data_feed.source_pk, which
+        only this I/O-performing method's caller has on hand:
+        metadata_source_pk (a feed's manually-entered data_feed.source_pk)
+        wins if non-empty; else discovered_primary_key_columns (real
+        catalog introspection -- only PostgresConnector implements this,
+        see connectors.postgres.discover_primary_key(); every other
+        connector kind's caller always passes None here, since there's no
+        live catalog to introspect); else empty, meaning no key is known
+        at all -- see the ODS design, Roadmap.md, for what that implies
+        downstream."""
         try:
-            current = self.get_current_schema(data_feed_id)
+            current_columns = self.get_current_schema(data_feed_id)
         except ValueError:
-            current = None
-        result = compute_schema_sync(discovered_column_definitions, current)
+            current_columns = None
+        try:
+            current_pk = self.get_current_primary_key_columns(data_feed_id)
+        except ValueError:
+            current_pk = None
+
+        resolved_pk = metadata_source_pk if metadata_source_pk else (discovered_primary_key_columns or [])
+        result = compute_schema_sync(discovered_column_definitions, current_columns, resolved_pk, current_pk)
         if result.changed:
             self.update_schema_registry(
-                data_feed_id=data_feed_id, column_definitions=result.column_definitions, created_by=created_by
+                data_feed_id=data_feed_id,
+                column_definitions=result.column_definitions,
+                primary_key_columns=result.primary_key_columns,
+                created_by=created_by,
             )
         return result
 
