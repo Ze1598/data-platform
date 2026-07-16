@@ -194,7 +194,7 @@ Constraint: unique `(controlling_object_type, controlling_object_id)` — at mos
 
 ## `data_processing_runs`
 
-One row per individual feed-run or model-run per job execution. Spans the entire pipeline, landing through serve, in one wide table.
+One row per individual feed-run or model-run per job execution. Spans the entire pipeline, raw through serve, in one wide table.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -204,13 +204,18 @@ One row per individual feed-run or model-run per job execution. Spans the entire
 | uses_feeds | text | nullable — comma-separated `data_feed.friendly_name` values, populated alongside `model_key` |
 | tracking_group | text | not null — either a `batch_group` value or a `model_schema` value, depending on `tracking_group_type` |
 | tracking_group_type | text | not null, check in `('batch_group','model_schema')` |
-| dagster_run_id | text | not null |
+| master_dagster_run_id | text | not null — the master pipeline's own `dagster_run_id` (Roadmap.md "Master pipeline orchestration"), created once by `record_run_started()`/`record_model_run_started()` before any child stage job runs. This row's primary identifying key — not any individual stage's run id |
+| extraction_dagster_run_id | text | nullable — `EXTRACTION_JOBS[feed]`'s own `dagster_run_id` (spans the raw+clean schema stages as one job/run — raw exists specifically to feed clean, so they're not split into separate jobs), a genuinely separate Dagster run from the master and from its sibling stages |
+| transformation_dagster_run_id | text | nullable — `TRANSFORMATION_JOBS[domain]`'s own `dagster_run_id` |
+| serving_dagster_run_id | text | nullable — `SERVING_JOBS[domain]`'s own `dagster_run_id` |
 | job_started_timestamp | timestamptz | not null, default now() |
 | job_ended_timestamp | timestamptz | nullable |
 | job_successful | boolean | nullable |
-| *(×6, prefixed `landing_`, `raw_`, `clean_`, `staging_`, `model_`, `serve_`)* — is_\*_successful, \*_end_timestamp, \*_error_message, \*_rows_read, \*_rows_inserted, \*_rows_updated, \*_rows_deleted, \*_output_path, \*_watermark_value_start, \*_watermark_value_end | mixed | all nullable — same 9-column pattern per stage, one group per stage |
+| *(×5, prefixed `raw_`, `clean_`, `staging_`, `model_`, `serve_`)* — is_\*_successful, \*_end_timestamp, \*_error_message, \*_rows_read, \*_rows_inserted, \*_rows_updated, \*_rows_deleted, \*_output_path, \*_watermark_value_start, \*_watermark_value_end | mixed | all nullable — same 9-column pattern per stage, one group per stage. No `landing_*` group — "landing" was never a real pipeline concept (see Roadmap.md's terminology cleanup), just a historical mislabeling of the fetch sub-step within extraction; its outcome/watermark tracking is part of `raw_*`'s columns |
 | created_at | timestamptz | not null, default now() |
 
-Constraints: partial unique indexes `(data_feed_id, dagster_run_id) WHERE data_feed_id IS NOT NULL` and `(model_key, dagster_run_id) WHERE model_key IS NOT NULL`; check constraint requiring exactly one of `data_feed_id`/`model_key` to be set.
+Constraints: partial unique indexes `(data_feed_id, master_dagster_run_id) WHERE data_feed_id IS NOT NULL` and `(model_key, master_dagster_run_id) WHERE model_key IS NOT NULL`; check constraint requiring exactly one of `data_feed_id`/`model_key` to be set.
+
+**Ownership**: the master pipeline (feed-scoped or domain-scoped) creates the row via `record_run_started()`/`record_model_run_started()`, keyed by its own `master_dagster_run_id`. Each of the three independent stage-jobs it subsequently launches (`EXTRACTION_JOBS` — raw+clean as one job/run — `TRANSFORMATION_JOBS`/`SERVING_JOBS`) is a genuinely separate Dagster run — the master threads its own `master_dagster_run_id` to each as a launch-time run tag, and each stage job looks the row up by `(data_feed_id or model_key, master_dagster_run_id)` (`PostgresMetadataResource._find_run()`), never creating a row itself, and records its own `dagster_run_id` into its own column above. One logical pipeline execution therefore spans up to four distinct Dagster run ids, not one.
 
 **Joins/lookups**: `data_feed_id` → `data_feed.id` (feed-run rows). `model_key` conceptually corresponds to `lakehouse_models.friendly_name` (not a real FK). `tracking_group` corresponds to either `data_feed.batch_group` or `lakehouse_models.model_schema` depending on `tracking_group_type` (not a real FK — polymorphic).

@@ -1,0 +1,47 @@
+# Grants the `default` ServiceAccount (orchestration namespace) permission
+# to create/watch/delete Jobs and Pods -- required once the Dagster daemon
+# itself runs as an in-cluster pod, since it's the daemon (not the
+# webserver, and not any individual run's own pod -- see dagster_launch.py)
+# that actually calls K8sRunLauncher.launch_run() to create each run's Job.
+# Confirmed missing live: `kubectl get role,rolebinding -n orchestration`
+# returned nothing before this file existed -- the exact same gap
+# previously found (and abandoned along with k8s_job_executor) is now a
+# real, load-bearing requirement instead of a hypothetical one, since the
+# daemon can no longer authenticate via a local kubeconfig the way `dagster
+# dev` running on the host did (see dagster-incluster.yaml's
+# load_incluster_config: true).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dagster-run-launcher
+  namespace: orchestration
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # jobs/status is a separate resource from jobs itself in RBAC terms --
+  # confirmed live: MonitoringDaemon's periodic run-worker health check
+  # (read_namespaced_job_status) got a 403 ("cannot get resource
+  # \"jobs/status\"") even with the plain `jobs` grant above already in
+  # place, marking every run FAILED before its own child jobs ever got a
+  # chance to complete.
+  - apiGroups: ["batch"]
+    resources: ["jobs/status"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dagster-run-launcher
+  namespace: orchestration
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: orchestration
+roleRef:
+  kind: Role
+  name: dagster-run-launcher
+  apiGroup: rbac.authorization.k8s.io

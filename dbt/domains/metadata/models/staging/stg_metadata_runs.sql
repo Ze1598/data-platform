@@ -16,11 +16,13 @@ with source_raw as (
         cast(model_key as varchar) as model_key,
         cast(tracking_group as varchar) as tracking_group,
         cast(tracking_group_type as varchar) as tracking_group_type,
-        cast(dagster_run_id as varchar) as dagster_run_id,
+        cast(master_dagster_run_id as varchar) as master_dagster_run_id,
+        cast(extraction_dagster_run_id as varchar) as extraction_dagster_run_id,
+        cast(transformation_dagster_run_id as varchar) as transformation_dagster_run_id,
+        cast(serving_dagster_run_id as varchar) as serving_dagster_run_id,
         cast(job_started_timestamp as timestamp(6) with time zone) as job_started_timestamp,
         cast(job_ended_timestamp as timestamp(6) with time zone) as job_ended_timestamp,
         cast(job_successful as boolean) as job_successful,
-        cast(landing_rows_read as bigint) as landing_rows_read,
         cast(raw_rows_read as bigint) as raw_rows_read,
         cast(clean_rows_inserted as bigint) as clean_rows_inserted,
         cast(staging_rows_updated as bigint) as staging_rows_updated,
@@ -38,7 +40,7 @@ with source_raw as (
         cast(model_updates_enabled as boolean) as model_updates_enabled,
         cast(model_deletes_enabled as boolean) as model_deletes_enabled,
         {{ row_hash(['run_id']) }} as _key_hash,
-        {{ row_hash(['job_successful', 'job_ended_timestamp', 'landing_rows_read', 'raw_rows_read', 'clean_rows_inserted', 'staging_rows_updated', 'model_rows_updated', 'serve_rows_read']) }} as _attr_hash
+        {{ row_hash(['job_successful', 'job_ended_timestamp', 'raw_rows_read', 'clean_rows_inserted', 'staging_rows_updated', 'model_rows_updated', 'serve_rows_read']) }} as _attr_hash
     from {{ source('clean', 'metadata_runs') }}
 
 )

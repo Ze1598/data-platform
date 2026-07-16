@@ -1,13 +1,17 @@
-# Dagster (dagster dev runs locally, launches real pods in kind via
-# K8sRunLauncher). See DebugReference.md for the manual-command equivalents
-# this wraps, including *why* DAGSTER_HOME/PATH/the dagster-instance
-# ConfigMap all matter. POSTGRES_* env vars come from the root Justfile's
-# `set dotenv-load`.
+# Dagster runs fully in-cluster now (webserver + daemon + code-server, all
+# real Deployments in orchestration/k8s/ -- see Roadmap.md "Master pipeline
+# orchestration"), not `dagster dev` on the host. This was forced, not a
+# style preference: master_pipeline's own pod calls back into the
+# webserver's GraphQL API to launch its child jobs (dagster_launch.py),
+# and "localhost" from inside a pod doesn't resolve to anything -- there
+# was no address inside the cluster for it to reach until this existed.
+# See DebugReference.md for manual-command equivalents.
 
-# Build + load the image, regenerate the dagster-instance ConfigMap, then
-# launch `dagster dev` in the background (webserver + daemon together --
-# the daemon is what actually launches queued runs, see DebugReference.md
-# "Why a launched run seemed to hang in QUEUED").
+# Build + load the image, regenerate both dagster-instance ConfigMaps
+# (run-pod config, unchanged; the new in-cluster webserver/daemon config +
+# workspace.yaml), apply the K8s manifests, and wait for everything to
+# actually be ready -- not just "kubectl apply returned", which says
+# nothing about whether the pods came up healthy.
 start:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -21,77 +25,78 @@ start:
     just orchestration::generate-model-scaffolds
     just orchestration::generate-ods-models
     just orchestration::build-image
+
+    # dagster-instance: unchanged, mounted by K8sRunLauncher into every
+    # *launched run* pod (load_incluster_config: false -- these pods never
+    # call instance.run_launcher themselves, see dagster_launch.py).
     kubectl create configmap dagster-instance \
         --from-file=dagster.yaml=dagster_home/dagster.yaml \
         -n orchestration --dry-run=client -o yaml | kubectl apply -f -
 
-    export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
-    export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
-    cd dagster_data_platform
+    # dagster-instance-incluster: the webserver/daemon's own config
+    # (load_incluster_config: true -- the daemon is what actually calls
+    # K8sRunLauncher.launch_run(), from inside its own pod) plus
+    # workspace.yaml (points both at dagster-code-server's gRPC address).
+    # Two keys, one ConfigMap -- mounted as a directory, so DAGSTER_HOME
+    # ends up containing both dagster.yaml and workspace.yaml.
+    kubectl create configmap dagster-instance-incluster \
+        --from-file=dagster.yaml=dagster_home/dagster-incluster.yaml \
+        --from-file=workspace.yaml=dagster_home/workspace.yaml \
+        -n orchestration --dry-run=client -o yaml | kubectl apply -f -
 
-    # Sweep again immediately before this specific subprocess spawn, not
-    # just once at the top of the recipe -- build-image + the configmap
-    # apply above are enough real elapsed time for the files to get
-    # re-hidden again before dagster dev's own fresh Python startup hits
-    # them (confirmed recurring on a seconds-to-low-minutes cadence, not
-    # tied to any uv write -- see Learnings.md).
-    #
-    # Retried on the known signature, same reasoning as verify-pipeline: a
-    # dagster dev process that fails to import its own code location dies
-    # (or never brings up the webserver) before doing anything else, so
-    # nothing is partially started -- safe to kill and relaunch. The
-    # webserver-wait loop is bounded now (it used to be unbounded, which
-    # would have hung forever against a crashed process instead of
-    # detecting and retrying).
-    just _ensure-venv-visible
-    dagster_up=false
-    for attempt in 1 2 3; do
-        nohup dagster dev -m dagster_data_platform.definitions \
-            > "$DAGSTER_HOME/dagster-dev.log" 2>&1 &
-        disown
+    kubectl apply -f k8s/postgres-credentials-secret.yaml -f k8s/rbac.yaml
+    kubectl apply -f k8s/code-server-deployment.yaml -f k8s/code-server-service.yaml
+    kubectl apply -f k8s/webserver-deployment.yaml -f k8s/webserver-service.yaml
+    kubectl apply -f k8s/daemon-deployment.yaml
 
-        echo "Waiting for the webserver to come up on localhost:3000..."
-        for i in $(seq 1 30); do
-            curl -s -o /dev/null http://localhost:3000 && { dagster_up=true; break; }
-            sleep 2
-        done
-        [ "$dagster_up" = true ] && break
+    # A rebuilt image reloaded into kind (build-image, above) does NOT
+    # itself restart an already-running Deployment pod -- the Deployment
+    # spec's `image: ...:latest` didn't change, so `kubectl apply` sees no
+    # diff and Kubernetes has no reason to recreate the pod. Confirmed live
+    # to matter concretely, not just in theory: dagster-code-server is what
+    # reports the asset graph's *structure* (which assets exist, their
+    # dependencies) to the webserver/daemon -- a structural code change
+    # (e.g. an asset's deps=) left stale here would make a freshly
+    # submitted run's execution plan reflect the OLD structure even though
+    # the run's own freshly-launched pod has the NEW image. Force it every
+    # `start`, not just when a structural change is suspected -- cheap, and
+    # distinguishing "this code change was structural" from "just asset
+    # body logic" isn't reliable enough to skip it.
+    kubectl rollout restart deployment/dagster-code-server -n orchestration
 
-        if ! grep -q "ModuleNotFoundError" "$DAGSTER_HOME/dagster-dev.log" 2>/dev/null; then
-            echo "dagster dev didn't come up after 60s, and not the known .pth/UF_HIDDEN signature -- see $DAGSTER_HOME/dagster-dev.log" >&2
-            tail -30 "$DAGSTER_HOME/dagster-dev.log" >&2
-            exit 1
-        fi
-        echo ">>> dagster dev hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- killing, re-sweeping, and retrying" >&2
-        just orchestration::kill
-        just _ensure-venv-visible
-        # Widened on macOS specifically -- see verify-pipeline's identical
-        # comment for the full reasoning (iCloud sync cycle timing).
-        [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
+    echo "Waiting for dagster-code-server/webserver/daemon to roll out..."
+    kubectl rollout status deployment/dagster-code-server -n orchestration --timeout=120s
+    kubectl rollout status deployment/dagster-webserver -n orchestration --timeout=120s
+    kubectl rollout status deployment/dagster-daemon -n orchestration --timeout=120s
+
+    # NodePort-mapped to localhost:3000 (platform/kind/kind-cluster.yaml) --
+    # a rolled-out Deployment doesn't mean the webserver process inside it
+    # has finished starting up yet.
+    echo "Waiting for the webserver to come up on localhost:3000..."
+    webserver_up=false
+    for i in $(seq 1 30); do
+        curl -s -o /dev/null http://localhost:3000 && { webserver_up=true; break; }
+        sleep 2
     done
-    if [ "$dagster_up" != true ]; then
-        echo ">>> dagster dev failed 3 times with the .pth/UF_HIDDEN signature -- giving up" >&2
-        tail -30 "$DAGSTER_HOME/dagster-dev.log" >&2
+    if [ "$webserver_up" != true ]; then
+        echo "Webserver didn't come up on localhost:3000 after 60s -- check: kubectl logs -n orchestration deployment/dagster-webserver" >&2
         exit 1
     fi
 
     # The webserver responding doesn't mean dagster_db's schema is fully
-    # created yet, let alone that the daemon (a separate thread pool within
-    # the same process) has finished its own startup. Two-stage race,
-    # both observed for real this session:
+    # created yet, let alone that the daemon has finished its own startup.
+    # Two-stage race, both observed for real against this exact instance
+    # config (see Learnings.md):
     #  1. dagster_db's ~22 tables (jobs, runs, event_logs, schedules, ...)
     #     get created as a batch at first-connect, not instantly -- a
-    #     daemon thread that starts querying its own table (e.g.
-    #     SchedulerDaemon querying `jobs`) before the *whole* batch lands
-    #     hits `UndefinedTable`, which was observed to send some daemon
-    #     threads into a crash/restart loop (visible as a churn of
-    #     different daemon_ids fighting over heartbeat ownership).
+    #     daemon thread that starts querying its own table before the
+    #     *whole* batch lands hits `UndefinedTable`, observed to send some
+    #     daemon threads into a crash/restart loop.
     #  2. Even once the schema exists, the daemon still needs a moment to
     #     register all 7 daemon types' heartbeats.
-    # Checking daemon_heartbeats alone (stage 2) wasn't sufficient --
-    # it can already have rows while `jobs` et al still don't exist, since
-    # heartbeats is evidently created early in the batch. Wait for the
-    # full table count first, then heartbeats.
+    # Checking daemon_heartbeats alone (stage 2) wasn't sufficient -- it
+    # can already have rows while `jobs` et al still don't exist. Wait for
+    # the full table count first, then heartbeats.
     echo "Waiting for dagster_db's schema to be fully created..."
     for i in $(seq 1 30); do
         tables=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
@@ -113,53 +118,28 @@ start:
         sleep 2
     done
     if [ "$count" -lt 7 ]; then
-        echo "Dagster daemon didn't fully initialize after 60s (only $count/7 daemon types reporting)" >&2
+        echo "Dagster daemon didn't fully initialize after 60s (only $count/7 daemon types reporting) -- check: kubectl logs -n orchestration deployment/dagster-daemon" >&2
         exit 1
     fi
-    echo "dagster dev up (logs: $DAGSTER_HOME/dagster-dev.log)"
+    echo "Dagster up in-cluster (webserver: localhost:3000, or 'kubectl logs -n orchestration deployment/dagster-webserver' / 'deployment/dagster-daemon' / 'deployment/dagster-code-server')."
 
-# Kill the whole dagster dev process tree: the top-level wrapper, plus its
-# `dagster._daemon run` and `dagster_webserver` children *individually* --
-# NOT just the wrapper. Those children have their own separate command
-# lines (neither contains the substring "dagster dev" at all), and
-# `dagster dev`'s graceful-shutdown handshake (which normally cascades a
-# clean stop to them) only runs if the wrapper gets a chance to react to
-# SIGTERM -- a SIGKILL (or any kill that races ahead of the handshake)
-# leaves them orphaned (reparented to pid 1), still connected to Postgres,
-# still writing heartbeats. Confirmed for real this session: three
-# generations of orphaned daemon/webserver pairs accumulated silently
-# across nuke-and-rebuild cycles, all colliding with each fresh run's
-# legitimate daemon over heartbeat ownership (visible as a churn of
-# different daemon_ids fighting each other) and ultimately preventing any
-# run's k8s Job from ever getting created. Match on a path substring
-# shared by every process in *this* project's dagster tree specifically
-# (not just the wrapper's own invocation), so already-orphaned children
-# get caught too, not just a live wrapper.
+# Tears down every in-cluster Dagster piece start brought up -- mirrors
+# start exactly (same manifest list), same "full teardown" convention as
+# every other k8s-hosted module's kill recipe (see metadata::kill,
+# polaris::kill). No local process to pkill anymore -- Kubernetes itself
+# now guarantees exactly one daemon pod at a time (replicas: 1), so the
+# "multiple dagster dev instances fighting over heartbeat ownership"
+# problem this recipe used to guard against is structurally impossible
+# now, not just handled better.
 kill:
     #!/usr/bin/env bash
     set -euo pipefail
-    patterns=("dagster dev -m dagster_data_platform.definitions" "orchestration/dagster_home")
-    any_running() {
-        for p in "${patterns[@]}"; do
-            pgrep -f "$p" > /dev/null && return 0
-        done
-        return 1
-    }
-    if ! any_running; then
-        echo "dagster dev not running"
-        exit 0
-    fi
-    for p in "${patterns[@]}"; do
-        pkill -f "$p" || true
-    done
-    for i in $(seq 1 10); do
-        any_running || exit 0
-        sleep 1
-    done
-    echo "dagster dev didn't fully exit after SIGTERM, sending SIGKILL"
-    for p in "${patterns[@]}"; do
-        pkill -9 -f "$p" || true
-    done
+    kubectl delete -f k8s/daemon-deployment.yaml \
+        -f k8s/webserver-service.yaml -f k8s/webserver-deployment.yaml \
+        -f k8s/code-server-service.yaml -f k8s/code-server-deployment.yaml \
+        -f k8s/rbac.yaml -f k8s/postgres-credentials-secret.yaml \
+        --ignore-not-found
+    kubectl delete configmap dagster-instance dagster-instance-incluster -n orchestration --ignore-not-found
 
 # Rebuild the orchestration image and reload it into kind, without
 # restarting dagster dev -- for the "changed code, need launched pods to
@@ -304,14 +284,22 @@ generate-ods-models:
     just _ensure-venv-visible
     cd {{justfile_directory()}} && uv run python scripts/generate_ods_models.py
 
-# Launch the full pipeline via the real K8sRunLauncher (not `dagster asset
-# materialize`, which never touches it -- see DebugReference.md) and verify
-# it actually succeeded: finds the newly-created run Job, waits for it to
-# complete, then checks data_processing_runs shows successful feed-run rows
-# (data_feed_id is not null) and model-run rows (model_key is not null) for
-# every feed. This is the check that actually caught both bugs found during
-# this session's full nuke-and-rebuild -- a narrower check (like
-# tests/integration alone) would not have.
+# Launches the real master_pipeline job (not `dagster asset materialize`,
+# which never touches K8sRunLauncher -- see DebugReference.md; not
+# `__ASSET_JOB` either -- that bypasses the master pipeline entirely and is
+# no longer compatible with it, see Learnings.md "A feed whose source is
+# the pipeline's own run history..." fourth occurrence) three times --
+# model_schema=sales, model_schema=metadata, batch_group=police_crimes --
+# the minimum set of orchestration_kind/value pairs that together exercise
+# every feed and every domain exactly once, the same coverage the old
+# single __ASSET_JOB run gave (5 feed-run rows + 3 domain model-run rows),
+# but now via real per-stage pod isolation and both orchestration_kind
+# values. Each launch is via trigger_master_pipeline.py, which blocks on
+# the run's own Dagster-level status (dagster_launch.launch_and_wait) --
+# NOT `kubectl wait --for=condition=complete`, confirmed live to be
+# unreliable here: a launched pod's k8s Job can report "Complete" even
+# though the Dagster run inside it failed (the run worker process's exit
+# code doesn't reflect step failures) -- see Learnings.md.
 verify-pipeline:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -319,113 +307,75 @@ verify-pipeline:
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
 
-    before=$(kubectl get jobs -n orchestration -o jsonpath='{.items[*].metadata.name}')
-
-    # Sweep again immediately before this specific subprocess spawn, not
-    # just once at the top of the recipe -- the kubectl round-trip above is
-    # enough real elapsed time for the files to get re-hidden again before
-    # `dagster job launch`'s own fresh Python startup hits them. Confirmed
-    # for real: this exact gap caused a `No module named 'raw_to_clean'`
-    # failure here even with the top-of-recipe sweep already in place.
-    #
-    # Retry, don't just sweep-and-hope: the underlying cause (Learnings.md,
-    # ".pth files getting UF_HIDDEN re-applied") is outside this repo's
-    # control and intermittent, not fixable from here -- but this specific
-    # failure always happens at code-location *import* time, before
-    # `dagster job launch` submits anything, so nothing is partially
-    # applied on failure and a retry is genuinely safe, not a hack. Scoped
-    # to the exact known signature (ModuleNotFoundError) so a real bug
-    # still fails on the first attempt instead of being masked.
-    just _ensure-venv-visible
-    launch_ok=false
-    for attempt in 1 2 3; do
-        if launch_output=$(cd dagster_data_platform && dagster job launch -j '__ASSET_JOB' -m dagster_data_platform.definitions 2>&1); then
-            launch_ok=true
-            break
-        fi
-        if ! grep -q "ModuleNotFoundError" <<< "$launch_output"; then
-            echo "$launch_output" >&2
-            exit 1
-        fi
-        echo ">>> dagster job launch hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
-        just _ensure-venv-visible
-        # Widened on macOS specifically: the underlying cause (Learnings.md
-        # -- iCloud Desktop & Documents Folders sync interfering with uv's
-        # editable installs, astral-sh/uv#9902) runs on roughly a 10s
-        # break/recover cycle, not sub-second -- a 1s gap was retrying
-        # inside the same bad window instead of waiting past it. No reason
-        # to wait this long on a platform where the bug can't occur.
-        [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
-    done
-    echo "$launch_output"
-    if [ "$launch_ok" != true ]; then
-        echo ">>> dagster job launch failed 3 times with the .pth/UF_HIDDEN signature -- giving up" >&2
-        exit 1
-    fi
-
-    # Space-separated set-difference rather than jsonpath `[-1]` indexing --
-    # the latter throws on an empty job list, which is exactly the state
-    # right after `dagster job launch` returns (it only submits to the
-    # queue; the daemon launches the actual k8s Job a moment later).
-    job_name=""
-    for i in $(seq 1 30); do
-        after=$(kubectl get jobs -n orchestration -o jsonpath='{.items[*].metadata.name}')
-        for name in $after; do
-            if [[ ! " $before " =~ " $name " ]]; then
-                job_name="$name"
-                break 2
+    # Sweep again immediately before each launch, not just once at the top
+    # of the recipe, and retry on the known .pth/UF_HIDDEN signature only
+    # (ModuleNotFoundError at code-location import time, before anything is
+    # submitted -- safe to retry, nothing partially applied) -- same
+    # reasoning as every other recipe here, see Learnings.md.
+    launch_master_pipeline() {
+        local kind="$1" value="$2"
+        just _ensure-venv-visible >&2
+        for attempt in 1 2 3; do
+            if output=$(cd dagster_data_platform && uv run python -m dagster_data_platform.trigger_master_pipeline --orchestration-kind "$kind" --orchestration-value "$value" 2>&1); then
+                tail -1 <<< "$output"
+                return 0
             fi
+            if ! grep -q "ModuleNotFoundError" <<< "$output"; then
+                echo "$output" >&2
+                exit 1
+            fi
+            echo ">>> trigger_master_pipeline (kind=$kind value=$value) hit the known .pth/UF_HIDDEN race (attempt $attempt/3) -- re-sweeping and retrying" >&2
+            just _ensure-venv-visible >&2
+            [ "$(uname)" = "Darwin" ] && sleep 10 || sleep 1
         done
-        sleep 2
-    done
-    if [[ -z "$job_name" ]]; then
-        echo "Could not find the newly-launched run Job after 60s" >&2
+        echo ">>> trigger_master_pipeline (kind=$kind value=$value) failed 3 times with the .pth/UF_HIDDEN signature -- giving up" >&2
         exit 1
-    fi
-    echo "Watching job/$job_name..."
-    # 900s, not 180s -- a from-scratch metadata DB (the normal post-nuke
-    # state this recipe runs against) means police_crimes' watermark is
-    # empty, so landing_police_crimes does a full historical backfill
-    # (every available month since the UK Police API's start, one
-    # sequential HTTP call per month) instead of a normal incremental
-    # catch-up. Confirmed for real: this alone took ~2.5 minutes against
-    # the live API on top of everything else in __ASSET_JOB, blowing past
-    # the old 180s budget even though the run was genuinely healthy the
-    # whole time -- kubectl wait timing out here is a recipe bug, not a
-    # pipeline bug.
-    kubectl wait --for=condition=complete "job/$job_name" -n orchestration --timeout=900s
+    }
 
-    run_id="${job_name#dagster-run-}"
+    # 900s timeout is baked into dagster_launch.launch_and_wait's own
+    # default, not repeated here -- sized for a from-scratch metadata DB's
+    # police_crimes full historical backfill (every available month since
+    # the UK Police API's start), confirmed to take ~2.5 minutes on top of
+    # everything else in a run. See Learnings.md.
+    sales_run_id=$(launch_master_pipeline model_schema sales)
+    echo "master_pipeline (model_schema=sales) succeeded: $sales_run_id"
+    metadata_run_id=$(launch_master_pipeline model_schema metadata)
+    echo "master_pipeline (model_schema=metadata) succeeded: $metadata_run_id"
+    police_crimes_run_id=$(launch_master_pipeline batch_group police_crimes)
+    echo "master_pipeline (batch_group=police_crimes) succeeded: $police_crimes_run_id"
+
+    run_ids="'$sales_run_id','$metadata_run_id','$police_crimes_run_id'"
     feed_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-        "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and data_feed_id is not null and job_successful = true;")
+        "select count(*) from data_processing_runs where master_dagster_run_id in ($run_ids) and data_feed_id is not null and job_successful = true;")
     model_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-        "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and model_key is not null and job_successful = true;")
-    # 5 feed-run rows: customers, sales, financial_transactions,
-    # police_crimes, metadata_runs -- unchanged by the multi-project dbt
-    # split (see Roadmap.md), since FEED_JOBS still cover extraction+
-    # validation per feed exactly as before.
-    #
-    # 3 model-run rows, NOT 5 -- re-derived after the multi-project dbt
-    # split (Roadmap.md "multi-project dbt split"). Model-run rows now come
-    # from DOMAIN_JOBS (one row per domain per run), not one row per feed:
-    # "sales" (customers/sales/financial_transactions' models),
-    # "metadata" (metadata_runs' models), "police_crimes" (its ODS domain,
-    # see data_feed.batch_ods_name). Confirmed live, twice in a row
-    # (fresh-table build, then a second build of the same tables) --
-    # both produced exactly 5 + 3 with all three domains' staging/model/
-    # serve stages successful.
+        "select count(*) from data_processing_runs where master_dagster_run_id in ($run_ids) and model_key is not null and job_successful = true;")
+    # 5 feed-run rows across the 3 master_pipeline runs: customers, sales,
+    # financial_transactions (via model_schema=sales), metadata_runs (via
+    # model_schema=metadata), police_crimes (via batch_group=police_crimes).
+    # 3 model-run rows: "sales", "metadata", "police_crimes" (its ODS
+    # domain, see data_feed.batch_ods_name) -- one per MODELING_JOBS/
+    # SERVING_JOBS pair actually launched.
     if [[ "$feed_ok" -ne 5 || "$model_ok" -ne 3 ]]; then
-        echo "Expected 5 successful feed-run + 3 successful model-run rows in data_processing_runs for run $run_id, got $feed_ok + $model_ok" >&2
+        echo "Expected 5 successful feed-run + 3 successful model-run rows across these 3 master_pipeline runs, got $feed_ok + $model_ok" >&2
         exit 1
     fi
-    echo "Pipeline run $run_id succeeded: 5/5 feed-run + 3/3 domain model-run rows successful in data_processing_runs."
+    echo "Pipeline verified: 5/5 feed-run + 3/3 domain model-run rows successful across 3 master_pipeline invocations."
 
     # customers/sales raw durability fix -- confirms raw_customers/raw_sales
     # actually write a verbatim file now, not just pass the DataFrame
-    # through in memory (see extraction_assets.py/sales_assets.py).
-    for f in "data-lake/raw/customers/run_id=$run_id/customers.parquet" "data-lake/raw/sales/run_id=$run_id/sales.parquet"; do
+    # through in memory (see extraction_assets.py/sales_assets.py). Looked
+    # up via each feed's own extraction_dagster_run_id (a separate Dagster
+    # run from the master's own, since EXTRACTION_JOBS[feed] is its own
+    # job/pod -- raw_storage.py keys the file path by that run's own
+    # context.run_id, not master_dagster_run_id), not assumed to equal
+    # $sales_run_id the way a single __ASSET_JOB run used to allow.
+    for feed in customers sales; do
+        extraction_run_id=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+            -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+            "select r.extraction_dagster_run_id from data_processing_runs r join data_feed df on df.id = r.data_feed_id where r.master_dagster_run_id = '$sales_run_id' and df.friendly_name = '$feed';")
+        f="data-lake/raw/$feed/run_id=$extraction_run_id/$feed.parquet"
         if [ ! -f "{{justfile_directory()}}/$f" ]; then
             echo "Expected durable raw file missing: $f" >&2
             exit 1
@@ -435,13 +385,18 @@ verify-pipeline:
 
 # Real end-to-end test for a schedule-fired run: evaluates a real generated
 # ScheduleDefinition (trigger_schedule_run.py, via build_schedule_context --
-# no cron wait), submits the resulting RunRequest through the actual
-# webserver -> daemon -> K8sRunLauncher path (dagster_graphql's
-# DagsterGraphQLClient -- `dagster job launch` has no --tags flag and there's
-# no "fire a schedule now" CLI command), then waits for the k8s Job and
-# checks data_processing_runs the same way verify-pipeline does. Targets the
-# police_crimes feed-schedule specifically (schedule_id looked up live, not
-# hardcoded -- see trigger_schedule_run.py).
+# no cron wait), launches the resulting RunRequest through the actual
+# webserver -> daemon -> K8sRunLauncher path and blocks on its own
+# Dagster-level run status (dagster_launch.launch_and_wait, via
+# trigger_schedule_run.py -- `dagster job launch` has no --tags flag and
+# there's no "fire a schedule now" CLI command; NOT `kubectl wait`, which
+# can report a launched pod's k8s Job as "Complete" even when the Dagster
+# run inside it failed, see Learnings.md), then checks data_processing_runs
+# the same way verify-pipeline does. Targets the police_crimes
+# feed-schedule specifically (schedule_id looked up live, not hardcoded --
+# see trigger_schedule_run.py); the schedule now targets master_pipeline
+# with orchestration_kind='batch_group', so $run_id below is
+# master_dagster_run_id directly.
 verify-schedule:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -456,49 +411,23 @@ verify-schedule:
     # owning no lakehouse_models rows (metadata_runs, police_crimes) makes
     # dbt print a "does not match any enabled nodes" WARNING straight to
     # stdout -- confirmed for real: this corrupted a bare `run_id=$(...)`
-    # capture into multi-line garbage, breaking job_name below even though
-    # the actual run completed successfully every time. print(run_id) is
-    # always the script's last statement for a feed-type schedule (exactly
-    # one RunRequest), so the true id is always the last line.
+    # capture into multi-line garbage even though the actual run completed
+    # successfully every time. print(run_id) is always the script's last
+    # statement for a feed-type schedule (exactly one RunRequest), so the
+    # true id is always the last line. launch_and_wait already blocks until
+    # master_pipeline reaches a terminal status (raising if it didn't
+    # succeed), so nothing further to wait on here.
     run_id=$(uv run python -m dagster_data_platform.trigger_schedule_run --feed police_crimes | tail -1)
-    job_name="dagster-run-$run_id"
-
-    # Submitting via GraphQL only queues the run -- the daemon picks it up
-    # and creates the actual k8s Job a moment later (same asynchronous gap
-    # verify-pipeline's before/after job-name diffing loop exists for), so
-    # `kubectl wait` can't target it immediately. Poll for existence first.
-    # 90x2s=180s, not 30x2s=60s -- the master pipeline addition (pipeline_init
-    # + splitting each feed's dbt asset into transformation+serving) made
-    # the code server's asset graph meaningfully bigger, and confirmed for
-    # real: a schedule-triggered run's k8s Job legitimately took longer than
-    # 60s to appear even though the run itself completed successfully
-    # (kubectl showed it Complete, just too late for the old window) --
-    # same "real cold-start overhead, not a bug" pattern already hit once
-    # for verify-pipeline's own timeout.
-    job_found=false
-    for i in $(seq 1 90); do
-        if kubectl get "job/$job_name" -n orchestration >/dev/null 2>&1; then
-            job_found=true
-            break
-        fi
-        sleep 2
-    done
-    if [ "$job_found" != true ]; then
-        echo "k8s Job $job_name never appeared after schedule-triggered submission" >&2
-        exit 1
-    fi
-
-    echo "Watching job/$job_name (schedule-triggered)..."
-    kubectl wait --for=condition=complete "job/$job_name" -n orchestration --timeout=180s
+    echo "Schedule-triggered master_pipeline run $run_id succeeded."
 
     ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-        "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and data_feed_id is not null and job_successful = true;")
+        "select count(*) from data_processing_runs where master_dagster_run_id = '$run_id' and data_feed_id is not null and job_successful = true;")
     if [[ "$ok" -lt 1 ]]; then
         echo "Schedule-triggered run $run_id did not produce a successful feed-run row in data_processing_runs" >&2
         exit 1
     fi
-    echo "Schedule-triggered run $run_id succeeded."
+    echo "Schedule-triggered run $run_id verified: successful feed-run row confirmed in data_processing_runs."
 
 # Unit tests -- pure logic, no live cluster needed.
 # Defensive .pth sweep here too, not just in `start`/`verify-pipeline` --

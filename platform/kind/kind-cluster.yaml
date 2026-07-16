@@ -29,3 +29,16 @@ nodes:
       - containerPort: 30880
         hostPort: 8080
         protocol: TCP
+      # Dagster webserver, exposed via a NodePort Service
+      # (orchestration/k8s/webserver-service.yaml) now that it runs
+      # in-cluster instead of as a local `dagster dev` process (Roadmap.md
+      # "Master pipeline orchestration") — keeps localhost:3000 working for
+      # the Dagit UI and every host-side script that already targets it
+      # (trigger_schedule_run.py, trigger_master_pipeline.py,
+      # verify-pipeline/verify-schedule), same reasoning as Postgres/Trino
+      # above. Extra{PortMappings} only apply at cluster *creation* time --
+      # an existing cluster needs a full recreate (`just smoketest`'s
+      # nuke-and-rebuild) to pick this up, not a live edit.
+      - containerPort: 30300
+        hostPort: 3000
+        protocol: TCP

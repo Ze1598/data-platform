@@ -1,9 +1,11 @@
 """Generates the dynamic, metadata-driven pipeline foundation -- per-feed
-pipeline_init assets (the master pipeline's real entry point), per-feed
-transformation/serving dbt assets, per-feed connector-driven extraction/raw/
-clean assets, per-feed jobs, and real Dagster schedules from `data_feed` +
-`source_system` (+ `schedule` + `lakehouse_models` for model-type
-schedules) -- as
+connector-driven extraction/raw/clean assets + EXTRACTION_JOBS, per-domain
+transformation/serving dbt assets + MODELING_JOBS/SERVING_JOBS, the single
+`master_pipeline` job (parameterized by `orchestration_kind`/
+`orchestration_value`, launching those child jobs itself via
+dagster_launch.launch_and_wait), and real Dagster schedules (every schedule
+now targets `master_pipeline` uniformly, differing only in which
+orchestration_kind/value it resolves) -- as
 `orchestration/dagster_data_platform/dagster_data_platform/pipeline_generated.py`.
 
 Deliberately a standalone build-time script, not a Dagster op or a live
@@ -13,9 +15,11 @@ generate_deletion_synthesis_views.py, the two existing precedents) is that
 anything determining Dagster's *static object graph* -- which
 assets/jobs/schedules exist, their cron, their target -- must be resolved
 before `dagster dev`/Docker image build, never at Python import time. What
-an asset/schedule's *execution function* looks up live (is_active, a
-feed's current watermark, connector fetch() results) is a different phase
-of Dagster's lifecycle and is deliberately NOT baked in here.
+an asset/schedule/the master pipeline op's *execution function* looks up
+live (is_active, a feed's current watermark, connector fetch() results,
+which feeds/domain a given orchestration_kind/value run actually needs) is
+a different phase of Dagster's lifecycle and is deliberately NOT baked in
+here.
 
 Extraction/raw/clean asset generation (added alongside the pre-existing
 dbt/job/schedule generation) is scoped to feeds whose source_system has a
@@ -24,6 +28,17 @@ non-null `connector_kind` -- see the connector library plan
 synthetic stub generators) keeps a fully hand-written asset file; this
 script only ever generates for a *covered* connector kind, it never
 silently skips a feed that needs one.
+
+One job per pipeline stage per feed/domain -- EXTRACTION_JOBS[feed] (raw+
+clean bundled as one job/pod, see Roadmap.md "Master pipeline
+orchestration" -- "raw and clean are so closely tied together they might
+as well be under the same pipeline"), MODELING_JOBS[domain] (staging+
+model), SERVING_JOBS[domain] (serve) -- each independently launched as its
+own K8sRunLauncher-managed pod by the master pipeline, never nested inside
+it. No k8s_job_executor anywhere in this file: once every pipeline stage is
+already its own top-level job/pod, splitting a job's own steps into further
+pods would just be a third level of nesting nobody asked for (dropped
+entirely, not fixed -- see Roadmap.md).
 
 Fully regenerates `pipeline_generated.py` on every run (clears/overwrites,
 not additive) so it never drifts from current metadata state.
@@ -84,7 +99,7 @@ def fetch_connector_feeds(cur) -> list[dict]:
 
 def fetch_domain_dependent_feeds(cur) -> dict[str, list[str]]:
     """domain -> sorted list of feed friendly_names that domain's
-    transformation+serving job spans (Roadmap.md "multi-project dbt
+    transformation+serving jobs span (Roadmap.md "multi-project dbt
     split"). Real domains: union of depends_on_feeds across that domain's
     lakehouse_models rows. ODS domains: feeds sharing that batch_ods_name.
     Same union-query shape as generate_sources.py::fetch_domain_feeds(),
@@ -118,9 +133,15 @@ def fetch_domain_dependent_feeds(cur) -> dict[str, list[str]]:
 
 
 def fetch_feed_schedules(cur) -> list[dict]:
+    # One row per feed-type schedule -- controlling_object_type='feed' maps
+    # 1:1 to one data_feed row already, no expansion needed. orchestration_value
+    # (that feed's own batch_group_friendly_name) is baked in here as a
+    # structural literal, same "resolved from Postgres at codegen time"
+    # rule as DOMAIN_FEEDS below -- not a live per-tick lookup, since which
+    # batch a feed belongs to is metadata, not runtime state.
     cur.execute(
         """
-        SELECT s.id::text AS schedule_id, s.cron, df.friendly_name AS feed_friendly_name
+        SELECT s.id::text AS schedule_id, s.cron, df.batch_group_friendly_name
         FROM schedule s
         JOIN data_feed df ON df.id = s.controlling_object_id
         WHERE s.is_active AND s.controlling_object_type = 'feed' AND df.is_active
@@ -132,28 +153,29 @@ def fetch_feed_schedules(cur) -> list[dict]:
 
 
 def fetch_model_schedules(cur) -> list[dict]:
-    # One row per (schedule, dependent feed) -- a schedule binds to exactly
-    # one Dagster job, and a model has no standalone job of its own (models
-    # only ever build as a side effect of a feed's dbt build), so a
-    # model-type schedule expands into one generated schedule per feed in
-    # that model's depends_on_feeds.
+    # One row per model-type schedule -- controlling_object_type='model'
+    # maps 1:1 to one lakehouse_models row, whose own model_schema is what
+    # master_pipeline needs as orchestration_value (raw, unslugified --
+    # PostgresMetadataResource.get_domain_feeds_for_model_schema() matches
+    # against lakehouse_models.model_schema directly). No per-feed
+    # expansion anymore -- master_pipeline reverse-engineers the domain's
+    # dependent feeds itself, live, from orchestration_value alone (see
+    # Roadmap.md "Master pipeline orchestration").
     cur.execute(
         """
-        SELECT s.id::text AS schedule_id, s.cron,
-               lm.friendly_name AS model_friendly_name, df.friendly_name AS feed_friendly_name
+        SELECT s.id::text AS schedule_id, s.cron, lm.model_schema
         FROM schedule s
         JOIN lakehouse_models lm ON lm.id = s.controlling_object_id
-        JOIN data_feed df ON df.id::text = ANY(string_to_array(lm.depends_on_feeds, ','))
-        WHERE s.is_active AND s.controlling_object_type = 'model' AND lm.is_active AND df.is_active
-        ORDER BY s.id, df.friendly_name
+        WHERE s.is_active AND s.controlling_object_type = 'model' AND lm.is_active
+        ORDER BY s.id
         """
     )
     columns = [desc.name for desc in cur.description]
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
-def _schedule_python_name(schedule_id: str, feed_friendly_name: str) -> str:
-    return f"schedule_{schedule_id.replace('-', '')}_{feed_friendly_name}"
+def _schedule_python_name(schedule_id: str) -> str:
+    return f"schedule_{schedule_id.replace('-', '')}"
 
 
 def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
@@ -185,29 +207,6 @@ def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
     raise ValueError(f"unknown connector_kind {kind!r}")
 
 
-def _render_pipeline_init(feed: str) -> str:
-    """The master pipeline's real entry point -- one per active feed
-    (connector-driven or hand-written), depended on by that feed's
-    extraction/clean assets. Registers the run (moved out of the individual
-    extraction assets, which used to call this directly) and resolves which
-    of the four pipeline steps this feed's `pipeline_steps` column
-    selects, live, once per run."""
-    return f'''
-@asset(group_name="{feed}")
-def pipeline_init_{feed}(
-    context: AssetExecutionContext, postgres_metadata: PostgresMetadataResource
-) -> Output[set]:
-    data_feed = postgres_metadata.get_data_feed("{feed}")
-    postgres_metadata.record_run_started(
-        data_feed_id=str(data_feed["id"]),
-        dagster_run_id=context.run_id,
-        tracking_group=data_feed["batch_group_friendly_name"],
-    )
-    selected = parse_selected_steps(data_feed["pipeline_steps"])
-    return Output(selected, metadata={{"selected_steps": sorted(selected)}})
-'''
-
-
 def _render_tabular_assets(feed: dict) -> str:
     friendly_name = feed["feed_friendly_name"]
     kind = feed["connector_kind"]
@@ -216,52 +215,48 @@ def _render_tabular_assets(feed: dict) -> str:
     # (see connectors/postgres.py) -- every other tabular kind has no live
     # catalog to introspect, so their generated code never even calls a
     # discovery method, rather than calling one that's always a no-op.
-    discovered_pk_line = "            discovered_pk = connector.discover_primary_key()\n" if kind == "postgres" else ""
+    discovered_pk_line = "        discovered_pk = connector.discover_primary_key()\n" if kind == "postgres" else ""
     discovered_pk_arg = "discovered_pk" if kind == "postgres" else "None"
     return f'''
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
 def extraction_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    pipeline_init_{friendly_name}: set,
 ) -> Output[pl.DataFrame]:
     # Tabular sources (postgres/csv) need no pre-processing before their
-    # schema is discoverable, so this step only discovers+syncs
+    # schema is discoverable, so this step only fetches + discovers/syncs
     # schema_registry -- clean_{friendly_name} still owns the write, since
     # there's no flattening cost to save by combining the two steps here
-    # (contrast with the JSON/REST connector kinds' extraction step).
-    if "extraction" not in pipeline_init_{friendly_name}:
-        return Output(pl.DataFrame(), metadata={{"skipped": True, "reason": "extraction not selected"}})
+    # (contrast with the JSON/REST connector kinds' extraction step). No
+    # stage-log call of its own -- there is no schema-level stage left to
+    # attribute a bare fetch to now that `landing` is gone (folded into
+    # `raw`, see Roadmap.md); raw_{friendly_name} logs stage="raw" for the
+    # fetch-through-durable-write outcome as a whole.
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
-    with postgres_metadata.log_data_feed_stage(
-        data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
-        stage="landing",
-        dagster_run_id=context.run_id,
-    ) as log:
-        connector = {extraction_expr}
-        df = connector.fetch()
-        watermark_column = data_feed.get("watermark_column")
-        last_watermark = data_feed.get("last_watermark_value")
-        if not df.is_empty() and watermark_column and last_watermark is not None:
-            df = df.filter(pl.col(watermark_column) > last_watermark)
-        if not df.is_empty():
-            discovered = connector.discover_schema(df)
-{discovered_pk_line}            postgres_metadata.sync_schema_registry(
-                data_feed_id=str(data_feed["id"]),
-                discovered_column_definitions=discovered,
-                metadata_source_pk=data_feed["source_pk"],
-                discovered_primary_key_columns={discovered_pk_arg},
-                created_by="extraction_{friendly_name}",
-            )
-        log.set_counts(
-            rows_read=df.height,
-            watermark_value_start=last_watermark,
-            watermark_value_end=(
+    connector = {extraction_expr}
+    df = connector.fetch()
+    watermark_column = data_feed.get("watermark_column")
+    last_watermark = data_feed.get("last_watermark_value")
+    if not df.is_empty() and watermark_column and last_watermark is not None:
+        df = df.filter(pl.col(watermark_column) > last_watermark)
+    if not df.is_empty():
+        discovered = connector.discover_schema(df)
+{discovered_pk_line}        postgres_metadata.sync_schema_registry(
+            data_feed_id=str(data_feed["id"]),
+            discovered_column_definitions=discovered,
+            metadata_source_pk=data_feed["source_pk"],
+            discovered_primary_key_columns={discovered_pk_arg},
+            created_by="extraction_{friendly_name}",
+        )
+    return Output(
+        df,
+        metadata={{
+            "row_count": df.height,
+            "watermark_value_end": (
                 str(df[watermark_column].max()) if (not df.is_empty() and watermark_column) else last_watermark
             ),
-        )
-    return Output(df, metadata={{"audit_run_id": log.run_id, "row_count": df.height}})
+        }},
+    )
 
 
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
@@ -269,39 +264,56 @@ def raw_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     extraction_{friendly_name}: pl.DataFrame,
-) -> Output[pl.DataFrame]:
+) -> Output[None]:
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
+    master_dagster_run_id = context.run.tags["master_dagster_run_id"]
+    df = extraction_{friendly_name}
+    watermark_column = data_feed.get("watermark_column")
+    last_watermark = data_feed.get("last_watermark_value")
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
         stage="raw",
+        master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
-        df = extraction_{friendly_name}
-        if not df.is_empty():
-            raw_run_dir = _data_lake_dir() / "raw" / "{friendly_name}" / f"run_id={{context.run_id}}"
-            raw_run_dir.mkdir(parents=True, exist_ok=True)
-            df.write_parquet(raw_run_dir / "{friendly_name}.parquet")
-        log.set_counts(rows_read=df.height)
-    return Output(df, metadata={{"audit_run_id": log.run_id, "row_count": df.height}})
+        write_raw_snapshot("{friendly_name}", context.run_id, df)
+        log.set_counts(
+            rows_read=df.height,
+            output_path=str(raw_snapshot_path("{friendly_name}", context.run_id)) if not df.is_empty() else None,
+            watermark_value_start=last_watermark,
+            watermark_value_end=(str(df[watermark_column].max()) if (not df.is_empty() and watermark_column) else last_watermark),
+        )
+    if not df.is_empty() and watermark_column:
+        postgres_metadata.update_watermark(
+            data_feed_id=str(data_feed["id"]), watermark_value=str(df[watermark_column].max()), run_id=context.run_id
+        )
+    return Output(None, metadata={{"audit_run_id": log.run_id, "row_count": df.height}})
 
 
-@asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
+@asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}", deps=["raw_{friendly_name}"])
 def clean_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
-    raw_{friendly_name}: pl.DataFrame,
-    pipeline_init_{friendly_name}: set,
 ) -> Output[None]:
-    if "validation" not in pipeline_init_{friendly_name}:
-        return Output(None, metadata={{"skipped": True, "reason": "validation not selected"}})
+    # Reads raw_{friendly_name}'s durable parquet file back from disk,
+    # rather than accepting its DataFrame as an in-memory asset-dependency
+    # value -- "clean can read from that raw storage to do its clean layer
+    # work", applied uniformly even though raw+clean share one job/pod here
+    # (Roadmap.md "Master pipeline orchestration"). raw_{friendly_name} is
+    # an order-only `deps=` entry, not a function parameter -- confirmed
+    # live that declaring it as a plain `raw_{friendly_name}: None`
+    # parameter instead crashes with "missing 1 required positional
+    # argument": Dagster's IO manager treats an upstream Output(None) as
+    # "nothing to load" and doesn't pass a value at all, rather than
+    # passing None itself.
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
-    df = raw_{friendly_name}
+    master_dagster_run_id = context.run.tags["master_dagster_run_id"]
+    df = read_raw_snapshot("{friendly_name}", context.run_id)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
         stage="clean",
+        master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
         if not df.is_empty():
@@ -313,12 +325,6 @@ def clean_{friendly_name}(
                 catalog, namespace="clean", table_name="{friendly_name}", df=df, column_definitions=column_definitions,
             )
         log.set_counts(rows_inserted=df.height)
-
-    watermark_column = data_feed.get("watermark_column")
-    if not df.is_empty() and watermark_column:
-        postgres_metadata.update_watermark(
-            data_feed_id=str(data_feed["id"]), watermark_value=str(df[watermark_column].max()), run_id=context.run_id
-        )
 
     return Output(None, metadata={{"audit_run_id": log.run_id, "rows_inserted": df.height}})
 '''
@@ -334,7 +340,6 @@ def extraction_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
-    pipeline_init_{friendly_name}: set,
 ) -> Output[pl.DataFrame]:
     # Nested-JSON sources (REST/json_file) need pre-processing (flattening)
     # before their schema is discoverable at all -- see connectors/base.py's
@@ -345,19 +350,23 @@ def extraction_{friendly_name}(
     # has a stable AssetKey for dbt source lineage. raw_{friendly_name} still
     # persists the untouched *nested* fetch result returned here, unrelated
     # to this flattened copy -- raw's own contract (verbatim, zero
-    # transformation) is unaffected.
-    if "extraction" not in pipeline_init_{friendly_name}:
-        return Output(pl.DataFrame(), metadata={{"skipped": True, "reason": "extraction not selected"}})
+    # transformation) is unaffected. Logs stage="clean" (not "landing",
+    # which no longer exists -- folded into raw, see Roadmap.md) since the
+    # clean-layer write is this step's real outcome; raw_{friendly_name}
+    # separately logs stage="raw" for its own durable copy.
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
+    master_dagster_run_id = context.run.tags["master_dagster_run_id"]
+    connector = {extraction_expr}
+    df = connector.fetch()
+    rows_inserted = 0
+    watermark_column = data_feed.get("watermark_column")
+    last_watermark = data_feed.get("last_watermark_value")
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
-        stage="landing",
+        stage="clean",
+        master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
-        connector = {extraction_expr}
-        df = connector.fetch()
-        rows_inserted = 0
         if not df.is_empty():
             flat = connector.flatten(df)
             discovered = connector.discover_schema(flat)
@@ -380,10 +389,12 @@ def extraction_{friendly_name}(
             )
             rows_inserted = flat.height
         log.set_counts(
-            rows_read=df.height, rows_inserted=rows_inserted, watermark_value_start=data_feed.get("last_watermark_value")
+            rows_read=df.height,
+            rows_inserted=rows_inserted,
+            watermark_value_start=last_watermark,
+            watermark_value_end=(str(df[watermark_column].max()) if (not df.is_empty() and watermark_column) else last_watermark),
         )
 
-    watermark_column = data_feed.get("watermark_column")
     if not df.is_empty() and watermark_column:
         postgres_metadata.update_watermark(
             data_feed_id=str(data_feed["id"]), watermark_value=str(df[watermark_column].max()), run_id=context.run_id
@@ -397,33 +408,32 @@ def raw_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     extraction_{friendly_name}: pl.DataFrame,
-) -> Output[pl.DataFrame]:
+) -> Output[None]:
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
+    master_dagster_run_id = context.run.tags["master_dagster_run_id"]
+    df = extraction_{friendly_name}
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
         stage="raw",
+        master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
-        df = extraction_{friendly_name}
-        if not df.is_empty():
-            raw_run_dir = _data_lake_dir() / "raw" / "{friendly_name}" / f"run_id={{context.run_id}}"
-            raw_run_dir.mkdir(parents=True, exist_ok=True)
-            df.write_parquet(raw_run_dir / "{friendly_name}.parquet")
-        log.set_counts(rows_read=df.height)
-    return Output(df, metadata={{"audit_run_id": log.run_id, "row_count": df.height}})
+        write_raw_snapshot("{friendly_name}", context.run_id, df)
+        log.set_counts(
+            rows_read=df.height,
+            output_path=str(raw_snapshot_path("{friendly_name}", context.run_id)) if not df.is_empty() else None,
+        )
+    return Output(None, metadata={{"audit_run_id": log.run_id, "row_count": df.height}})
 
 
-@asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
-def clean_{friendly_name}(
-    raw_{friendly_name}: pl.DataFrame,
-) -> Output[None]:
+@asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}", deps=["raw_{friendly_name}"])
+def clean_{friendly_name}() -> Output[None]:
     # Pure pass-through: extraction_{friendly_name} already performed the
     # clean-layer write (see its own comment) to avoid flattening this
     # feed's nested source data twice. This asset exists only so
     # clean.{friendly_name} keeps a stable AssetKey for dbt source lineage
-    # -- there is no remaining validation-stage work for this connector kind.
-    return Output(None, metadata={{"skipped": True, "reason": "validation combined with extraction for this connector kind"}})
+    # -- there is no remaining clean-stage work for this connector kind.
+    return Output(None, metadata={{"skipped": True, "reason": "clean-layer write already performed by extraction for this connector kind"}})
 '''
 
 
@@ -431,15 +441,15 @@ def render(
     feeds: list[str], connector_feeds: list[dict], feed_schedules: list[dict], model_schedules: list[dict],
     domain_feeds: dict[str, list[str]],
 ) -> str:
-    feeds_repr = ", ".join(f'"{f}"' for f in feeds)
-
     connector_imports = []
     base_locations = {}
     connector_asset_blocks = []
     connector_asset_names = []
+    connector_feed_names = []
     for feed in connector_feeds:
         friendly_name = feed["feed_friendly_name"]
         kind = feed["connector_kind"]
+        connector_feed_names.append(friendly_name)
         if kind in _JSON_KINDS:
             connector_imports.append(
                 f'from dagster_data_platform.connectors.{friendly_name}_connector import Connector as _{friendly_name}_Connector'
@@ -457,14 +467,7 @@ def render(
     connector_assets_block = "\n".join(connector_asset_blocks)
     connector_asset_names_block = ", ".join(connector_asset_names)
 
-    # pipeline_init_<feed> is the master pipeline's real entry point --
-    # generated for *every* active feed, not just connector-driven ones,
-    # since customers/sales' hand-written extraction assets depend on it too
-    # (see extraction_assets.py/sales_assets.py).
-    pipeline_init_blocks = "\n".join(_render_pipeline_init(f) for f in feeds)
-    pipeline_init_names_block = ", ".join(f"pipeline_init_{f}" for f in feeds)
-
-    # Per DOMAIN now, not per feed -- a domain's transformation/serving dbt
+    # Per DOMAIN, not per feed -- a domain's transformation/serving dbt
     # assets are compile-isolated in their own dbt project
     # (dbt/domains/<domain>/, see Roadmap.md "multi-project dbt split") and
     # can span several feeds' models. DOMAIN_FEEDS is baked in as a literal
@@ -475,7 +478,7 @@ def render(
     # definitions.py's own independent glob -- both must agree, enforced by
     # `just start`'s ordering: generate-domain-projects always runs before
     # either glob ever executes, not by a shared source at runtime, see
-    # that script's module docstring).
+    # that script for why).
     def _domain_feeds_entry(domain: str, feeds_for_domain: list[str]) -> str:
         feed_list_repr = "[" + ", ".join(f'"{f}"' for f in feeds_for_domain) + "]"
         return f'"{domain}": {feed_list_repr}'
@@ -484,30 +487,54 @@ def render(
         _domain_feeds_entry(domain, feeds_for_domain) for domain, feeds_for_domain in domain_feeds.items()
     ) + "}"
 
+    # Every schedule now targets `master_pipeline` uniformly -- the only
+    # difference between a feed-type and model-type schedule is which
+    # orchestration_kind/orchestration_value pair it resolves
+    # (batch_group_friendly_name vs. raw model_schema, both baked in as
+    # codegen-time literals -- structural metadata, not runtime state, same
+    # reasoning as DOMAIN_FEEDS above).
     schedule_calls = []
     for row in feed_schedules:
         schedule_calls.append(
-            "    _make_feed_schedule(\n"
-            f'        python_name="{_schedule_python_name(row["schedule_id"], row["feed_friendly_name"])}",\n'
+            "    _make_master_pipeline_schedule(\n"
+            f'        python_name="{_schedule_python_name(row["schedule_id"])}",\n'
             f'        schedule_id="{row["schedule_id"]}",\n'
             f'        cron="{row["cron"]}",\n'
-            f'        feed_friendly_name="{row["feed_friendly_name"]}",\n'
-            '        controlling_object_type="feed",\n'
-            f'        controlling_object_friendly_name="{row["feed_friendly_name"]}",\n'
+            '        orchestration_kind="batch_group",\n'
+            f'        orchestration_value="{row["batch_group_friendly_name"]}",\n'
             "    ),"
         )
     for row in model_schedules:
         schedule_calls.append(
-            "    _make_feed_schedule(\n"
-            f'        python_name="{_schedule_python_name(row["schedule_id"], row["feed_friendly_name"])}",\n'
+            "    _make_master_pipeline_schedule(\n"
+            f'        python_name="{_schedule_python_name(row["schedule_id"])}",\n'
             f'        schedule_id="{row["schedule_id"]}",\n'
             f'        cron="{row["cron"]}",\n'
-            f'        feed_friendly_name="{row["feed_friendly_name"]}",\n'
-            '        controlling_object_type="model",\n'
-            f'        controlling_object_friendly_name="{row["model_friendly_name"]}",\n'
+            '        orchestration_kind="model_schema",\n'
+            f'        orchestration_value="{row["model_schema"]}",\n'
             "    ),"
         )
     schedules_block = "\n".join(schedule_calls) if schedule_calls else "    # no active schedule rows"
+
+    # python_name (== the generated ScheduleDefinition's own .name) ->
+    # (orchestration_kind, orchestration_value) -- every generated
+    # ScheduleDefinition now targets the same master_pipeline job (see
+    # _make_master_pipeline_schedule below), so a caller that needs to find
+    # "the schedule for feed X" (trigger_schedule_run.py) can no longer
+    # look one up by job_name; this is the structural lookup that replaces
+    # it. Keyed by python_name, not the raw schedule_id -- _schedule_python_name()
+    # strips schedule_id's dashes, which would make recovering the original
+    # schedule_id from a ScheduleDefinition's own .name lossy.
+    schedule_orchestration_entries = []
+    for row in feed_schedules:
+        schedule_orchestration_entries.append(
+            f'"{_schedule_python_name(row["schedule_id"])}": ("batch_group", "{row["batch_group_friendly_name"]}")'
+        )
+    for row in model_schedules:
+        schedule_orchestration_entries.append(
+            f'"{_schedule_python_name(row["schedule_id"])}": ("model_schema", "{row["model_schema"]}")'
+        )
+    schedule_orchestration_repr = "{" + ", ".join(schedule_orchestration_entries) + "}"
 
     return f'''"""GENERATED by scripts/generate_dagster_pipeline.py -- DO NOT EDIT BY HAND.
 
@@ -523,16 +550,20 @@ import polars as pl
 from dagster import (
     AssetExecutionContext,
     AssetSelection,
+    Config,
     DefaultScheduleStatus,
+    Failure,
+    OpExecutionContext,
     Output,
     RunRequest,
     SkipReason,
     asset,
     define_asset_job,
+    job,
+    op,
     schedule,
 )
 from dagster_dbt import DbtProject
-from dagster_k8s.executor import k8s_job_executor
 
 from connectors import CSVConnector, PostgresConnector
 {connector_imports_block}
@@ -541,7 +572,9 @@ from dagster_data_platform.assets.dbt_assets import (
     _build_transformation_assets_for_domain,
     domain_group_name,
 )
+from dagster_data_platform.dagster_launch import launch_and_wait
 from dagster_data_platform.pipeline_steps import parse_selected_steps
+from dagster_data_platform.raw_storage import raw_snapshot_path, read_raw_snapshot, write_raw_snapshot
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
@@ -562,13 +595,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def _data_lake_dir() -> Path:
     return Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
 
-
-# --- pipeline_init_<feed>: the master pipeline's real entry point ----------
-# One per active feed (connector-driven or hand-written) -- see
-# scripts/generate_dagster_pipeline.py's module docstring.
-{pipeline_init_blocks}
-
-ALL_PIPELINE_INIT_ASSETS = [{pipeline_init_names_block}]
 
 # DOMAIN_FEEDS: which domains exist and which feeds each spans (structural,
 # resolved from Postgres at codegen time -- see
@@ -616,57 +642,135 @@ ALL_DBT_ASSETS = list(TRANSFORMATION_ASSETS.values()) + list(SERVING_ASSETS.valu
 
 ALL_CONNECTOR_ASSETS = [{connector_asset_names_block}]
 
-# EXTRACTION+VALIDATION ONLY, a deliberate narrowing since the
-# multi-project dbt split (Roadmap.md) -- dbt assets now carry
-# group_name=domain_group_name(domain), a namespace disambiguated from
-# plain feed friendly_names (see dbt_assets.py::domain_group_name()), so
-# AssetSelection.groups(f) for a feed f can no longer accidentally include
-# any domain's dbt assets, cross-feed or otherwise. .upstream() is kept as
-# a defensive no-op (a feed's own extraction/raw/clean chain has no real
-# Dagster-level upstream dependency beyond its own pipeline_init today) --
-# not load-bearing, but harmless to leave in case that ever changes.
-FEED_JOBS = {{
-    f: define_asset_job(f"{{f}}_job", selection=AssetSelection.groups(f).upstream())
-    for f in [{feeds_repr}]
+# --- EXTRACTION_JOBS[feed] ---------------------------------------------------
+# One job per active feed (connector-driven or hand-written), bundling
+# extraction+raw+clean as ONE job/pod -- there is no separate "validation"
+# job anymore (Roadmap.md "Master pipeline orchestration"). Whether a given
+# run actually launches this job for a feed at all is decided live by
+# master_pipeline itself (data_feed.pipeline_steps' "extraction" gate), not
+# baked in here or checked inside the assets -- see run_master_pipeline
+# below.
+EXTRACTION_JOBS = {{
+    f: define_asset_job(f"extraction_{{f}}_job", selection=AssetSelection.groups(f))
+    for f in [{", ".join(f'"{f}"' for f in feeds)}]
 }}
-ALL_FEED_JOBS = list(FEED_JOBS.values())
+ALL_EXTRACTION_JOBS = list(EXTRACTION_JOBS.values())
 
-# One per resolved domain -- the ephemeral, k8s_job_executor-run
-# transformation+serving build for that domain (Roadmap.md "multi-project
-# dbt split"). k8s_job_executor launches each STEP (here: the domain's one
-# or two dbt @dbt_assets steps) as its own k8s Job/pod, inheriting
-# K8sRunLauncher's existing volume/env config automatically (confirmed via
-# K8sStepHandler._get_container_context() in the installed dagster_k8s
-# source -- it builds from the live run launcher config, not a fresh empty
-# one).
-#
-# AssetSelection.groups(domain_group_name(domain)), NOT a bare
-# AssetSelection.groups(domain) -- confirmed live, the hard way: domain
-# names and feed friendly_names share the same flat group_name string
-# space, so a bare domain string collides whenever a domain happens to be
-# named the same as a feed (the 'sales' domain vs. the 'sales' feed; the
-# 'police_crimes' ODS domain vs. the 'police_crimes' feed it defaults its
-# batch_ods_name from), silently pulling that feed's own extraction/raw/clean
-# steps into what should be a pure dbt-only domain job. See
-# dbt_assets.py::domain_group_name()'s own docstring for the full
-# reasoning -- this must stay in sync with the group_name each domain's
-# dbt assets actually carry.
-DOMAIN_JOBS = {{
-    domain: define_asset_job(
-        f"{{domain}}_transformation_serving_job",
-        selection=AssetSelection.groups(domain_group_name(domain)),
-        executor_def=k8s_job_executor,
-    )
+# --- MODELING_JOBS[domain] / SERVING_JOBS[domain] ---------------------------
+# One pair per resolved domain -- MODELING_JOBS covers clean -> staging ->
+# model (the 'transformation' pipeline step); SERVING_JOBS covers model ->
+# serve. Selected via the exact AssetsDefinition object each domain factory
+# returned above (TRANSFORMATION_ASSETS[domain]/SERVING_ASSETS[domain]), not
+# AssetSelection.groups(...) -- both dbt-assets defs for one domain share
+# the same group_name (domain_group_name(domain), see dbt_assets.py), so a
+# group-based selection would pull both into either job; selecting the
+# AssetsDefinition object directly is unambiguous. No k8s_job_executor here
+# -- each of these is already its own top-level job/pod (dropped entirely,
+# see this script's module docstring).
+MODELING_JOBS = {{
+    domain: define_asset_job(f"{{domain}}_modeling_job", selection=[TRANSFORMATION_ASSETS[domain]])
     for domain in DOMAIN_FEEDS
 }}
-ALL_DOMAIN_JOBS = list(DOMAIN_JOBS.values())
+SERVING_JOBS = {{
+    domain: define_asset_job(f"{{domain}}_serving_job", selection=[SERVING_ASSETS[domain]])
+    for domain in DOMAIN_FEEDS
+}}
+ALL_MODELING_JOBS = list(MODELING_JOBS.values())
+ALL_SERVING_JOBS = list(SERVING_JOBS.values())
 
 
-def _make_feed_schedule(
-    *, python_name, schedule_id, cron, feed_friendly_name, controlling_object_type, controlling_object_friendly_name
-):
-    job = FEED_JOBS[feed_friendly_name]
+# --- master_pipeline: the single entry point --------------------------------
+# Every trigger path (schedule, manual launch) goes through this one job,
+# parameterized by orchestration_kind ('batch_group' or 'model_schema') +
+# orchestration_value -- never a per-feed/per-domain job of its own (see
+# Roadmap.md "Master pipeline orchestration" for the full confirmed
+# design). Everything else (which feeds, which domain, which steps are
+# selected) is derived live from Postgres inside run_master_pipeline, not
+# baked in here.
+class MasterPipelineConfig(Config):
+    orchestration_kind: str
+    orchestration_value: str
 
+
+@op(name="run_master_pipeline")
+def run_master_pipeline(
+    context: OpExecutionContext, config: MasterPipelineConfig, postgres_metadata: PostgresMetadataResource
+) -> None:
+    master_dagster_run_id = context.run_id
+    kind = config.orchestration_kind
+    value = config.orchestration_value
+
+    # batch_group-triggered runs always produce ODS output only (never a
+    # hand-modeled domain); model_schema-triggered runs reverse-engineer
+    # the feeds they need from lakehouse_models.depends_on_feeds, and build
+    # the hand-modeled domain (confirmed design, see Roadmap.md). A
+    # batch_group is expected to map to exactly one ODS domain (1:1, not
+    # enforced -- see Backlog.md); ods_domain is None for an
+    # extraction-only batch (no feed in it is ODS-enabled), which is valid.
+    if kind == "batch_group":
+        feeds = postgres_metadata.get_batch_group_feeds(value)
+        ods_domain = postgres_metadata.get_batch_group_ods_domain(value)
+        domains = [ods_domain] if ods_domain else []
+    elif kind == "model_schema":
+        domain, feeds = postgres_metadata.get_domain_feeds_for_model_schema(value)
+        domains = [domain]
+    else:
+        raise Failure(f"Unknown orchestration_kind {{kind!r}} -- expected 'batch_group' or 'model_schema'")
+
+    if not feeds:
+        raise Failure(f"No active feeds resolved for orchestration_kind={{kind!r}} orchestration_value={{value!r}}")
+
+    # The master pipeline's own first action: create every feed-run/
+    # model-run row up front, keyed by ITS OWN run id -- each child job
+    # looks its row up by (identity, master_dagster_run_id) and only
+    # updates it, it never creates one itself (see
+    # PostgresMetadataResource.record_run_started/record_model_run_started).
+    for feed in feeds:
+        data_feed = postgres_metadata.get_data_feed(feed)
+        postgres_metadata.record_run_started(
+            data_feed_id=str(data_feed["id"]),
+            master_dagster_run_id=master_dagster_run_id,
+            tracking_group=data_feed["batch_group_friendly_name"],
+        )
+    for domain in domains:
+        postgres_metadata.record_model_run_started(
+            model_key=domain,
+            uses_feeds=",".join(feeds),
+            master_dagster_run_id=master_dagster_run_id,
+            tracking_group=domain,
+        )
+
+    # Extraction: per-feed gating happens HERE, once, rather than inside
+    # each asset -- a feed with "extraction" deselected in its own
+    # pipeline_steps simply never gets its job launched this run. A child
+    # job failure raises dagster.Failure (see dagster_launch.launch_and_wait),
+    # which propagates straight out of this op and fails the master
+    # pipeline itself, stopping here -- fail-fast, not best-effort across
+    # the remaining feeds (Roadmap.md: "propagates the failure to the
+    # master parent pipeline so it stops there").
+    for feed in feeds:
+        data_feed = postgres_metadata.get_data_feed(feed)
+        if "extraction" not in parse_selected_steps(data_feed["pipeline_steps"]):
+            context.log.info(f"Skipping extraction for feed {{feed!r}} -- not selected in pipeline_steps")
+            continue
+        launch_and_wait(EXTRACTION_JOBS[feed].name, tags={{"master_dagster_run_id": master_dagster_run_id}})
+
+    # Modeling/serving always launch for every resolved domain -- per-feed
+    # cherry-picking for these two steps stays inside the domain's own dbt
+    # build (dbt_assets.py::_run_dbt_build_and_log_stages), since a domain
+    # job can span multiple feeds with different pipeline_steps selections.
+    for domain in domains:
+        launch_and_wait(MODELING_JOBS[domain].name, tags={{"master_dagster_run_id": master_dagster_run_id}})
+    for domain in domains:
+        launch_and_wait(SERVING_JOBS[domain].name, tags={{"master_dagster_run_id": master_dagster_run_id}})
+
+
+@job(name="master_pipeline")
+def master_pipeline():
+    run_master_pipeline()
+
+
+def _make_master_pipeline_schedule(*, python_name, schedule_id, cron, orchestration_kind, orchestration_value):
     # postgres_metadata is declared as a direct parameter (not pulled from
     # context.resources) -- Dagster infers the resource requirement from
     # the parameter name itself; passing required_resource_keys= as well
@@ -676,22 +780,25 @@ def _make_feed_schedule(
     @schedule(
         name=python_name,
         cron_schedule=cron,
-        job=job,
+        job=master_pipeline,
         default_status=DefaultScheduleStatus.STOPPED,
     )
     def _fn(context, postgres_metadata: PostgresMetadataResource):
-        pg = postgres_metadata
-        if not pg.is_schedule_active(schedule_id):
+        if not postgres_metadata.is_schedule_active(schedule_id):
             return SkipReason(f"schedule {{schedule_id}} is no longer active")
-        data_feed = pg.get_data_feed(feed_friendly_name)
         return RunRequest(
             tags={{
                 "schedule_id": schedule_id,
-                "controlling_object_type": controlling_object_type,
-                "controlling_object_friendly_name": controlling_object_friendly_name,
-                "feed_friendly_name": feed_friendly_name,
-                "batch_group_friendly_name": data_feed["batch_group_friendly_name"],
-            }}
+                "orchestration_kind": orchestration_kind,
+                "orchestration_value": orchestration_value,
+            }},
+            run_config={{
+                "ops": {{
+                    "run_master_pipeline": {{
+                        "config": {{"orchestration_kind": orchestration_kind, "orchestration_value": orchestration_value}}
+                    }}
+                }}
+            }},
         )
 
     return _fn
@@ -701,39 +808,11 @@ ALL_SCHEDULES = [
 {schedules_block}
 ]
 
-
-# --- trigger resolvers ------------------------------------------------------
-# Plain functions, not asset/job/schedule factories -- these resolve WHICH
-# jobs to launch and in what order, live, per call (same "structural vs.
-# runtime" split as everything else in this file: FEED_JOBS/DOMAIN_JOBS
-# themselves are structural/codegen'd, but which of them a given trigger
-# invocation needs is runtime-only information, resolved via
-# PostgresMetadataResource). Dagster jobs are independently launched runs,
-# not a native job-DAG in this version -- callers are expected to launch the
-# returned jobs SEQUENTIALLY (e.g. via DagsterGraphQLClient.submit_job_execution,
-# same pattern as trigger_schedule_run.py), waiting for each to complete
-# before launching the next. True dependency-aware sequencing is a possible
-# hardening follow-up if races are observed in practice, not built here.
-
-def resolve_run_plan_for_model(model_friendly_name: str, postgres_metadata: PostgresMetadataResource) -> list:
-    """'Trigger by lakehouse model': resolves the model's domain, unions
-    depends_on_feeds across every active lakehouse_models row sharing that
-    domain (one level, not recursive), returns that domain's feed jobs
-    followed by the domain job itself -- the user shouldn't have to know or
-    care which feeds a model depends on, only that triggering the model
-    keeps every dependent feed fresh first."""
-    domain, feeds = postgres_metadata.resolve_model_domain_and_feeds(model_friendly_name)
-    return [FEED_JOBS[f] for f in feeds] + [DOMAIN_JOBS[domain]]
-
-
-def resolve_run_plan_for_batch_group(batch_group_friendly_name: str, postgres_metadata: PostgresMetadataResource) -> list:
-    """'Trigger by batch group': every active feed sharing this batch_group,
-    feed jobs only -- no domain job implied. batch_group and model_schema
-    stay two structurally separate axes (a batch's feeds may span multiple
-    domains), matching data_processing_runs.tracking_group_type's existing
-    design."""
-    feeds = postgres_metadata.get_batch_group_feeds(batch_group_friendly_name)
-    return [FEED_JOBS[f] for f in feeds]
+# ScheduleDefinition.name -> (orchestration_kind, orchestration_value) --
+# see scripts/generate_dagster_pipeline.py's render() for why this exists
+# (every schedule targets the same master_pipeline job now, so looking one
+# up "for feed X" needs this rather than a job_name match).
+SCHEDULE_ORCHESTRATION = {schedule_orchestration_repr}
 '''
 
 
@@ -768,8 +847,9 @@ def main() -> None:
     OUTPUT_PATH.write_text(render(feeds, connector_feeds, feed_schedules, model_schedules, domain_feeds))
     CLEAN_SOURCE_TABLES_OUTPUT_PATH.write_text(_render_clean_source_tables(feeds))
     print(
-        f"Generated {OUTPUT_PATH} -- {len(feeds)} feed job(s), {len(domain_feeds)} domain job(s), "
-        f"{len(connector_feeds)} connector-driven feed(s), {len(feed_schedules) + len(model_schedules)} schedule(s)."
+        f"Generated {OUTPUT_PATH} -- {len(feeds)} extraction job(s), {len(domain_feeds)} modeling/serving job pair(s), "
+        f"{len(connector_feeds)} connector-driven feed(s), {len(feed_schedules) + len(model_schedules)} schedule(s), "
+        f"1 master_pipeline job."
     )
     print(f"Generated {CLEAN_SOURCE_TABLES_OUTPUT_PATH} -- {len(feeds)} clean source table(s).")
 

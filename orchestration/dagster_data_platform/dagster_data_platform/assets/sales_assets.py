@@ -1,11 +1,10 @@
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 import polars as pl
 from dagster import AssetExecutionContext, Output, asset
 
+from dagster_data_platform.raw_storage import raw_snapshot_path, read_raw_snapshot, write_raw_snapshot
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from connectors import infer_column_definitions
@@ -13,19 +12,8 @@ from raw_to_clean import reconcile_schema, validate_schema, write_clean_snapshot
 
 FEED_FRIENDLY_NAME = "sales"
 FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
-RAW_SUBDIR = "raw/sales"
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-
-
-def _data_lake_dir() -> Path:
-    return Path(os.environ["DATA_LAKE_PATH"]) if "DATA_LAKE_PATH" in os.environ else REPO_ROOT / "data-lake"
-
-
-def _raw_dir() -> Path:
-    return _data_lake_dir() / RAW_SUBDIR
-
-# Stub landing payload for Phase 6 — a synthetic supermarket sales run,
+# Stub extraction payload for Phase 6 — a synthetic supermarket sales run,
 # standing in for a real POS export until this feed gets a real source.
 # Regenerated (not fixed) each materialization, same reasoning as the
 # customers stub: prove data actually flows and changes every run.
@@ -92,31 +80,24 @@ def _generate_sales_rows(n: int = 20) -> pl.DataFrame:
 def extraction_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    pipeline_init_sales: set,
 ) -> Output[pl.DataFrame]:
-    if "extraction" not in pipeline_init_sales:
-        return Output(pl.DataFrame(), metadata={"skipped": True, "reason": "extraction not selected"})
+    # No stage-log call of its own -- see extraction_customers' identical
+    # comment (extraction_assets.py) for why: `landing` no longer exists as
+    # a schema-level stage, and step-selection gating happens once, at the
+    # master pipeline's job-launch decision, not per-asset.
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
-    with postgres_metadata.log_data_feed_stage(
+    df = _generate_sales_rows()
+    # Schema discovery/registry-write is extraction's job, complete before
+    # clean_sales ever runs -- clean_sales only reads schema_registry
+    # (get_current_schema()), it never writes to it.
+    postgres_metadata.sync_schema_registry(
         data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
-        stage="landing",
-        dagster_run_id=context.run_id,
-    ) as log:
-        df = _generate_sales_rows()
-        # Schema discovery/registry-write is extraction's job, complete
-        # before clean_sales ever runs -- clean_sales only reads
-        # schema_registry (get_current_schema()), it never writes to it.
-        postgres_metadata.sync_schema_registry(
-            data_feed_id=str(data_feed["id"]),
-            discovered_column_definitions=infer_column_definitions(df),
-            metadata_source_pk=data_feed["source_pk"],
-            discovered_primary_key_columns=None,
-            created_by="extraction_sales",
-        )
-        log.set_counts(rows_read=df.height)
-
-    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
+        discovered_column_definitions=infer_column_definitions(df),
+        metadata_source_pk=data_feed["source_pk"],
+        discovered_primary_key_columns=None,
+        created_by="extraction_sales",
+    )
+    return Output(df, metadata={"row_count": df.height})
 
 
 @asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
@@ -124,61 +105,66 @@ def raw_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     extraction_sales: pl.DataFrame,
-) -> Output[pl.DataFrame]:
+) -> Output[None]:
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
+    master_dagster_run_id = context.run.tags["master_dagster_run_id"]
+    df = extraction_sales
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
         stage="raw",
+        master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
         # raw = a verbatim, durable, platform-internal copy of whatever was
         # extracted this run -- zero transformation (same contract as
         # raw_police_crimes/raw_customers). No archive step for this feed --
         # synthetic smoketest data, no retention need.
-        df = extraction_sales
-        if not df.is_empty():
-            raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
-            raw_run_dir.mkdir(parents=True, exist_ok=True)
-            df.write_parquet(raw_run_dir / "sales.parquet")
-        log.set_counts(rows_read=df.height, output_path=str(_raw_dir() / f"run_id={context.run_id}") if not df.is_empty() else None)
+        write_raw_snapshot(FEED_FRIENDLY_NAME, context.run_id, df)
+        log.set_counts(
+            rows_read=df.height,
+            output_path=str(raw_snapshot_path(FEED_FRIENDLY_NAME, context.run_id)) if not df.is_empty() else None,
+        )
 
-    return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
+    return Output(None, metadata={"audit_run_id": log.run_id, "row_count": df.height})
 
 
-@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
+@asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME, deps=["raw_sales"])
 def clean_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     iceberg_catalog: IcebergCatalogResource,
-    raw_sales: pl.DataFrame,
-    pipeline_init_sales: set,
 ) -> Output[None]:
-    if "validation" not in pipeline_init_sales:
-        return Output(None, metadata={"skipped": True, "reason": "validation not selected"})
+    # Reads raw_sales' durable parquet file back from disk, rather than
+    # accepting its DataFrame as an in-memory asset-dependency value -- see
+    # clean_customers' identical comment (extraction_assets.py) for the
+    # full reasoning (raw_sales is an order-only `deps=` entry, not a
+    # function parameter -- a plain parameter crashes live since Dagster's
+    # IO manager treats an upstream Output(None) as nothing-to-load).
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
-    df = raw_sales
+    master_dagster_run_id = context.run.tags["master_dagster_run_id"]
+    df = read_raw_snapshot(FEED_FRIENDLY_NAME, context.run_id)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
         stage="clean",
+        master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
         # Read-only against schema_registry -- extraction_sales already
         # discovered/synced it; this step only reads the now-current
         # contract to reconcile/validate/write.
-        column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
-        df = reconcile_schema(df, column_definitions)
-        validate_schema(df, column_definitions)
+        if not df.is_empty():
+            column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
+            df = reconcile_schema(df, column_definitions)
+            validate_schema(df, column_definitions)
 
-        catalog = iceberg_catalog.get_catalog()
-        write_clean_snapshot(
-            catalog,
-            namespace="clean",
-            table_name="sales",
-            df=df,
-            column_definitions=column_definitions,
-        )
+            catalog = iceberg_catalog.get_catalog()
+            write_clean_snapshot(
+                catalog,
+                namespace="clean",
+                table_name="sales",
+                df=df,
+                column_definitions=column_definitions,
+            )
         log.set_counts(rows_inserted=df.height)
 
     return Output(None, metadata={"audit_run_id": log.run_id, "rows_inserted": df.height})

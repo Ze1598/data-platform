@@ -4,9 +4,11 @@
 
 with base as (
     select
-        s.run_id, s.dagster_run_id, s.tracking_group, s.tracking_group_type,
+        s.run_id, s.master_dagster_run_id, s.extraction_dagster_run_id,
+        s.transformation_dagster_run_id,
+        s.serving_dagster_run_id, s.tracking_group, s.tracking_group_type,
         s.job_started_timestamp, s.job_ended_timestamp, s.job_successful,
-        s.landing_rows_read, s.raw_rows_read, s.clean_rows_inserted,
+        s.raw_rows_read, s.clean_rows_inserted,
         s.staging_rows_updated, s.model_rows_updated, s.serve_rows_read,
         f._key_hash as feed_key,
         m._key_hash as lakehouse_model_key,
@@ -18,7 +20,7 @@ with base as (
 hashed as (
     select *,
         {{ row_hash(['run_id']) }} as _key_hash,
-        {{ row_hash(['job_successful', 'job_ended_timestamp', 'landing_rows_read', 'raw_rows_read', 'clean_rows_inserted', 'staging_rows_updated', 'model_rows_updated', 'serve_rows_read', 'is_deleted']) }} as _attr_hash
+        {{ row_hash(['job_successful', 'job_ended_timestamp', 'raw_rows_read', 'clean_rows_inserted', 'staging_rows_updated', 'model_rows_updated', 'serve_rows_read', 'is_deleted']) }} as _attr_hash
     from base
 )
 {% if is_incremental() %}

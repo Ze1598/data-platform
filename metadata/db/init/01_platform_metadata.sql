@@ -82,13 +82,14 @@ create table data_feed (
     -- infrastructure), 'spark' opt-in for feeds whose volume actually
     -- needs distributed execution (see Learnings.md, Phase 6)
     processing_engine         text not null default 'polars' check (processing_engine in ('polars', 'spark')),
-    -- comma-separated pipeline_steps.id values -- which of the four pipeline
-    -- steps (extraction/validation/transformation/serving) this feed's
-    -- master pipeline actually runs. Resolved live, per run, not baked into
-    -- codegen (see pipeline_init_<feed>, generate_dagster_pipeline.py) --
-    -- changing this takes effect on the next run, no regen needed. All four
-    -- by default (today's existing full-chain behavior).
-    pipeline_steps            text not null default '0,1,2,3',
+    -- comma-separated pipeline_steps.id values -- which of the three
+    -- pipeline steps (extraction/transformation/serving -- extraction
+    -- covers raw+clean as one job, see pipeline_steps below) this feed's
+    -- master pipeline actually runs, decided live by the master pipeline
+    -- (which stage-jobs it launches at all), not baked into codegen --
+    -- changing this takes effect on the next run, no regen needed. All
+    -- three by default (today's existing full-chain behavior).
+    pipeline_steps            text not null default '0,1,2',
     -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
     last_watermark_value      text,
     is_active                 boolean not null default true,
@@ -168,12 +169,15 @@ insert into load_type (id, label, description) values
 
 -- ---------------------------------------------------------------------------
 -- pipeline_steps (lookup for data_feed.pipeline_steps / lakehouse_models.
--- pipeline_steps). NOT the same axis as the landing/raw/clean/staging/
--- model/serve schemas data_processing_runs tracks -- those are storage
--- layers (where data lives), these are pipeline steps (what process phase
--- is running). A single step can span multiple schemas (extraction writes
--- both landing and raw), so the two are deliberately kept separate rather
--- than collapsed into one vocabulary.
+-- pipeline_steps). NOT the same axis as the raw/clean/staging/model/serve
+-- schemas data_processing_runs tracks -- those are storage layers (where
+-- data lives), these are pipeline steps (what process phase is running,
+-- and which independent Dagster job runs it -- see Roadmap.md "Master
+-- pipeline orchestration"). A single step can span multiple schemas
+-- (extraction covers both raw and clean, in one job/run -- raw exists
+-- specifically to feed clean, so the two aren't split into separate
+-- steps), so the two axes are deliberately kept separate rather than
+-- collapsed into one vocabulary.
 -- ---------------------------------------------------------------------------
 create table pipeline_steps (
     id            smallint primary key,
@@ -182,10 +186,9 @@ create table pipeline_steps (
 );
 
 insert into pipeline_steps (id, label, description) values
-    (0, 'extraction', 'Fetch from the source and land/copy it durably -- the only step that ever connects to a data source'),
-    (1, 'validation', 'Schema validation (and flattening, for nested sources) turning raw into clean'),
-    (2, 'transformation', 'Business logic: clean -> staging -> model'),
-    (3, 'serving', 'Serve-layer view generation from model');
+    (0, 'extraction', 'Fetch from the source, land/copy it durably, and validate it into clean -- the only step that ever connects to a data source'),
+    (1, 'transformation', 'Business logic: clean -> staging -> model'),
+    (2, 'serving', 'Serve-layer view generation from model');
 
 -- ---------------------------------------------------------------------------
 -- lakehouse_models (fact/dim config -- NOT staging; staging stays pure
@@ -245,14 +248,13 @@ create table lakehouse_models (
     -- tagged with two feed tags gets claimed by two competing @dbt_assets
     -- defs" for why this exists.
     owning_feed_id        uuid not null references data_feed(id),
-    -- comma-separated pipeline_steps.id values -- a model has no extraction/
-    -- validation of its own (those belong to the feed(s) it depends on), so
-    -- this only ever meaningfully gates 'serving' (2,3 = transformation+
-    -- serving by default). Resolved at codegen time by
-    -- generate_serve_views.py, not live per-run (see the master pipeline
-    -- addendum) -- a model's own serve views simply aren't generated when
-    -- serving isn't selected.
-    pipeline_steps        text not null default '2,3',
+    -- comma-separated pipeline_steps.id values -- a model has no extraction
+    -- of its own (that belongs to the feed(s) it depends on), so this only
+    -- ever meaningfully gates 'serving' (1,2 = transformation+serving by
+    -- default). Resolved at codegen time by generate_serve_views.py, not
+    -- live per-run (see the master pipeline addendum) -- a model's own
+    -- serve views simply aren't generated when serving isn't selected.
+    pipeline_steps        text not null default '1,2',
     -- denormalized watermark state for the orchestrator; data_processing_runs is the full run history
     last_watermark_value  text,
     last_run_id           uuid,
@@ -297,22 +299,35 @@ create table data_processing_runs (
     -- either a batch_group value or a model_schema value, depending on tracking_group_type
     tracking_group                  text not null,
     tracking_group_type             text not null check (tracking_group_type in ('batch_group', 'model_schema')),
-    dagster_run_id                  text not null,
+    -- The master pipeline's own dagster_run_id (Roadmap.md "Master pipeline
+    -- orchestration") -- created once, by the master pipeline job, before
+    -- any of the three child stage jobs run. The three columns below
+    -- record each stage's own separate dagster_run_id once that stage's
+    -- job actually executes -- a child stage job is a genuinely different
+    -- Dagster run from the master and from its sibling stages, so one
+    -- logical pipeline execution now spans up to four distinct run ids,
+    -- not one. Extraction covers raw+clean as one job/run (raw and clean
+    -- are tightly coupled -- raw exists specifically to feed clean,
+    -- nothing else consumes it -- so there is no separate "validation" run
+    -- id column); the five schema-level column groups below
+    -- (is_raw_successful/is_clean_successful/etc.) stay fully independent
+    -- of each other regardless, preserving exactly the granularity a
+    -- future rerun-just-raw-to-clean feature would need, even though this
+    -- doesn't build that feature.
+    master_dagster_run_id           text not null,
+    extraction_dagster_run_id       text,
+    transformation_dagster_run_id   text,
+    serving_dagster_run_id          text,
     job_started_timestamp           timestamptz not null default now(),
     job_ended_timestamp             timestamptz,
     job_successful                  boolean,
 
-    is_landing_successful           boolean,
-    landing_end_timestamp           timestamptz,
-    landing_error_message           text,
-    landing_rows_read               bigint,
-    landing_rows_inserted           bigint,
-    landing_rows_updated            bigint,
-    landing_rows_deleted            bigint,
-    landing_output_path             text,
-    landing_watermark_value_start   text,
-    landing_watermark_value_end     text,
-
+    -- No "landing" stage column group -- "landing" was never a real
+    -- pipeline concept (see Roadmap.md's terminology cleanup), just a
+    -- historical mislabeling of the fetch sub-step within extraction. Its
+    -- role (fetch outcome, watermark tracking) folds into raw's own
+    -- columns below, since raw is the legitimate storage-layer name for
+    -- what the fetch actually produces durably.
     is_raw_successful               boolean,
     raw_end_timestamp               timestamptz,
     raw_error_message               text,
@@ -377,11 +392,11 @@ create table data_processing_runs (
 );
 
 create unique index uq_data_processing_runs_feed
-    on data_processing_runs (data_feed_id, dagster_run_id)
+    on data_processing_runs (data_feed_id, master_dagster_run_id)
     where data_feed_id is not null;
 
 create unique index uq_data_processing_runs_model
-    on data_processing_runs (model_key, dagster_run_id)
+    on data_processing_runs (model_key, master_dagster_run_id)
     where model_key is not null;
 
 create index idx_data_processing_runs_feed_started
@@ -390,5 +405,5 @@ create index idx_data_processing_runs_feed_started
 create index idx_data_processing_runs_model_started
     on data_processing_runs (model_key, job_started_timestamp desc);
 
-create index idx_data_processing_runs_dagster_run
-    on data_processing_runs (dagster_run_id);
+create index idx_data_processing_runs_master_dagster_run
+    on data_processing_runs (master_dagster_run_id);

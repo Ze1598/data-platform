@@ -1,0 +1,23 @@
+# NodePort (not plain ClusterIP): paired with a kind extraPortMapping
+# (hostPort 3000 -> containerPort 30300, platform/kind/kind-cluster.yaml),
+# this keeps `localhost:3000` working for the Dagit UI and for every host-
+# side script that already targets it (trigger_schedule_run.py,
+# trigger_master_pipeline.py, verify-pipeline/verify-schedule) unchanged --
+# same pattern as metadata/k8s/service.yaml (Postgres) and Trino's NodePort.
+# Also reachable in-cluster at dagster-webserver.orchestration.svc.cluster.local:3000
+# -- what master_pipeline's own pod uses (dagster.yaml's
+# DAGSTER_WEBSERVER_HOST), since "localhost" from inside a pod doesn't
+# resolve to this Service the way it does from the host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dagster-webserver
+  namespace: orchestration
+spec:
+  type: NodePort
+  selector:
+    app: dagster-webserver
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30300

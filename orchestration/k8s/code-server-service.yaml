@@ -1,0 +1,16 @@
+# ClusterIP -- only the webserver/daemon Deployments need to reach this
+# (via workspace.yaml's grpc_server host/port), nothing outside the
+# cluster does. Same pattern as query-engine/minio, query-engine/polaris.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dagster-code-server
+  namespace: orchestration
+spec:
+  type: ClusterIP
+  selector:
+    app: dagster-code-server
+  ports:
+    - name: grpc
+      port: 4000
+      targetPort: 4000

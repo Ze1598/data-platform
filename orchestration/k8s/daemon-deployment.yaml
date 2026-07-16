@@ -1,0 +1,66 @@
+# The Dagster daemon -- the background loop that evaluates schedules,
+# polls sensors, and picks up QUEUED runs to hand to K8sRunLauncher (see
+# Learnings.md, "A submitted run sits in QUEUED forever without the daemon
+# running"). This is the piece that actually calls
+# K8sRunLauncher.launch_run() -- hence load_incluster_config: true in
+# dagster-incluster.yaml and the RBAC grant in rbac.yaml, both required
+# specifically because of this Deployment, not the webserver or
+# code-server. No Service -- nothing calls into the daemon; it only calls
+# out (to the code-server via workspace.yaml, and to the k8s API to
+# launch runs).
+#
+# DAGSTER_HOME is a writable emptyDir, NOT the ConfigMap mount directly --
+# see webserver-deployment.yaml's identical comment for why (confirmed
+# live: Dagster's telemetry/NUX subsystems write into DAGSTER_HOME at
+# startup, which fails against a read-only ConfigMap mount).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-daemon
+  namespace: orchestration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dagster-daemon
+  template:
+    metadata:
+      labels:
+        app: dagster-daemon
+    spec:
+      initContainers:
+        - name: copy-dagster-config
+          image: data-platform-orchestration:latest
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "cp /dagster-config/dagster.yaml /dagster-config/workspace.yaml /dagster_home/"]
+          volumeMounts:
+            - name: dagster-config
+              mountPath: /dagster-config
+              readOnly: true
+            - name: dagster-home
+              mountPath: /dagster_home
+      containers:
+        - name: dagster-daemon
+          image: data-platform-orchestration:latest
+          imagePullPolicy: IfNotPresent
+          command: ["dagster-daemon"]
+          args: ["run", "-w", "/dagster_home/workspace.yaml"]
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          env:
+            - name: DAGSTER_HOME
+              value: /dagster_home
+            - name: POSTGRES_HOST
+              value: postgres.metadata.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /dagster_home
+      volumes:
+        - name: dagster-config
+          configMap:
+            name: dagster-instance-incluster
+        - name: dagster-home
+          emptyDir: {}

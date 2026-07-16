@@ -36,11 +36,11 @@ keeps every domain's copy in sync with it.
 """
 
 import os
-import re
 import shutil
 from pathlib import Path
 
 import psycopg
+from domain_naming import slugify_domain
 
 CONN_KWARGS = dict(
     host=os.environ.get("POSTGRES_HOST", "localhost"),
@@ -54,23 +54,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOMAINS_DIR = REPO_ROOT / "dbt" / "domains"
 SHARED_MACROS_DIR = REPO_ROOT / "dbt" / "_shared" / "macros"
 
-_SLUG_INVALID = re.compile(r"[^a-z0-9_]+")
-
-
-def slugify_domain(raw: str) -> str:
-    """Turns free-text model_schema/batch_ods_name into a valid directory
-    name / dbt project name -- lowercase, non-alnum -> underscore, never
-    starting with a digit. The frontend validates new domain names against
-    this same shape at entry time (see 3_Lakehouse_Models.py/
-    2_Data_Feeds.py) so a value reaching this script should already be
-    valid; this is a defensive second pass, not the primary guard.
-    """
-    slug = _SLUG_INVALID.sub("_", raw.strip().lower()).strip("_")
-    if not slug:
-        raise ValueError(f"model_schema/batch_ods_name {raw!r} has no valid characters for a domain name")
-    if slug[0].isdigit():
-        slug = f"d_{slug}"
-    return slug
+# slugify_domain() re-exported from the domain_naming package (not defined
+# here anymore) -- every other generate_*.py script in this directory
+# imports it from this module (`from generate_domain_projects import
+# slugify_domain`), so the import above is kept re-exportable rather than
+# updating all six call sites to import from domain_naming directly.
 
 
 def fetch_domain_names(cur) -> list[str]:

@@ -72,18 +72,18 @@ def _render_view(*, model_name: str, owning_feed: str, filter_to_current: bool) 
 
 
 def fetch_lakehouse_models(cur) -> list[dict]:
-    # A model with 'serving' (pipeline_steps id 3) deselected simply never
+    # A model with 'serving' (pipeline_steps id 2) deselected simply never
     # gets its _latest/_historical views generated -- resolved here, at
     # codegen time, not live per-run (unlike data_feed.pipeline_steps'
-    # extraction/validation gates) -- see metadata/DataModel.md's
-    # `pipeline_steps` section and the master pipeline design.
+    # extraction gate) -- see metadata/DataModel.md's `pipeline_steps`
+    # section and the master pipeline design.
     cur.execute(
         """
         select lm.table_name, lm.model_schema, lm.scd_type, df.friendly_name as owning_feed
         from lakehouse_models lm
         join data_feed df on df.id = lm.owning_feed_id
         where lm.is_active = true
-          and '3' = ANY(string_to_array(lm.pipeline_steps, ','))
+          and '2' = ANY(string_to_array(lm.pipeline_steps, ','))
         order by lm.table_name
         """
     )

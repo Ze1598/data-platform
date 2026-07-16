@@ -122,8 +122,8 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
     )
     pipeline_step_labels = st.multiselect(
         "Pipeline steps", list(pipeline_step_id_by_label.keys()), default=defaults["pipeline_step_labels"],
-        help="Which of the four pipeline steps this feed's master pipeline actually runs -- resolved "
-        "live, per run, by pipeline_init_<feed>. See metadata/DataModel.md, 'pipeline_steps'.",
+        help="Which of the three pipeline steps this feed's master pipeline actually runs -- decided "
+        "live, per run, by the master pipeline itself. See metadata/DataModel.md, 'pipeline_steps'.",
         key=f"{key_prefix}_pipeline_steps",
     )
     ods_enabled = st.checkbox(

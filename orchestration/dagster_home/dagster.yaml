@@ -7,6 +7,12 @@
 # resolve POSTGRES_HOST to different values (localhost here via NodePort;
 # postgres.metadata.svc.cluster.local in-cluster, injected as a pod env
 # var by the run launcher config) — that's the only difference.
+#
+# dagster-incluster.yaml (same directory) is this file's sibling for the
+# in-cluster webserver/daemon Deployments (Roadmap.md "Master pipeline
+# orchestration" -- in-cluster Dagster hosting) -- identical except
+# load_incluster_config: true. Keep both in sync by hand when editing
+# anything else in this file.
 storage:
   postgres:
     postgres_db:
@@ -88,3 +94,12 @@ run_launcher:
       # local-vs-in-cluster split as every other env var here. Unset
       # locally, financial_assets.py falls back to a repo-relative path.
       - "DATA_LAKE_PATH=/data-lake"
+      # master_pipeline's own pod calls back into the webserver's GraphQL
+      # API to launch its child jobs (dagster_launch.py) -- from inside a
+      # launched pod, "localhost" resolves to the pod itself, not the
+      # webserver, so this points it at the in-cluster webserver Service
+      # instead (orchestration/k8s/webserver-service.yaml). Every other
+      # launched pod ignores these two vars; only master_pipeline's own op
+      # reads them.
+      - "DAGSTER_WEBSERVER_HOST=dagster-webserver.orchestration.svc.cluster.local"
+      - "DAGSTER_WEBSERVER_PORT=3000"

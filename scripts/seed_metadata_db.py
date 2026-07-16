@@ -34,9 +34,11 @@ CONN_KWARGS = dict(
 METADATA_RUNS_QUERY = """
     select
         r.run_id::text as run_id, r.data_feed_id::text as data_feed_id, r.model_key,
-        r.tracking_group, r.tracking_group_type, r.dagster_run_id,
+        r.tracking_group, r.tracking_group_type, r.master_dagster_run_id,
+        r.extraction_dagster_run_id,
+        r.transformation_dagster_run_id, r.serving_dagster_run_id,
         r.job_started_timestamp, r.job_ended_timestamp, r.job_successful,
-        r.landing_rows_read, r.raw_rows_read, r.clean_rows_inserted,
+        r.raw_rows_read, r.clean_rows_inserted,
         r.staging_rows_updated, r.model_rows_updated, r.serve_rows_read,
         df.friendly_name as feed_friendly_name,
         df.batch_group_friendly_name as feed_batch_group_friendly_name,
@@ -90,7 +92,7 @@ def seed_data_feed(
     watermark_column: str | None = None,
     batch_group_friendly_name: str | None = None,
     extraction_config: dict | None = None,
-    pipeline_steps: str = "0,1,2,3",
+    pipeline_steps: str = "0,1,2",
     ods_enabled: bool = False,
     batch_ods_name: str | None = None,
 ) -> None:
@@ -147,7 +149,7 @@ def seed_lakehouse_model(
     deletes_enabled: bool,
     load_type: int = 0,
     updates_enabled: bool = True,
-    pipeline_steps: str = "2,3",
+    pipeline_steps: str = "1,2",
 ) -> None:
     # owning_feed_friendly_name is required, not defaulted from
     # depends_on_feed_friendly_names[0] -- the whole point of this field is
@@ -473,7 +475,7 @@ def main() -> None:
             owning_feed_friendly_name="metadata_runs",
             business_key_columns=["run_id"],
             tracked_columns=[
-                "job_successful", "job_ended_timestamp", "landing_rows_read", "raw_rows_read",
+                "job_successful", "job_ended_timestamp", "raw_rows_read",
                 "clean_rows_inserted", "staging_rows_updated", "model_rows_updated", "serve_rows_read",
             ],
             scd_type=1,

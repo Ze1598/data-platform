@@ -5,6 +5,11 @@ ScheduleEvaluationContext (dagster.build_schedule_context), the same
 mechanism trigger_schedule_run.py uses for a real end-to-end trigger (see
 orchestration/module.just's verify-schedule recipe for that heavier tier).
 
+Every generated schedule now targets the single `master_pipeline` job
+(Roadmap.md "Master pipeline orchestration") -- these tests assert on the
+RunRequest's orchestration_kind/orchestration_value, not on which job it
+targets (there's only one).
+
 Requires a live platform_metadata Postgres (same DB `data_feed`/`schedule`/
 `lakehouse_models` state these tests assert against) and DAGSTER_HOME set
 (same as any other orchestration::test run) -- skipped, not failed, if
@@ -19,7 +24,7 @@ import psycopg
 import pytest
 from dagster import DagsterInstance, RunRequest, SkipReason, build_schedule_context
 
-from dagster_data_platform.pipeline_generated import ALL_SCHEDULES, FEED_JOBS
+from dagster_data_platform.pipeline_generated import ALL_SCHEDULES, EXTRACTION_JOBS
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 from dagster_data_platform.trigger_schedule_run import find_schedule_for_feed
 
@@ -43,10 +48,14 @@ def _postgres_reachable() -> bool:
 pytestmark = pytest.mark.skipif(not _postgres_reachable(), reason="platform_metadata Postgres not reachable")
 
 
+def _postgres_metadata() -> PostgresMetadataResource:
+    return PostgresMetadataResource(**CONN_KWARGS)
+
+
 def _schedule_context():
     return build_schedule_context(
         instance=DagsterInstance.get(),
-        resources={"postgres_metadata": PostgresMetadataResource(**CONN_KWARGS)},
+        resources={"postgres_metadata": _postgres_metadata()},
     )
 
 
@@ -65,55 +74,59 @@ def _fetch_schedule_id(cur, *, controlling_object_type: str, friendly_name: str)
     return row[0]
 
 
-def test_every_active_feed_has_a_job():
+def test_every_active_feed_has_an_extraction_job():
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         cur.execute("SELECT friendly_name FROM data_feed WHERE is_active = true")
         active_feeds = {row[0] for row in cur.fetchall()}
-    assert set(FEED_JOBS.keys()) == active_feeds
+    assert set(EXTRACTION_JOBS.keys()) == active_feeds
 
 
-def test_feed_schedule_run_request_has_correct_parameters():
+def test_feed_schedule_run_request_targets_master_pipeline_with_batch_group():
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         expected_schedule_id = _fetch_schedule_id(cur, controlling_object_type="feed", friendly_name="police_crimes")
+        cur.execute("SELECT batch_group_friendly_name FROM data_feed WHERE friendly_name = 'police_crimes'")
+        expected_batch_group = cur.fetchone()[0]
 
-    schedule_def = find_schedule_for_feed("police_crimes")
+    schedule_def = find_schedule_for_feed("police_crimes", _postgres_metadata())
     result = schedule_def(_schedule_context())
 
     assert isinstance(result, RunRequest)
     assert result.tags["schedule_id"] == expected_schedule_id
-    assert result.tags["controlling_object_type"] == "feed"
-    assert result.tags["controlling_object_friendly_name"] == "police_crimes"
-    assert result.tags["feed_friendly_name"] == "police_crimes"
-    assert result.tags["batch_group_friendly_name"]  # non-empty, real value looked up live
+    assert result.tags["orchestration_kind"] == "batch_group"
+    assert result.tags["orchestration_value"] == expected_batch_group
+    op_config = result.run_config["ops"]["run_master_pipeline"]["config"]
+    assert op_config == {"orchestration_kind": "batch_group", "orchestration_value": expected_batch_group}
 
 
-def test_model_schedule_expands_to_one_run_request_per_dependent_feed():
+def test_model_schedule_run_request_targets_master_pipeline_with_model_schema():
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         schedule_id = _fetch_schedule_id(
             cur, controlling_object_type="model", friendly_name="fct_daily_financial_activity"
         )
+        cur.execute(
+            "SELECT model_schema FROM lakehouse_models WHERE friendly_name = 'fct_daily_financial_activity'"
+        )
+        expected_model_schema = cur.fetchone()[0]
 
-    matching = [s for s in ALL_SCHEDULES if s.name.startswith(f"schedule_{schedule_id.replace('-', '')}_")]
-    assert len(matching) == 2, f"expected 2 generated schedules (sales, financial_transactions), got {len(matching)}"
+    # Exactly one generated schedule per schedule row now -- no more
+    # per-dependent-feed expansion (Roadmap.md "Master pipeline
+    # orchestration": master_pipeline reverse-engineers depends_on_feeds
+    # itself, live, from orchestration_value alone).
+    matching = [s for s in ALL_SCHEDULES if s.name == f"schedule_{schedule_id.replace('-', '')}"]
+    assert len(matching) == 1, f"expected exactly 1 generated schedule for schedule_id={schedule_id!r}"
 
-    feeds_seen = set()
-    for schedule_def in matching:
-        result = schedule_def(_schedule_context())
-        assert isinstance(result, RunRequest)
-        assert result.tags["schedule_id"] == schedule_id
-        assert result.tags["controlling_object_type"] == "model"
-        assert result.tags["controlling_object_friendly_name"] == "fct_daily_financial_activity"
-        assert schedule_def.job_name == FEED_JOBS[result.tags["feed_friendly_name"]].name
-        feeds_seen.add(result.tags["feed_friendly_name"])
-
-    assert feeds_seen == {"sales", "financial_transactions"}
+    result = matching[0](_schedule_context())
+    assert isinstance(result, RunRequest)
+    assert result.tags["schedule_id"] == schedule_id
+    assert result.tags["orchestration_kind"] == "model_schema"
+    assert result.tags["orchestration_value"] == expected_model_schema
 
 
 def test_schedule_skips_when_inactive():
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         schedule_id = _fetch_schedule_id(cur, controlling_object_type="feed", friendly_name="police_crimes")
 
-    schedule_def = find_schedule_for_feed("police_crimes")
+    schedule_def = find_schedule_for_feed("police_crimes", _postgres_metadata())
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         cur.execute("UPDATE schedule SET is_active = false WHERE id = %s", (schedule_id,))
         conn.commit()

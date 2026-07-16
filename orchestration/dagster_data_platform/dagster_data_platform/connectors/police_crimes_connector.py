@@ -2,7 +2,10 @@
 hand-written code a nested-JSON source still needs (see connectors.base.
 JsonConnector's docstring: pagination and flattening are genuinely
 source-specific, no generic implementation is possible). Moved verbatim
-from the now-generated police_assets.py's landing/raw/clean logic.
+from the extraction/raw/clean logic that used to be hand-written in
+police_assets.py, since replaced entirely by
+scripts/generate_dagster_pipeline.py's connector-driven codegen (that file
+no longer exists).
 """
 
 from typing import Any, Optional

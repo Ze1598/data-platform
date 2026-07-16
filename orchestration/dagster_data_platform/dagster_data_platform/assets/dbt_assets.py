@@ -21,7 +21,7 @@ from dagster_data_platform.resources.postgres_metadata_resource import PostgresM
 # previously a hardcoded set here requiring a manual edit per new feed
 # (the exact same category of gap _sources.yml's own codegen closed, see
 # generate_sources.py). Maps `clean.<table>` sources onto their matching
-# Dagster asset key so the landing -> raw -> clean chain and dbt's
+# Dagster asset key so the extraction -> raw -> clean chain and dbt's
 # staging/ODS models share one asset graph instead of two
 # coincidentally-ordered ones.
 _CLEAN_SOURCE_TABLES = CLEAN_SOURCE_TABLES
@@ -70,7 +70,7 @@ class DataPlatformDbtTranslator(DagsterDbtTranslator):
         # AssetSelection.groups(domain_group_name(domain)) select a whole
         # domain's transformation+serving dbt assets purely from a metadata
         # string, no hardcoded per-domain asset lists needed. Feed-level
-        # landing/raw/clean assets (extraction_assets.py etc.) keep
+        # extraction/raw/clean assets (extraction_assets.py etc.) keep
         # group_name=<feed friendly_name>, unchanged -- these are two
         # different, deliberately-disambiguated namespaces now (see
         # Roadmap.md "multi-project dbt split"). None keeps superclass
@@ -184,12 +184,12 @@ def _run_dbt_build_and_log_stages(
             invocation.get_error() or f"dbt build failed for domain '{domain}' before any node ran"
         )
 
+    master_dagster_run_id = context.run.tags["master_dagster_run_id"]
     for stage in stages:
         with postgres_metadata.log_data_model_stage(
             model_key=domain,
-            uses_feeds=",".join(feeds),
-            tracking_group=domain,
             stage=stage,
+            master_dagster_run_id=master_dagster_run_id,
             dagster_run_id=context.run_id,
         ) as log:
             if not stage_ok[stage]:
@@ -204,14 +204,16 @@ def domain_group_name(domain: str) -> str:
     the asset graph, so a bare group_name=domain collides whenever a
     domain happens to be named the same as a feed (e.g. the 'sales' domain
     vs. the 'sales' feed; the 'police_crimes' ODS domain vs. the
-    'police_crimes' feed it defaults its batch_ods_name from) --
-    AssetSelection.groups(domain) then silently pulls that feed's own
-    landing/raw/clean assets into the domain's transformation_serving_job
-    alongside the intended dbt steps. Prefixed to disambiguate the two
-    namespaces outright rather than relying on domain/feed names never
-    colliding -- matches the 'domain_<domain>' convention already used for
-    each domain's own dbt project/profile name
-    (scripts/generate_domain_projects.py)."""
+    'police_crimes' feed it defaults its batch_ods_name from) -- a
+    group-based AssetSelection.groups(domain) would then silently pull that
+    feed's own extraction/raw/clean assets in alongside the intended dbt
+    steps. MODELING_JOBS/SERVING_JOBS (scripts/generate_dagster_pipeline.py)
+    now select by the exact AssetsDefinition object each domain factory
+    returns rather than by group, sidestepping this specific collision --
+    but the prefix stays: it's still what disambiguates the two namespaces
+    for Dagit's own asset-graph grouping/display, and matches the
+    'domain_<domain>' convention already used for each domain's own dbt
+    project/profile name (scripts/generate_domain_projects.py)."""
     return f"domain_{domain}"
 
 

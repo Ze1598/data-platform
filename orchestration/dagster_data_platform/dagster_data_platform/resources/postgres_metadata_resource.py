@@ -1,31 +1,39 @@
-import re
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
 import psycopg
 from connectors import SchemaSyncResult, compute_schema_sync
 from dagster import ConfigurableResource
+from domain_naming import slugify_domain
 
-_DATA_FEED_STAGES = ("landing", "raw", "clean")
+_DATA_FEED_STAGES = ("raw", "clean")
 _DATA_MODEL_STAGES = ("staging", "model", "serve")
 
-# Mirrors scripts/generate_domain_projects.py::slugify_domain() exactly --
-# not imported, since scripts/ and this orchestration package are separate
-# uv workspace members with no shared module today (same "mirrored, not
-# imported" convention as this project's other cross-script helpers). Used
-# by resolve_model_domain_and_feeds() below to compute the same domain key
-# DOMAIN_JOBS (pipeline_generated.py) is keyed by, from a live
-# lakehouse_models.model_schema read.
-_SLUG_INVALID = re.compile(r"[^a-z0-9_]+")
-
-
-def _slugify_domain(raw: str) -> str:
-    slug = _SLUG_INVALID.sub("_", raw.strip().lower()).strip("_")
-    if not slug:
-        raise ValueError(f"model_schema {raw!r} has no valid characters for a domain name")
-    if slug[0].isdigit():
-        slug = f"d_{slug}"
-    return slug
+# Which of the three pipeline-step run-id columns a given schema-level
+# stage belongs to -- see the `pipeline_steps` lookup table's own
+# definitions (0=extraction spans raw+clean -- raw and clean are tightly
+# coupled, raw exists specifically to feed clean, so they share one
+# job/run, not two; 1=transformation spans staging+model; 2=serving is
+# serve only). No "landing" stage -- that was never a real pipeline
+# concept, just a historical mislabeling of the fetch sub-step within
+# extraction; its outcome/watermark tracking is now just part of "raw"'s
+# own columns. Each of the three independent stage-jobs (EXTRACTION_JOBS/
+# TRANSFORMATION_JOBS/SERVING_JOBS, see scripts/generate_dagster_pipeline.py)
+# writes its own dagster_run_id into exactly one of these columns --
+# possibly from more than one schema-stage call within the same run (e.g.
+# EXTRACTION_JOBS logs both "raw" and "clean" from the one extraction run,
+# writing the same run id both times). The five schema-level stage columns
+# each of these maps to (is_raw_successful/rows_read/etc.) stay fully
+# independent per schema stage regardless -- only which Dagster run
+# produced them is consolidated here, preserving the granularity a future
+# rerun-just-raw-to-clean feature would need.
+_STAGE_TO_RUN_ID_COLUMN = {
+    "raw": "extraction_dagster_run_id",
+    "clean": "extraction_dagster_run_id",
+    "staging": "transformation_dagster_run_id",
+    "model": "transformation_dagster_run_id",
+    "serve": "serving_dagster_run_id",
+}
 
 
 class IngestionStepLog:
@@ -130,7 +138,58 @@ class PostgresMetadataResource(ConfigurableResource):
                 (model_schema,),
             )
             feeds = [r[0] for r in cur.fetchall()]
-        return _slugify_domain(model_schema), feeds
+        return slugify_domain(model_schema), feeds
+
+    def get_domain_feeds_for_model_schema(self, model_schema: str) -> tuple[str, list[str]]:
+        """Same union-of-depends_on_feeds query as resolve_model_domain_and_feeds()
+        above, but taking a `model_schema` value directly rather than first
+        looking it up from one specific lakehouse_models row's friendly_name
+        -- this is what the master pipeline job uses when it's triggered
+        with `orchestration_kind='model_schema'` (Roadmap.md "Master
+        pipeline orchestration"), since the caller already has the domain,
+        not a specific model to resolve it from. Returns (slugified_domain,
+        feeds) for symmetry with resolve_model_domain_and_feeds()."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT df.friendly_name
+                FROM lakehouse_models lm
+                JOIN data_feed df ON df.id::text = ANY(string_to_array(lm.depends_on_feeds, ','))
+                WHERE lm.model_schema = %s AND lm.is_active = true AND df.is_active = true
+                ORDER BY df.friendly_name
+                """,
+                (model_schema,),
+            )
+            feeds = [r[0] for r in cur.fetchall()]
+        return slugify_domain(model_schema), feeds
+
+    def get_batch_group_ods_domain(self, batch_group_friendly_name: str) -> Optional[str]:
+        """The (expected-1:1, not yet enforced anywhere -- see Backlog.md)
+        ODS domain a batch group's feeds map to via their own
+        `data_feed.batch_ods_name`. Used by the master pipeline job when
+        triggered with `orchestration_kind='batch_group'`: extraction always
+        happens for every feed in the batch, but the modeling+serving
+        outcome is *always* ODS for a batch-triggered run, never a
+        hand-modeled domain (a hand-modeled domain is only ever reached via
+        `orchestration_kind='model_schema'`). Returns None if no feed in
+        this batch is ODS-enabled (an extraction-only batch, which is
+        valid) -- if more than one distinct `batch_ods_name` value is
+        present (the un-enforced 1:1 rule being violated), the first one
+        found (alphabetically) is used, not an error."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT batch_ods_name FROM data_feed
+                WHERE batch_group_friendly_name = %s AND is_active = true
+                  AND ods_enabled = true AND batch_ods_name IS NOT NULL
+                ORDER BY batch_ods_name
+                """,
+                (batch_group_friendly_name,),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return None
+            return slugify_domain(rows[0][0])
 
     def get_batch_group_feeds(self, batch_group_friendly_name: str) -> list[str]:
         """Every active feed sharing this batch_group -- backs
@@ -350,11 +409,17 @@ class PostgresMetadataResource(ConfigurableResource):
             row = cur.fetchone()
             return bool(row and row[0])
 
-    def record_run_started(self, *, data_feed_id: str, dagster_run_id: str, tracking_group: str) -> None:
-        """Explicit master-pipeline extraction-start step: guarantees a
-        data_processing_runs row exists for (data_feed_id, dagster_run_id)
-        before extraction's connector.fetch() ever runs, not just as an
-        incidental side effect of log_data_feed_stage()'s own bookkeeping.
+    def record_run_started(self, *, data_feed_id: str, master_dagster_run_id: str, tracking_group: str) -> None:
+        """The feed-scoped master pipeline's own first action: creates the
+        data_processing_runs row for this feed, keyed by the MASTER's own
+        dagster_run_id -- not the child stage's. `EXTRACTION_JOBS[feed]`
+        (spanning raw+clean as one job -- see Roadmap.md "Master
+        pipeline orchestration") is a genuinely separate Dagster run from
+        the master; it looks this row up by (data_feed_id,
+        master_dagster_run_id) -- passed to it as a launch-time run tag --
+        and records its own separate dagster_run_id into its own column
+        (log_data_feed_stage() below) rather than creating a new row itself.
+
         Matters concretely for metadata_runs, which queries
         data_processing_runs as its own source: on a fresh cluster's very
         first run, every feed (including metadata_runs itself) is running
@@ -362,19 +427,37 @@ class PostgresMetadataResource(ConfigurableResource):
         guaranteed-first write, metadata_runs' own extraction has nothing
         to report and never creates `clean.metadata_runs`, and the
         downstream dbt build fails outright with TABLE_NOT_FOUND rather
-        than building on an empty/thin first run. Idempotent against
-        log_data_feed_stage()'s own row-ensure (ON CONFLICT DO UPDATE) --
-        calling both for the same (data_feed_id, dagster_run_id) is always
-        safe, the second call is a no-op insert-wise."""
+        than building on an empty/thin first run. Idempotent -- calling
+        this more than once for the same (data_feed_id,
+        master_dagster_run_id) is always safe, a no-op after the first."""
         self._ensure_run(
             insert_columns={
                 "data_feed_id": data_feed_id,
                 "tracking_group": tracking_group,
                 "tracking_group_type": "batch_group",
             },
-            conflict_columns=("data_feed_id", "dagster_run_id"),
+            conflict_columns=("data_feed_id", "master_dagster_run_id"),
             conflict_where="data_feed_id IS NOT NULL",
-            dagster_run_id=dagster_run_id,
+            master_dagster_run_id=master_dagster_run_id,
+        )
+
+    def record_model_run_started(self, *, model_key: str, uses_feeds: str, master_dagster_run_id: str, tracking_group: str) -> None:
+        """The domain-scoped master pipeline's own first action -- same
+        role as record_run_started() above, but for a model-run row.
+        `MODELING_JOBS[domain]` and `SERVING_JOBS[domain]` each look this
+        row up by (model_key, master_dagster_run_id) and record their own
+        dagster_run_id into their own column (log_data_model_stage()
+        below)."""
+        self._ensure_run(
+            insert_columns={
+                "model_key": model_key,
+                "uses_feeds": uses_feeds,
+                "tracking_group": tracking_group,
+                "tracking_group_type": "model_schema",
+            },
+            conflict_columns=("model_key", "master_dagster_run_id"),
+            conflict_where="model_key IS NOT NULL",
+            master_dagster_run_id=master_dagster_run_id,
         )
 
     # --- public API: one context manager per row kind, same table ----------
@@ -386,83 +469,75 @@ class PostgresMetadataResource(ConfigurableResource):
 
     @contextmanager
     def log_data_feed_stage(
-        self, *, data_feed_id: str, stage: str, dagster_run_id: str, tracking_group: str
+        self, *, data_feed_id: str, stage: str, master_dagster_run_id: str, dagster_run_id: str
     ) -> Iterator[IngestionStepLog]:
-        """Logs one stage (landing/raw/clean) of a data_processing_runs
-        feed-run row, creating the row on the first stage of a given
-        (data_feed_id, dagster_run_id) and updating just that stage's
-        column group plus the job-level roll-up (job_ended_timestamp/
-        job_successful) on every call — see extraction_assets.py/
-        sales_assets.py for usage. `tracking_group` is the feed's
-        data_feed.batch_group_friendly_name -- every feed has one (see
-        metadata/DataModel.md), the platform tracks runs by batch or model
-        schema, never by bare feed."""
+        """Logs one stage (raw/clean) of a data_processing_runs
+        feed-run row. The row itself is guaranteed to already exist --
+        created by the feed-scoped master pipeline's record_run_started()
+        before any child stage job ever runs -- so this only finds it (by
+        data_feed_id + master_dagster_run_id, the master's own run id,
+        threaded to this child job as a launch-time run tag) and updates
+        that stage's column group, this stage's own dagster_run_id column
+        (see _STAGE_TO_RUN_ID_COLUMN), and the job-level roll-up
+        (job_ended_timestamp/job_successful) — see extraction_assets.py/
+        sales_assets.py for usage."""
         with self._log_stage(
-            insert_columns={
-                "data_feed_id": data_feed_id,
-                "tracking_group": tracking_group,
-                "tracking_group_type": "batch_group",
-            },
-            conflict_columns=("data_feed_id", "dagster_run_id"),
-            conflict_where="data_feed_id IS NOT NULL",
+            identity_column="data_feed_id",
+            identity_value=data_feed_id,
+            master_dagster_run_id=master_dagster_run_id,
+            dagster_run_id=dagster_run_id,
             valid_stages=_DATA_FEED_STAGES,
             stage=stage,
-            dagster_run_id=dagster_run_id,
         ) as log:
             yield log
 
     @contextmanager
     def log_data_model_stage(
-        self, *, model_key: str, uses_feeds: str, stage: str, dagster_run_id: str, tracking_group: str
+        self, *, model_key: str, stage: str, master_dagster_run_id: str, dagster_run_id: str
     ) -> Iterator[IngestionStepLog]:
         """Logs one stage (staging/model/serve) of a data_processing_runs
         model-run row — the warehouse-building concern, kept separate from
         the feed-run rows' extraction-and-validation concern (see
-        metadata/DataModel.md). `model_key` names the model unit being
-        built (today just the feed friendly_name, since staging is still
-        1:1 with a data_feed); `uses_feeds` is a comma-separated list of
-        the data_feed friendly_names this model unit draws from.
-        `tracking_group` is a lakehouse_models.model_schema value (e.g.
-        'model') -- the schema this build's output primarily lands in."""
+        metadata/DataModel.md). The row itself is guaranteed to already
+        exist -- created by the domain-scoped master pipeline's
+        record_model_run_started() -- so this only finds it (by model_key +
+        master_dagster_run_id) and updates that stage's column group, this
+        stage's own dagster_run_id column, and the job-level roll-up."""
         with self._log_stage(
-            insert_columns={
-                "model_key": model_key,
-                "uses_feeds": uses_feeds,
-                "tracking_group": tracking_group,
-                "tracking_group_type": "model_schema",
-            },
-            conflict_columns=("model_key", "dagster_run_id"),
-            conflict_where="model_key IS NOT NULL",
+            identity_column="model_key",
+            identity_value=model_key,
+            master_dagster_run_id=master_dagster_run_id,
+            dagster_run_id=dagster_run_id,
             valid_stages=_DATA_MODEL_STAGES,
             stage=stage,
-            dagster_run_id=dagster_run_id,
         ) as log:
             yield log
 
     # --- shared implementation, generic over the two row kinds --------------
-    # Both public methods above delegate to the same three private helpers
-    # instead of each having their own copy, since a feed-run row and a
-    # model-run row are structurally identical (a wide row with a job-level
-    # roll-up plus one repeated column group per stage) apart from which
-    # columns identify the row and which stages are valid.
+    # Both public methods above delegate to the same private helpers instead
+    # of each having their own copy, since a feed-run row and a model-run
+    # row are structurally identical (a wide row with a job-level roll-up
+    # plus one repeated column group per stage) apart from which column
+    # identifies the row and which stages are valid.
 
     @contextmanager
     def _log_stage(
         self,
         *,
-        insert_columns: dict[str, str],
-        conflict_columns: tuple[str, ...],
-        conflict_where: str,
+        identity_column: str,
+        identity_value: str,
+        master_dagster_run_id: str,
+        dagster_run_id: str,
         valid_stages: tuple[str, ...],
         stage: str,
-        dagster_run_id: str,
     ) -> Iterator[IngestionStepLog]:
         if stage not in valid_stages:
             raise ValueError(f"Unknown stage {stage!r}, expected one of {valid_stages}")
-        run_id = self._ensure_run(
-            insert_columns=insert_columns,
-            conflict_columns=conflict_columns,
-            conflict_where=conflict_where,
+        run_id = self._find_run(
+            identity_column=identity_column,
+            identity_value=identity_value,
+            master_dagster_run_id=master_dagster_run_id,
+            stage_run_id_column=_STAGE_TO_RUN_ID_COLUMN[stage],
             dagster_run_id=dagster_run_id,
         )
         log = IngestionStepLog(run_id)
@@ -474,31 +549,73 @@ class PostgresMetadataResource(ConfigurableResource):
         else:
             self._finish_stage(run_id, stage, successful=True, **log._counts)
 
+    def _find_run(
+        self,
+        *,
+        identity_column: str,
+        identity_value: str,
+        master_dagster_run_id: str,
+        stage_run_id_column: str,
+        dagster_run_id: str,
+    ) -> str:
+        # identity_column/stage_run_id_column are always internal literals
+        # passed by log_data_feed_stage/log_data_model_stage above, never
+        # caller-supplied free text -- same safety property as the f-string
+        # table/column composition in frontend/metadata_db.py.
+        # A plain UPDATE, not an upsert: the row is guaranteed to already
+        # exist by this point (created by the master pipeline's
+        # record_run_started()/record_model_run_started()) -- a child stage
+        # job never creates its own row. Zero rows matched means the master
+        # never ran (or the wrong master_dagster_run_id was threaded
+        # through), which is a real bug worth a clear error, not a silent
+        # row creation that would violate the "one master, several stage
+        # run ids" invariant.
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE data_processing_runs
+                SET {stage_run_id_column} = %(dagster_run_id)s
+                WHERE {identity_column} = %(identity_value)s
+                  AND master_dagster_run_id = %(master_dagster_run_id)s
+                RETURNING run_id
+                """,
+                {
+                    "dagster_run_id": dagster_run_id,
+                    "identity_value": identity_value,
+                    "master_dagster_run_id": master_dagster_run_id,
+                },
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(
+                    f"No data_processing_runs row for {identity_column}={identity_value!r}, "
+                    f"master_dagster_run_id={master_dagster_run_id!r} -- did the master pipeline run first?"
+                )
+            return str(row[0])
+
     def _ensure_run(
         self,
         *,
         insert_columns: dict[str, str],
         conflict_columns: tuple[str, ...],
         conflict_where: str,
-        dagster_run_id: str,
+        master_dagster_run_id: str,
     ) -> str:
         # insert_columns keys/conflict_columns/conflict_where are always
-        # internal literals passed by log_data_feed_stage/
-        # log_data_model_stage above, never caller-supplied free text --
-        # same safety property as the f-string table/column composition in
-        # frontend/metadata_db.py.
-        # Upsert-and-return-id: only the *first* stage of a given
-        # (identity..., dagster_run_id) actually inserts a new row; later
-        # stages hit the ON CONFLICT branch and get the existing run_id
-        # back. A single round-trip INSERT ... ON CONFLICT is used rather
-        # than a SELECT-then-INSERT-if-missing specifically to avoid the
-        # TOCTOU race the latter would introduce between concurrent stages.
-        # The ON CONFLICT target includes the same WHERE predicate as the
-        # matching partial unique index (uq_data_processing_runs_feed/
-        # _model) -- required for Postgres to resolve which partial index
-        # this insert is targeting.
-        columns = (*insert_columns.keys(), "dagster_run_id")
-        values = (*insert_columns.values(), dagster_run_id)
+        # internal literals passed by record_run_started/
+        # record_model_run_started above, never caller-supplied free text.
+        # Upsert-and-return-id: calling this more than once for the same
+        # (identity..., master_dagster_run_id) is safe -- only the first
+        # call actually inserts, later calls hit the ON CONFLICT branch and
+        # get the existing run_id back. A single round-trip
+        # INSERT ... ON CONFLICT is used rather than a SELECT-then-INSERT-
+        # if-missing specifically to avoid the TOCTOU race the latter would
+        # introduce. The ON CONFLICT target includes the same WHERE
+        # predicate as the matching partial unique index
+        # (uq_data_processing_runs_feed/_model) -- required for Postgres to
+        # resolve which partial index this insert is targeting.
+        columns = (*insert_columns.keys(), "master_dagster_run_id")
+        values = (*insert_columns.values(), master_dagster_run_id)
         column_list = ", ".join(columns)
         placeholders = ", ".join(["%s"] * len(values))
         conflict_target = ", ".join(conflict_columns)

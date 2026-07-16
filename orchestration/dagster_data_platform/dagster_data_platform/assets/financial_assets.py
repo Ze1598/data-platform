@@ -13,7 +13,8 @@ from dagster import (
     sensor,
 )
 
-from dagster_data_platform.pipeline_generated import DOMAIN_FEEDS, FEED_JOBS, TRANSFORMATION_ASSETS
+from dagster_data_platform.pipeline_generated import DOMAIN_FEEDS, TRANSFORMATION_ASSETS, master_pipeline
+from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
 
 FEED_FRIENDLY_NAME = "financial_transactions"
 FEED_POOL = f"feed:{FEED_FRIENDLY_NAME}"
@@ -110,17 +111,18 @@ def archive_financial_transactions(context: AssetExecutionContext) -> Output[Non
     return Output(None, metadata={"archived_files": archived, "archive_path": str(archive_run_dir)})
 
 
-# Scoped to just this feed's chain -- a per-feed sensor triggering the
-# whole (implicit) __ASSET_JOB would also re-run every other feed on every
-# new financial-transactions file, defeating the point of a file-triggered
-# sensor. Uses the generated per-feed job (scripts/generate_dagster_pipeline.py
-# -> pipeline_generated.py), not a hand-written AssetSelection -- every feed
-# gets the same job-construction mechanism now, driven by group_name=
-# FEED_FRIENDLY_NAME on every asset in this feed's chain (including
-# archive_financial_transactions above and the generated landing/raw/clean
-# assets), not a hand-listed asset tuple.
+# Fires master_pipeline, not a per-feed job directly -- every trigger path
+# goes through the master pipeline now (Roadmap.md "Master pipeline
+# orchestration"), since only master_pipeline's own op creates the
+# data_processing_runs row EXTRACTION_JOBS[feed] expects to already exist
+# (a plain UPDATE, no upsert -- see PostgresMetadataResource._find_run()).
+# A per-feed job launched directly here would crash immediately with "did
+# the master pipeline run first?". orchestration_kind='batch_group' with
+# this feed's own batch_group_friendly_name as orchestration_value mirrors
+# exactly what a feed-type schedule resolves (scripts/generate_dagster_pipeline.py),
+# just triggered by a new landing file instead of a cron tick.
 @sensor(
-    job=FEED_JOBS[FEED_FRIENDLY_NAME],
+    job=master_pipeline,
     minimum_interval_seconds=30,
     # STOPPED by default -- a sensor that's RUNNING from the moment
     # `dagster dev` starts would immediately fire against whatever CSVs
@@ -128,7 +130,7 @@ def archive_financial_transactions(context: AssetExecutionContext) -> Output[Non
     # feed. Turn on from the UI (or `dagster sensor start`) when wanted.
     default_status=DefaultSensorStatus.STOPPED,
 )
-def financial_transactions_sensor(context: SensorEvaluationContext):
+def financial_transactions_sensor(context: SensorEvaluationContext, postgres_metadata: PostgresMetadataResource):
     landing_dir = _landing_dir()
     if not landing_dir.exists():
         return
@@ -142,4 +144,15 @@ def financial_transactions_sensor(context: SensorEvaluationContext):
     if context.cursor is not None and latest_file.name <= context.cursor:
         return
     context.update_cursor(latest_file.name)
-    yield RunRequest(run_key=latest_file.name)
+
+    batch_group_friendly_name = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)["batch_group_friendly_name"]
+    yield RunRequest(
+        run_key=latest_file.name,
+        run_config={
+            "ops": {
+                "run_master_pipeline": {
+                    "config": {"orchestration_kind": "batch_group", "orchestration_value": batch_group_friendly_name}
+                }
+            }
+        },
+    )

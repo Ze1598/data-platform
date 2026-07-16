@@ -1,0 +1,76 @@
+# The user-code gRPC server -- Dagster's normal production topology has
+# the webserver/daemon talk to one or more of these over the network
+# rather than importing pipeline code in-process (see workspace.yaml).
+# Same image as every launched run pod (data-platform-orchestration:latest)
+# -- `dagster api grpc` just imports dagster_data_platform.definitions and
+# serves introspection/execution requests, it never touches Postgres/
+# Trino/Polaris/MinIO directly itself (importing the module only
+# *constructs* PostgresMetadataResource/IcebergCatalogResource config
+# objects, it doesn't connect them -- see definitions.py), but the env
+# vars below still need to be correct so those objects hold the right
+# in-cluster hostnames for whenever a resource method is later called
+# against them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-code-server
+  namespace: orchestration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dagster-code-server
+  template:
+    metadata:
+      labels:
+        app: dagster-code-server
+    spec:
+      containers:
+        - name: dagster-code-server
+          image: data-platform-orchestration:latest
+          imagePullPolicy: IfNotPresent
+          workingDir: /app/orchestration/dagster_data_platform
+          command: ["dagster"]
+          args: ["api", "grpc", "-h", "0.0.0.0", "-p", "4000", "-m", "dagster_data_platform.definitions"]
+          ports:
+            - containerPort: 4000
+              name: grpc
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          env:
+            - name: POSTGRES_HOST
+              value: postgres.metadata.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: TRINO_HOST
+              value: trino.query-engine.svc.cluster.local
+            - name: TRINO_PORT
+              value: "8080"
+            - name: POLARIS_HOST
+              value: polaris.query-engine.svc.cluster.local
+            - name: POLARIS_PORT
+              value: "8181"
+            - name: MINIO_HOST
+              value: minio.query-engine.svc.cluster.local
+            - name: MINIO_PORT
+              value: "9000"
+            - name: DATA_LAKE_PATH
+              value: /data-lake
+          volumeMounts:
+            - name: data-lake
+              mountPath: /data-lake
+          readinessProbe:
+            tcpSocket:
+              port: 4000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 4000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: data-lake
+          hostPath:
+            path: /data-lake

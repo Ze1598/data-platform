@@ -74,9 +74,9 @@ for rid in ['<run_id_1>', '<run_id_2>']:
 ```
 Cross-check the actual timestamps afterward — `data_processing_runs`'s per-stage end timestamps should show zero overlap between the two runs, not just "eventually both succeeded" (which can also happen if they raced and got lucky). No more `layer` column to filter on since the redesign (see Learnings.md) collapsed landing/raw/clean into one row per feed per run — query `job_started_timestamp`/`<stage>_end_timestamp` directly instead (feed-run rows have `data_feed_id is not null`):
 ```sql
-SELECT dagster_run_id, job_started_timestamp, landing_end_timestamp, raw_end_timestamp, clean_end_timestamp, job_successful
+SELECT master_dagster_run_id, job_started_timestamp, raw_end_timestamp, clean_end_timestamp, job_successful
 FROM data_processing_runs
-WHERE data_feed_id IS NOT NULL AND dagster_run_id IN ('<run_id_1>', '<run_id_2>') ORDER BY job_started_timestamp;
+WHERE data_feed_id IS NOT NULL AND master_dagster_run_id IN ('<run_id_1>', '<run_id_2>') ORDER BY job_started_timestamp;
 ```
 
 ---

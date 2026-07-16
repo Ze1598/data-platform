@@ -18,6 +18,7 @@ members = [
     "connectors",
     "dagster-data-platform",
     "data-platform",
+    "domain-naming",
     "frontend",
     "integration-tests",
     "polaris-client",
@@ -652,6 +653,7 @@ dependencies = [
     { name = "dagster-webserver" },
     { name = "dbt-core" },
     { name = "dbt-trino" },
+    { name = "domain-naming" },
     { name = "numpy" },
     { name = "psycopg", extra = ["binary"] },
     { name = "raw-to-clean" },
@@ -675,6 +677,7 @@ requires-dist = [
     { name = "dagster-webserver", specifier = ">=1.13" },
     { name = "dbt-core", specifier = ">=1.9" },
     { name = "dbt-trino", specifier = ">=1.9" },
+    { name = "domain-naming", editable = "domain_naming" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "raw-to-clean", editable = "processing/raw_to_clean" },
@@ -962,6 +965,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
 ]
+
+[[package]]
+name = "domain-naming"
+version = "0.1.0"
+source = { editable = "domain_naming" }
 
 [[package]]
 name = "durationpy"
@@ -3172,6 +3180,7 @@ name = "scripts"
 version = "0.1.0"
 source = { virtual = "scripts" }
 dependencies = [
+    { name = "domain-naming" },
     { name = "numpy" },
     { name = "polars" },
     { name = "psycopg", extra = ["binary"] },
@@ -3179,6 +3188,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "domain-naming", editable = "domain_naming" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "polars", specifier = ">=1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },

@@ -1,0 +1,82 @@
+# The Dagster webserver -- serves the GraphQL API and UI. Talks to
+# dagster-code-server over gRPC for pipeline definitions (workspace.yaml,
+# mounted below alongside dagster.yaml via the dagster-instance-incluster
+# ConfigMap -- see orchestration/module.just's `start` recipe for how that
+# ConfigMap gets created/regenerated). Does NOT import
+# dagster_data_platform.definitions itself and so doesn't need
+# TRINO_HOST/POLARIS_HOST/MINIO_HOST/DATA_LAKE_PATH the way
+# dagster-code-server does -- only POSTGRES_* (dagster_db's own storage
+# config, read from dagster.yaml's `env: POSTGRES_HOST` etc).
+#
+# DAGSTER_HOME is a writable emptyDir, NOT the ConfigMap mount directly --
+# confirmed live: the webserver crash-loops with "OSError: [Errno 30]
+# Read-only file system: '/dagster_home/.telemetry'" if DAGSTER_HOME points
+# straight at a ConfigMap volume, since Dagster's telemetry/NUX subsystems
+# write into DAGSTER_HOME at startup regardless of config content. The
+# ConfigMap is mounted read-only at /dagster-config instead, and an init
+# container copies its two files into the writable /dagster_home before
+# the real container starts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-webserver
+  namespace: orchestration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dagster-webserver
+  template:
+    metadata:
+      labels:
+        app: dagster-webserver
+    spec:
+      initContainers:
+        - name: copy-dagster-config
+          image: data-platform-orchestration:latest
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "cp /dagster-config/dagster.yaml /dagster-config/workspace.yaml /dagster_home/"]
+          volumeMounts:
+            - name: dagster-config
+              mountPath: /dagster-config
+              readOnly: true
+            - name: dagster-home
+              mountPath: /dagster_home
+      containers:
+        - name: dagster-webserver
+          image: data-platform-orchestration:latest
+          imagePullPolicy: IfNotPresent
+          command: ["dagster-webserver"]
+          args: ["-h", "0.0.0.0", "-p", "3000", "-w", "/dagster_home/workspace.yaml"]
+          ports:
+            - containerPort: 3000
+              name: http
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          env:
+            - name: DAGSTER_HOME
+              value: /dagster_home
+            - name: POSTGRES_HOST
+              value: postgres.metadata.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /dagster_home
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: dagster-config
+          configMap:
+            name: dagster-instance-incluster
+        - name: dagster-home
+          emptyDir: {}

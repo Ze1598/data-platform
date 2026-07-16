@@ -34,13 +34,22 @@ class JsonConnector(ABC):
     """A source whose data arrives nested (REST API responses, JSON file
     drops). Flattening is inseparable from establishing the real (flat)
     schema contract for this shape -- there's no clean way to discover a
-    tabular schema from unflattened structs. So extraction and validation
-    combine into one stage for these connectors: fetch (raw, nested,
-    verbatim to `raw`) is still separate, but flatten + discover + sync +
-    validate + write-to-clean all happen together, driven by whichever
-    per-feed subclass supplies flatten() (genuinely bespoke -- no generic
-    implementation is possible, since it depends on this source's
-    specific nested shape)."""
+    tabular schema from unflattened structs. So the extraction step absorbs
+    the validation step's write entirely for these connectors, rather than
+    flattening the source data twice: fetch + flatten + discover + sync +
+    reconcile + validate + write-to-clean all happen together in
+    extraction, driven by whichever per-feed subclass supplies flatten()
+    (genuinely bespoke -- no generic implementation is possible, since it
+    depends on this source's specific nested shape). `raw`'s own write
+    stays a separate, later step and is unaffected -- it always persists
+    the untouched *nested* fetch() result, never the flattened copy.
+    Validation (`clean_<feed>`) becomes a pure pass-through for these
+    connector kinds, kept only so `clean.<feed>` has a stable AssetKey for
+    dbt source lineage -- there's no validation-stage work left for it to
+    do. (Schema discovery ownership itself, independent of this
+    flatten-once optimization, is always extraction's job for every
+    connector kind, tabular or nested -- see Roadmap.md's "Metadata Schema"
+    and `Learnings.md`'s "schema_registry ownership" entry.)"""
 
     @abstractmethod
     def fetch(self) -> pl.DataFrame:
