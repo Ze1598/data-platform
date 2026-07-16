@@ -1,0 +1,11 @@
+domain_sales:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      host: "{{ env_var('TRINO_HOST', 'localhost') }}"
+      port: "{{ env_var('TRINO_PORT', '8080') | as_number }}"
+      user: dbt
+      catalog: iceberg
+      schema: staging
+      threads: 4

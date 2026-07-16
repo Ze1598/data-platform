@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: metadata_fct_runs
+    columns:
+      - name: _key_hash
+        tests: [not_null, unique]
+      - name: _attr_hash
+        tests: [not_null]
+      - name: is_deleted
+        tests: [not_null]

@@ -230,6 +230,30 @@ If a pipeline validates incoming data against a metadata-tracked expected schema
 
 ---
 
+## Metadata-driven pipeline architecture (connectors, schema_registry, codegen)
+
+### `schema_registry` ownership: extraction writes, clean only reads, never hand-seed
+
+**Symptom**: an ODS build failed with a live Trino `COLUMN_NOT_FOUND` error; tracing it back showed `police_crimes`' `schema_registry.primary_key_columns` was silently `[]` despite `data_feed.source_pk=["id"]` being set correctly from the start.
+
+**Cause**: two independent violations of the same rule. `scripts/seed_metadata_db.py::seed_schema_registry()` hand-seeded a `schema_registry` row per feed at seed time — its `INSERT` never set `primary_key_columns` at all (no such parameter existed), so every hand-seeded row silently defaulted to `[]`. Separately, the REST/JSON connector kinds' generated `clean_<feed>` step bundled flatten + schema discovery + `sync_schema_registry()` together with validation, gated only on the `"validation"` pipeline step — meaning discovery silently never ran at all if a feed was ever cherry-picked to extraction-only, and `clean` wasn't read-only against the registry the way the design requires.
+
+**Resolution**: `schema_registry` is exclusively the extraction step's concern — discovery and the registry write both complete before `clean` ever runs; `clean` only ever reads it (`PostgresMetadataResource.get_current_schema()`). `metadata_runs` had always done this correctly (no seed row, bootstraps from a real run) — that's the pattern every feed follows now, not an exception. `seed_schema_registry()` and its 4 call sites were deleted outright, not patched to also set `primary_key_columns` — there is no legitimate case for a seed script writing this table by hand at all. For REST/JSON connector kinds specifically, since flattening is what makes discovery possible in the first place, the extraction step now also performs the `clean`-layer write itself (reusing the one flattened DataFrame) rather than flattening a second time in a separate validation step — `clean_<feed>` becomes a pure pass-through for these kinds, kept only for dbt source lineage's `AssetKey` stability.
+
+**Caveat / generalizable lesson**: a from-scratch feed or a from-scratch platform is *expected* to have a blank `schema_registry` — this is not an error state, and nothing outside a real extraction run (not a seed script, not a build-time codegen step — see the neighboring dbt-modeling-patterns entry) should assume otherwise or depend on it being populated.
+
+### A build-time codegen script must never depend on data only the pipeline populates at runtime
+
+**Symptom**: `scripts/generate_deletion_synthesis_views.py` (generates `int_<feed>_with_deletes.sql`, run during `just start`, before any pipeline run ever happens) hard-crashed on a genuinely fresh platform: `ValueError: No current schema_registry entry for data_feed_id=...`.
+
+**Cause**: this script read `schema_registry.column_definitions` to render an explicit column list for its generated model's `select`. That dependency was never actually necessary — masked for a long time by `seed_schema_registry()` (see the neighboring entry) hand-seeding a row this script could always find, right up until that hand-seeding was correctly removed.
+
+**Resolution**: read the actual downstream consumer before assuming a codegen script needs live schema state at all. Here, the hand-written model consuming this generated view (`dbt/domains/sales/snapshots/sales_dim_customer.sql`) already names its own exact columns explicitly (`select customer_id, name, email, ...`) — the same way it already does selecting straight from staging — so the generated intermediate model never needed to know column names either; it was only ever a pass-through. Fixed by switching its `select <enumerated columns>` projections to `select *`, and deriving the one thing it genuinely needed (the business-key match/anti-join predicate) from `lakehouse_models.business_key_columns`, metadata already available the instant a user defines the model — no `schema_registry` involved at all.
+
+**Generalizable lesson**: a codegen step that runs before `dbt parse` (i.e., before any pipeline run can possibly have happened) can only ever correctly depend on metadata that exists the moment a user finishes data entry — `lakehouse_models`/`data_feed` columns, not `schema_registry` or anything else the pipeline itself populates. If a generated model seems to need to enumerate columns by name, check whether the *downstream* hand-written consumer already names them explicitly before assuming the generated layer needs to — a wildcard `select *` passthrough is often sufficient and removes the runtime dependency entirely, which also matters directly for this project's "users only write business logic, boilerplate is auto-generated the instant metadata is entered" design goal: a codegen step gated on live pipeline state can't fulfill that promise until a feed has run once.
+
+---
+
 ## Dagster + Kubernetes
 
 ### `dagster asset materialize` never touches the configured run launcher
@@ -420,6 +444,16 @@ If an early-phase placeholder ("this asset just passes its input through for now
 
 **Generalizable lesson**: if any part of a pipeline reads its own operational metadata as a data source, don't assume "some stage will have written a record by the time I need one" — that's an ordering dependency on an accident of scheduling, not a guarantee. Make the act of registering that a run started an explicit, independent, always-first step.
 
+### Two independently-named things sharing one flat `group_name` namespace can silently cross-contaminate `AssetSelection.groups()`
+
+**Symptom**: a job meant to contain only a business domain's dbt transformation/serving steps (`AssetSelection.groups(domain)`) silently also included one of that domain's member feeds' own landing/raw/clean assets — and, symmetrically, that feed's own extraction-only job (`AssetSelection.groups(feed).upstream()`) silently also included the domain's dbt assets, plus (via `.upstream()`) other unrelated feeds' extraction chains those dbt assets happened to depend on. Neither failure raised an error; both jobs just quietly ran more/different steps than intended — discoverable only by inspecting the actual op list (`dagster job list`), not from any error message or test failure.
+
+**Cause**: two different concepts in the same asset graph (here: "which feed" and "which business domain, a coarser grouping that legitimately spans several feeds") were both expressed via Dagster's plain `group_name` string. `AssetSelection.groups(<name>)` has no way to know which axis a given string is meant to select on — it matches *any* asset whose `group_name` equals that string, full stop. A coincidental name collision (a domain literally named the same as one of its own member feeds — not contrived: an ODS-style domain that defaults its name from its own owning feed's batch group is a legitimate, common case, not an edge case) means both axes' selectors silently pick up each other's assets.
+
+**Resolution**: namespace the two axes explicitly rather than relying on their name strings never colliding — prefix one axis's `group_name` (e.g. `f"domain_{domain}"`) so the two string spaces can never overlap, and make every selector meant to target that axis consistently use the same prefixed form.
+
+**Generalizable lesson**: if two different groupings in the same system share one flat namespace for their identifiers, a same-name collision between them isn't a "won't happen in practice" edge case — it silently produces wrong-but-not-erroring behavior, exactly the kind of bug that survives a passing test suite. Namespace-prefix by construction rather than trusting names not to collide, whenever two independently-chosen name spaces feed the same selection/lookup mechanism.
+
 ---
 
 ## dbt modeling patterns
@@ -443,6 +477,16 @@ If avoiding `MERGE` for an incremental upsert (a defensible, common preference �
 **A subtlety worth getting right**: any classification column added purely for this purpose (like `_change_type`) must never appear in the model's final `select *` on the **non-incremental** branch (a model's first run does a plain `CREATE TABLE AS SELECT`, which bakes in whatever the compiled query returns) — otherwise it becomes a real, permanently-persisted column in the target table. Gate it inside the `{% if is_incremental() %}` branch only; a first run never invokes the incremental-strategy macro at all (dbt's own incremental materialization only calls it once the target already exists), so the column never gets a chance to leak into the initial schema.
 
 **Once the pattern repeats across several models with only column-list differences, extract the repeated join/classification logic into a macro** (here: `classify_changes(source_relation, updates_enabled)`) rather than leaving it hand-copied per model — the six models that needed this pattern had it copy-pasted with only the source CTE's name differing, which is exactly the kind of duplication that drifts the moment one copy gets a fix the other five don't.
+
+### A local-path dbt package dependency for shared macros works on a project's first build, then silently breaks
+
+**Symptom**: splitting one dbt project into several compile-isolated projects that need to share common macros (`row_hash`, `classify_changes`, `generate_schema_name`, adapter-dispatch overrides), installed as a local-path package dependency (`dependencies.yml`: `packages: - local: ../../_shared`), looked correct at every static check — `dbt deps` installed it cleanly, `dbt parse` succeeded with zero macro-resolution errors, and even the *first* real `dbt build`/`dbt compile` against a fresh, never-before-built target table succeeded, correctly calling every shared macro. A *second* build of the *same* already-existing table then failed non-deterministically (varying which macro/node hit it first) with `'<macro>' is undefined` — even with `--full-refresh` and a fully wiped `target/`/`dbt_packages/` dir, which rules out partial-parse or install-cache staleness as the cause.
+
+**Cause, confirmed via the installed dbt-core source, not assumed**: one specific macro family — `generate_schema_name`/`generate_alias_name`/`generate_database_name` — goes through a genuinely different, special-cased resolver (`dbt/parser/base.py::RelationUpdate`, `dbt/contracts/graph/manifest.py::find_generate_macro_by_name`) that explicitly filters to `Locality != Imported` when resolving a project's own nodes. An installed package's own definition of one of these three macros only ever applies to *that package's own* model nodes — never borrowed by the root project that installed it as a dependency, confirmed directly from source, not inferred from behavior. Plain macros (`row_hash`) and adapter-dispatch macros (`trino__current_timestamp`) are *not* part of that special-cased family and go through the ordinary `MacroResolver` path, which does search installed packages — yet they exhibited the exact same "works once, breaks on rebuild" symptom in direct testing, both locally and inside the actual Docker image used for real pipeline runs. The plain-macro case's root cause was not further isolated (not worth the cost for a project this size once the practical fix was confirmed) — the two failure modes may or may not share a single underlying mechanism.
+
+**The fix that worked, confirmed empirically against a live k8s cluster, not just locally**: don't install shared macros as a package dependency at all. Physically copy the macro files into each consuming project's own `macros/` directory (giving them root-project locality), from one canonical source directory a human edits once. Do this as a build-time codegen step that re-copies unconditionally on every run (not a one-time scaffold-and-forget) so every consumer's copy stays current — this removes the need for `dbt deps`/`dbt_packages/` for these macros entirely.
+
+**Generalizable lesson**: a dbt local-path package dependency passing `dbt deps` + `dbt parse` + even one successful `dbt build` is not sufficient evidence that macro sharing actually works — the failure here only manifested on a *second* build of an *already-existing* table. If sharing macros across multiple dbt projects, test a rebuild of an already-materialized model before trusting the approach, not just a fresh-table first build.
 
 ### Generalizing a per-feed hand-written model into codegen — wait for a real second consumer, or an explicit reason not to
 

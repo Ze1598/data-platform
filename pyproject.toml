@@ -5,7 +5,12 @@ requires-python = ">=3.12"
 dependencies = []
 
 [tool.uv.workspace]
-members = ["frontend", "dbt/data_platform", "query-engine/polaris_client", "orchestration/dagster_data_platform", "processing/raw_to_clean", "processing/connectors", "scripts", "tests/integration"]
+# dbt/data_platform retired (see Roadmap.md "multi-project dbt split") --
+# dbt/domains/<domain>/ directories are pure dbt project trees, no
+# pyproject.toml/workspace membership of their own (dbt-core/dbt-trino are
+# already direct dependencies of orchestration/dagster_data_platform, which
+# is what puts `dbt` on PATH both locally and in the Docker image).
+members = ["frontend", "query-engine/polaris_client", "orchestration/dagster_data_platform", "processing/raw_to_clean", "processing/connectors", "scripts", "tests/integration"]
 
 [tool.uv]
 package = false

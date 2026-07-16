@@ -4,11 +4,11 @@ accounting/ERP system landing in `data-lake/landing/financial_transactions/`.
 
 Deliberately standalone, not run by the pipeline itself (Phase 9 -- see
 Roadmap.md) -- generation and extraction are decoupled, the same way a real
-file-drop source would be. `landing_financial_transactions` (Dagster asset)
-discovers and reads whatever's actually sitting in the landing directory; it
-never generates anything itself. Each invocation of this script produces one
-new batch, with genuinely new transaction IDs/dates -- run it multiple times
-to simulate multiple periodic drops.
+file-drop source would be. `extraction_financial_transactions` (Dagster
+asset) discovers and reads whatever's actually sitting in the landing
+directory; it never generates anything itself. Each invocation of this
+script produces one new batch, with genuinely new transaction IDs/dates --
+run it multiple times to simulate multiple periodic drops.
 
 One vectorized (numpy + Polars) generator, parameterized by row count --
 `--count` defaults to 25 (a normal periodic drop); pass a much larger value

@@ -63,13 +63,13 @@ def test_staging_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
     failures = []
     for friendly_name, timestamp_columns in feeds:
         # Every staging model's alias equals its feed's friendly_name today
-        # (see dbt/data_platform/models/staging/stg_*.sql's `alias=` config)
-        # -- no staging_table_name metadata column to read anymore.
+        # (see dbt/domains/<domain>/models/staging/stg_*.sql's `alias=`
+        # config) -- no staging_table_name metadata column to read anymore.
         columns = describe_columns(trino_conn, "staging", friendly_name)
         assert columns, f"iceberg.staging.{friendly_name} does not exist — has stg_{friendly_name} ever run?"
         # the feed's own passed-through column(s), plus the technical
         # _loaded_at column every staging model stamps (see
-        # dbt/data_platform/models/staging/stg_*.sql)
+        # dbt/domains/<domain>/models/staging/stg_*.sql)
         for col in [*timestamp_columns, "_loaded_at"]:
             trino_type = columns.get(col)
             if trino_type is None or "with time zone" not in trino_type:

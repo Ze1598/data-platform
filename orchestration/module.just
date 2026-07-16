@@ -197,7 +197,7 @@ seed-financial-landing:
 # "structural decisions are a build-time codegen artifact, never a live
 # Postgres read at Python import time" rule as generate-serve-views below.
 # financial_assets.py imports from pipeline_generated.py directly (as do
-# the connector-driven landing/raw/clean assets pipeline_generated.py
+# the connector-driven extraction/raw/clean assets pipeline_generated.py
 # itself renders, e.g. for police_crimes/metadata_runs), so it must exist
 # on disk before dagster dev's own import even starts. Also writes the
 # small companion clean_source_tables_generated.py (dbt_assets.py imports
@@ -402,15 +402,25 @@ verify-pipeline:
     model_ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
         "select count(*) from data_processing_runs where dagster_run_id = '$run_id' and model_key is not null and job_successful = true;")
-    # 5 + 5, not 4 + 4 -- the connector library migration added metadata_runs
-    # as a fifth feed __ASSET_JOB always includes alongside customers/sales/
-    # financial_transactions/police_crimes, with its own stg_metadata_runs
-    # model giving it a model-run row too.
-    if [[ "$feed_ok" -ne 5 || "$model_ok" -ne 5 ]]; then
-        echo "Expected 5 successful feed-run + 5 successful model-run rows in data_processing_runs for run $run_id, got $feed_ok + $model_ok" >&2
+    # 5 feed-run rows: customers, sales, financial_transactions,
+    # police_crimes, metadata_runs -- unchanged by the multi-project dbt
+    # split (see Roadmap.md), since FEED_JOBS still cover extraction+
+    # validation per feed exactly as before.
+    #
+    # 3 model-run rows, NOT 5 -- re-derived after the multi-project dbt
+    # split (Roadmap.md "multi-project dbt split"). Model-run rows now come
+    # from DOMAIN_JOBS (one row per domain per run), not one row per feed:
+    # "sales" (customers/sales/financial_transactions' models),
+    # "metadata" (metadata_runs' models), "police_crimes" (its ODS domain,
+    # see data_feed.batch_ods_name). Confirmed live, twice in a row
+    # (fresh-table build, then a second build of the same tables) --
+    # both produced exactly 5 + 3 with all three domains' staging/model/
+    # serve stages successful.
+    if [[ "$feed_ok" -ne 5 || "$model_ok" -ne 3 ]]; then
+        echo "Expected 5 successful feed-run + 3 successful model-run rows in data_processing_runs for run $run_id, got $feed_ok + $model_ok" >&2
         exit 1
     fi
-    echo "Pipeline run $run_id succeeded: 5/5 feed-run + 5/5 model-run rows successful in data_processing_runs."
+    echo "Pipeline run $run_id succeeded: 5/5 feed-run + 3/3 domain model-run rows successful in data_processing_runs."
 
     # customers/sales raw durability fix -- confirms raw_customers/raw_sales
     # actually write a verbatim file now, not just pass the DataFrame

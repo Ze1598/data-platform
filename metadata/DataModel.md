@@ -76,6 +76,8 @@ Constraints: unique `(data_feed_id, version)`; partial unique index on `(data_fe
 
 **Joins/lookups**: `data_feed_id` → `data_feed.id`.
 
+**Ownership**: exclusively the extraction step's concern (`connectors.schema_registry_sync.sync_schema_registry()`, called from each feed's `extraction_<feed>` asset) — discovery and the registry write both complete before `clean_<feed>` ever runs. `clean_<feed>` only ever reads it (`PostgresMetadataResource.get_current_schema()`), never writes it. Never hand-seeded — a from-scratch feed or a from-scratch platform is expected to have zero rows here until that feed's first real extraction run, not an error state to special-case around. (Corrected 2026-07-16 — `scripts/seed_metadata_db.py` used to hand-seed a row per feed, and REST/JSON connector kinds' generated `clean_<feed>` used to perform discovery itself; both fixed, see `Learnings.md`.)
+
 ---
 
 ## ODS layer

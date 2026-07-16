@@ -1,6 +1,6 @@
 """Generates the dynamic, metadata-driven pipeline foundation -- per-feed
 pipeline_init assets (the master pipeline's real entry point), per-feed
-transformation/serving dbt assets, per-feed connector-driven landing/raw/
+transformation/serving dbt assets, per-feed connector-driven extraction/raw/
 clean assets, per-feed jobs, and real Dagster schedules from `data_feed` +
 `source_system` (+ `schedule` + `lakehouse_models` for model-type
 schedules) -- as
@@ -17,7 +17,7 @@ an asset/schedule's *execution function* looks up live (is_active, a
 feed's current watermark, connector fetch() results) is a different phase
 of Dagster's lifecycle and is deliberately NOT baked in here.
 
-Landing/raw/clean asset generation (added alongside the pre-existing
+Extraction/raw/clean asset generation (added alongside the pre-existing
 dbt/job/schedule generation) is scoped to feeds whose source_system has a
 non-null `connector_kind` -- see the connector library plan
 (.claude/plans/). A feed with connector_kind IS NULL (customers/sales'
@@ -158,10 +158,10 @@ def _schedule_python_name(schedule_id: str, feed_friendly_name: str) -> str:
 
 def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
     """The Python source expression that constructs this feed's connector
-    instance. `with_watermark=True` is the landing-time construction (REST/
-    json_file connectors need last_watermark for their own fetch()
-    catch-up logic); clean-time construction never needs it (flatten()/
-    discover_schema() don't touch the source)."""
+    instance. `with_watermark=True` is passed for REST/json_file connectors,
+    which need `last_watermark` for their own fetch() catch-up logic;
+    tabular kinds (postgres/csv) never need it, since their watermark
+    filtering happens after fetch(), on the caller's side."""
     if kind == "postgres":
         return (
             'PostgresConnector(\n'
@@ -188,8 +188,8 @@ def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
 def _render_pipeline_init(feed: str) -> str:
     """The master pipeline's real entry point -- one per active feed
     (connector-driven or hand-written), depended on by that feed's
-    landing/clean assets. Registers the run (moved out of the individual
-    landing assets, which used to call this directly) and resolves which
+    extraction/clean assets. Registers the run (moved out of the individual
+    extraction assets, which used to call this directly) and resolves which
     of the four pipeline steps this feed's `pipeline_steps` column
     selects, live, once per run."""
     return f'''
@@ -211,7 +211,7 @@ def pipeline_init_{feed}(
 def _render_tabular_assets(feed: dict) -> str:
     friendly_name = feed["feed_friendly_name"]
     kind = feed["connector_kind"]
-    landing_expr = _connector_build_expr(kind, friendly_name, with_watermark=False)
+    extraction_expr = _connector_build_expr(kind, friendly_name, with_watermark=False)
     # Real catalog-based PK discovery only exists on PostgresConnector
     # (see connectors/postgres.py) -- every other tabular kind has no live
     # catalog to introspect, so their generated code never even calls a
@@ -220,11 +220,16 @@ def _render_tabular_assets(feed: dict) -> str:
     discovered_pk_arg = "discovered_pk" if kind == "postgres" else "None"
     return f'''
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
-def landing_{friendly_name}(
+def extraction_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     pipeline_init_{friendly_name}: set,
 ) -> Output[pl.DataFrame]:
+    # Tabular sources (postgres/csv) need no pre-processing before their
+    # schema is discoverable, so this step only discovers+syncs
+    # schema_registry -- clean_{friendly_name} still owns the write, since
+    # there's no flattening cost to save by combining the two steps here
+    # (contrast with the JSON/REST connector kinds' extraction step).
     if "extraction" not in pipeline_init_{friendly_name}:
         return Output(pl.DataFrame(), metadata={{"skipped": True, "reason": "extraction not selected"}})
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
@@ -234,7 +239,7 @@ def landing_{friendly_name}(
         stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
-        connector = {landing_expr}
+        connector = {extraction_expr}
         df = connector.fetch()
         watermark_column = data_feed.get("watermark_column")
         last_watermark = data_feed.get("last_watermark_value")
@@ -247,7 +252,7 @@ def landing_{friendly_name}(
                 discovered_column_definitions=discovered,
                 metadata_source_pk=data_feed["source_pk"],
                 discovered_primary_key_columns={discovered_pk_arg},
-                created_by="landing_{friendly_name}",
+                created_by="extraction_{friendly_name}",
             )
         log.set_counts(
             rows_read=df.height,
@@ -263,7 +268,7 @@ def landing_{friendly_name}(
 def raw_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    landing_{friendly_name}: pl.DataFrame,
+    extraction_{friendly_name}: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
     with postgres_metadata.log_data_feed_stage(
@@ -272,7 +277,7 @@ def raw_{friendly_name}(
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
-        df = landing_{friendly_name}
+        df = extraction_{friendly_name}
         if not df.is_empty():
             raw_run_dir = _data_lake_dir() / "raw" / "{friendly_name}" / f"run_id={{context.run_id}}"
             raw_run_dir.mkdir(parents=True, exist_ok=True)
@@ -322,15 +327,25 @@ def clean_{friendly_name}(
 def _render_json_assets(feed: dict) -> str:
     friendly_name = feed["feed_friendly_name"]
     kind = feed["connector_kind"]
-    landing_expr = _connector_build_expr(kind, friendly_name, with_watermark=True)
-    clean_expr = _connector_build_expr(kind, friendly_name, with_watermark=False)
+    extraction_expr = _connector_build_expr(kind, friendly_name, with_watermark=True)
     return f'''
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
-def landing_{friendly_name}(
+def extraction_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
+    iceberg_catalog: IcebergCatalogResource,
     pipeline_init_{friendly_name}: set,
 ) -> Output[pl.DataFrame]:
+    # Nested-JSON sources (REST/json_file) need pre-processing (flattening)
+    # before their schema is discoverable at all -- see connectors/base.py's
+    # JsonConnector. Rather than flatten twice (once here to discover, once
+    # in clean_{friendly_name} to write), this step does the clean-layer
+    # write itself, reusing the one flattened DataFrame -- clean_{friendly_name}
+    # below becomes a pure pass-through, kept only so clean.{friendly_name}
+    # has a stable AssetKey for dbt source lineage. raw_{friendly_name} still
+    # persists the untouched *nested* fetch result returned here, unrelated
+    # to this flattened copy -- raw's own contract (verbatim, zero
+    # transformation) is unaffected.
     if "extraction" not in pipeline_init_{friendly_name}:
         return Output(pl.DataFrame(), metadata={{"skipped": True, "reason": "extraction not selected"}})
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
@@ -340,9 +355,40 @@ def landing_{friendly_name}(
         stage="landing",
         dagster_run_id=context.run_id,
     ) as log:
-        connector = {landing_expr}
+        connector = {extraction_expr}
         df = connector.fetch()
-        log.set_counts(rows_read=df.height, watermark_value_start=data_feed.get("last_watermark_value"))
+        rows_inserted = 0
+        if not df.is_empty():
+            flat = connector.flatten(df)
+            discovered = connector.discover_schema(flat)
+            sync_result = postgres_metadata.sync_schema_registry(
+                data_feed_id=str(data_feed["id"]),
+                discovered_column_definitions=discovered,
+                metadata_source_pk=data_feed["source_pk"],
+                discovered_primary_key_columns=None,
+                created_by="extraction_{friendly_name}",
+            )
+            flat = reconcile_schema(flat, sync_result.column_definitions)
+            validate_schema(flat, sync_result.column_definitions)
+            catalog = iceberg_catalog.get_catalog()
+            write_clean_snapshot(
+                catalog,
+                namespace="clean",
+                table_name="{friendly_name}",
+                df=flat,
+                column_definitions=sync_result.column_definitions,
+            )
+            rows_inserted = flat.height
+        log.set_counts(
+            rows_read=df.height, rows_inserted=rows_inserted, watermark_value_start=data_feed.get("last_watermark_value")
+        )
+
+    watermark_column = data_feed.get("watermark_column")
+    if not df.is_empty() and watermark_column:
+        postgres_metadata.update_watermark(
+            data_feed_id=str(data_feed["id"]), watermark_value=str(df[watermark_column].max()), run_id=context.run_id
+        )
+
     return Output(df, metadata={{"audit_run_id": log.run_id, "row_count": df.height}})
 
 
@@ -350,7 +396,7 @@ def landing_{friendly_name}(
 def raw_{friendly_name}(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    landing_{friendly_name}: pl.DataFrame,
+    extraction_{friendly_name}: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
     with postgres_metadata.log_data_feed_stage(
@@ -359,7 +405,7 @@ def raw_{friendly_name}(
         stage="raw",
         dagster_run_id=context.run_id,
     ) as log:
-        df = landing_{friendly_name}
+        df = extraction_{friendly_name}
         if not df.is_empty():
             raw_run_dir = _data_lake_dir() / "raw" / "{friendly_name}" / f"run_id={{context.run_id}}"
             raw_run_dir.mkdir(parents=True, exist_ok=True)
@@ -370,55 +416,14 @@ def raw_{friendly_name}(
 
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
 def clean_{friendly_name}(
-    context: AssetExecutionContext,
-    postgres_metadata: PostgresMetadataResource,
-    iceberg_catalog: IcebergCatalogResource,
     raw_{friendly_name}: pl.DataFrame,
-    pipeline_init_{friendly_name}: set,
 ) -> Output[None]:
-    # Extraction and validation combine into this one stage for nested-JSON
-    # sources -- flattening is inseparable from establishing the real
-    # (flat) schema contract, see connectors/base.py's JsonConnector.
-    if "validation" not in pipeline_init_{friendly_name}:
-        return Output(None, metadata={{"skipped": True, "reason": "validation not selected"}})
-    data_feed = postgres_metadata.get_data_feed("{friendly_name}")
-    df = raw_{friendly_name}
-    with postgres_metadata.log_data_feed_stage(
-        data_feed_id=str(data_feed["id"]),
-        tracking_group=data_feed["batch_group_friendly_name"],
-        stage="clean",
-        dagster_run_id=context.run_id,
-    ) as log:
-        if not df.is_empty():
-            connector = {clean_expr}
-            df = connector.flatten(df)
-            discovered = connector.discover_schema(df)
-            sync_result = postgres_metadata.sync_schema_registry(
-                data_feed_id=str(data_feed["id"]),
-                discovered_column_definitions=discovered,
-                metadata_source_pk=data_feed["source_pk"],
-                discovered_primary_key_columns=None,
-                created_by="clean_{friendly_name}",
-            )
-            df = reconcile_schema(df, sync_result.column_definitions)
-            validate_schema(df, sync_result.column_definitions)
-            catalog = iceberg_catalog.get_catalog()
-            write_clean_snapshot(
-                catalog,
-                namespace="clean",
-                table_name="{friendly_name}",
-                df=df,
-                column_definitions=sync_result.column_definitions,
-            )
-        log.set_counts(rows_inserted=df.height)
-
-    watermark_column = data_feed.get("watermark_column")
-    if not df.is_empty() and watermark_column:
-        postgres_metadata.update_watermark(
-            data_feed_id=str(data_feed["id"]), watermark_value=str(df[watermark_column].max()), run_id=context.run_id
-        )
-
-    return Output(None, metadata={{"audit_run_id": log.run_id, "rows_inserted": df.height}})
+    # Pure pass-through: extraction_{friendly_name} already performed the
+    # clean-layer write (see its own comment) to avoid flattening this
+    # feed's nested source data twice. This asset exists only so
+    # clean.{friendly_name} keeps a stable AssetKey for dbt source lineage
+    # -- there is no remaining validation-stage work for this connector kind.
+    return Output(None, metadata={{"skipped": True, "reason": "validation combined with extraction for this connector kind"}})
 '''
 
 
@@ -445,7 +450,7 @@ def render(
             connector_asset_blocks.append(_render_tabular_assets(feed))
         else:
             connector_asset_blocks.append(_render_json_assets(feed))
-        connector_asset_names += [f"landing_{friendly_name}", f"raw_{friendly_name}", f"clean_{friendly_name}"]
+        connector_asset_names += [f"extraction_{friendly_name}", f"raw_{friendly_name}", f"clean_{friendly_name}"]
 
     connector_imports_block = "\n".join(sorted(set(connector_imports)))
     base_locations_repr = "{" + ", ".join(f'"{k}": "{v}"' for k, v in base_locations.items()) + "}"
@@ -454,7 +459,7 @@ def render(
 
     # pipeline_init_<feed> is the master pipeline's real entry point --
     # generated for *every* active feed, not just connector-driven ones,
-    # since customers/sales' hand-written landing assets depend on it too
+    # since customers/sales' hand-written extraction assets depend on it too
     # (see extraction_assets.py/sales_assets.py).
     pipeline_init_blocks = "\n".join(_render_pipeline_init(f) for f in feeds)
     pipeline_init_names_block = ", ".join(f"pipeline_init_{f}" for f in feeds)
@@ -531,7 +536,11 @@ from dagster_k8s.executor import k8s_job_executor
 
 from connectors import CSVConnector, PostgresConnector
 {connector_imports_block}
-from dagster_data_platform.assets.dbt_assets import _build_serving_assets_for_domain, _build_transformation_assets_for_domain
+from dagster_data_platform.assets.dbt_assets import (
+    _build_serving_assets_for_domain,
+    _build_transformation_assets_for_domain,
+    domain_group_name,
+)
 from dagster_data_platform.pipeline_steps import parse_selected_steps
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
@@ -599,7 +608,7 @@ SERVING_ASSETS = {{
 }}
 ALL_DBT_ASSETS = list(TRANSFORMATION_ASSETS.values()) + list(SERVING_ASSETS.values())
 
-# --- connector-driven landing/raw/clean assets ------------------------------
+# --- connector-driven extraction/raw/clean assets ---------------------------
 # One block per feed whose source_system.connector_kind is set (see
 # scripts/generate_dagster_pipeline.py's module docstring) -- a feed with
 # connector_kind IS NULL keeps a fully hand-written asset file instead.
@@ -607,19 +616,15 @@ ALL_DBT_ASSETS = list(TRANSFORMATION_ASSETS.values()) + list(SERVING_ASSETS.valu
 
 ALL_CONNECTOR_ASSETS = [{connector_asset_names_block}]
 
-# .upstream() (not a bare .groups(feed)) so a feed's job also pulls in
-# whatever cross-feed Dagster dependencies its own assets actually have --
-# e.g. fct_daily_financial_activity is tagged only 'sales' for dbt-asset
-# ownership (see that model's own comment for why), but sales_job still
-# needs to build stg_financial_transactions first when run standalone, not
-# just under the full __ASSET_JOB. A no-op for every feed with no
-# cross-feed dependents. NARROWS TO EXTRACTION+VALIDATION ONLY now, a
-# natural consequence of dbt assets carrying group_name=<domain> instead of
-# group_name=<feed> (see dbt_assets.py's DataPlatformDbtTranslator) -- dbt
-# assets are downstream of a feed's clean_<feed> (via source()), never
-# upstream of it, so .upstream() never pulls them in regardless; this just
-# stops AssetSelection.groups(f) itself from including them the way it used
-# to when both shared one group name.
+# EXTRACTION+VALIDATION ONLY, a deliberate narrowing since the
+# multi-project dbt split (Roadmap.md) -- dbt assets now carry
+# group_name=domain_group_name(domain), a namespace disambiguated from
+# plain feed friendly_names (see dbt_assets.py::domain_group_name()), so
+# AssetSelection.groups(f) for a feed f can no longer accidentally include
+# any domain's dbt assets, cross-feed or otherwise. .upstream() is kept as
+# a defensive no-op (a feed's own extraction/raw/clean chain has no real
+# Dagster-level upstream dependency beyond its own pipeline_init today) --
+# not load-bearing, but harmless to leave in case that ever changes.
 FEED_JOBS = {{
     f: define_asset_job(f"{{f}}_job", selection=AssetSelection.groups(f).upstream())
     for f in [{feeds_repr}]
@@ -634,10 +639,22 @@ ALL_FEED_JOBS = list(FEED_JOBS.values())
 # K8sStepHandler._get_container_context() in the installed dagster_k8s
 # source -- it builds from the live run launcher config, not a fresh empty
 # one).
+#
+# AssetSelection.groups(domain_group_name(domain)), NOT a bare
+# AssetSelection.groups(domain) -- confirmed live, the hard way: domain
+# names and feed friendly_names share the same flat group_name string
+# space, so a bare domain string collides whenever a domain happens to be
+# named the same as a feed (the 'sales' domain vs. the 'sales' feed; the
+# 'police_crimes' ODS domain vs. the 'police_crimes' feed it defaults its
+# batch_ods_name from), silently pulling that feed's own extraction/raw/clean
+# steps into what should be a pure dbt-only domain job. See
+# dbt_assets.py::domain_group_name()'s own docstring for the full
+# reasoning -- this must stay in sync with the group_name each domain's
+# dbt assets actually carry.
 DOMAIN_JOBS = {{
     domain: define_asset_job(
         f"{{domain}}_transformation_serving_job",
-        selection=AssetSelection.groups(domain),
+        selection=AssetSelection.groups(domain_group_name(domain)),
         executor_def=k8s_job_executor,
     )
     for domain in DOMAIN_FEEDS
@@ -726,7 +743,7 @@ def _render_clean_source_tables(feeds: list[str]) -> str:
 
 Every feed with dbt models needs its `clean.<table>` source mapped onto
 the matching Dagster asset key (dbt_assets.py's DataPlatformDbtTranslator.
-get_asset_key()) so the landing -> raw -> clean chain and dbt's staging/
+get_asset_key()) so the extraction -> raw -> clean chain and dbt's staging/
 ODS model share one asset graph instead of two coincidentally-ordered
 ones -- also used to classify which dbt nodes are "staging" vs. "model"/
 "serve" (dbt_assets.py's _stage_for_dbt_node()). A standalone leaf module,

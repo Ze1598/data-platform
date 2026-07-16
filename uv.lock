@@ -18,7 +18,6 @@ members = [
     "connectors",
     "dagster-data-platform",
     "data-platform",
-    "data-platform-dbt",
     "frontend",
     "integration-tests",
     "polaris-client",
@@ -797,21 +796,6 @@ wheels = [
 name = "data-platform"
 version = "0.1.0"
 source = { virtual = "." }
-
-[[package]]
-name = "data-platform-dbt"
-version = "0.1.0"
-source = { virtual = "dbt/data_platform" }
-dependencies = [
-    { name = "dbt-core" },
-    { name = "dbt-trino" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "dbt-core", specifier = ">=1.9" },
-    { name = "dbt-trino", specifier = ">=1.9" },
-]
 
 [[package]]
 name = "dbt-adapters"

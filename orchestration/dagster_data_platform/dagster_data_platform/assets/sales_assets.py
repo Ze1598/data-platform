@@ -89,7 +89,7 @@ def _generate_sales_rows(n: int = 20) -> pl.DataFrame:
 
 
 @asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
-def landing_sales(
+def extraction_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     pipeline_init_sales: set,
@@ -104,6 +104,16 @@ def landing_sales(
         dagster_run_id=context.run_id,
     ) as log:
         df = _generate_sales_rows()
+        # Schema discovery/registry-write is extraction's job, complete
+        # before clean_sales ever runs -- clean_sales only reads
+        # schema_registry (get_current_schema()), it never writes to it.
+        postgres_metadata.sync_schema_registry(
+            data_feed_id=str(data_feed["id"]),
+            discovered_column_definitions=infer_column_definitions(df),
+            metadata_source_pk=data_feed["source_pk"],
+            discovered_primary_key_columns=None,
+            created_by="extraction_sales",
+        )
         log.set_counts(rows_read=df.height)
 
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
@@ -113,7 +123,7 @@ def landing_sales(
 def raw_sales(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    landing_sales: pl.DataFrame,
+    extraction_sales: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
@@ -126,7 +136,7 @@ def raw_sales(
         # extracted this run -- zero transformation (same contract as
         # raw_police_crimes/raw_customers). No archive step for this feed --
         # synthetic smoketest data, no retention need.
-        df = landing_sales
+        df = extraction_sales
         if not df.is_empty():
             raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
             raw_run_dir.mkdir(parents=True, exist_ok=True)
@@ -154,15 +164,12 @@ def clean_sales(
         stage="clean",
         dagster_run_id=context.run_id,
     ) as log:
-        sync_result = postgres_metadata.sync_schema_registry(
-            data_feed_id=str(data_feed["id"]),
-            discovered_column_definitions=infer_column_definitions(df),
-            metadata_source_pk=data_feed["source_pk"],
-            discovered_primary_key_columns=None,
-            created_by="clean_sales",
-        )
-        df = reconcile_schema(df, sync_result.column_definitions)
-        validate_schema(df, sync_result.column_definitions)
+        # Read-only against schema_registry -- extraction_sales already
+        # discovered/synced it; this step only reads the now-current
+        # contract to reconcile/validate/write.
+        column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
+        df = reconcile_schema(df, column_definitions)
+        validate_schema(df, column_definitions)
 
         catalog = iceberg_catalog.get_catalog()
         write_clean_snapshot(
@@ -170,7 +177,7 @@ def clean_sales(
             namespace="clean",
             table_name="sales",
             df=df,
-            column_definitions=sync_result.column_definitions,
+            column_definitions=column_definitions,
         )
         log.set_counts(rows_inserted=df.height)
 

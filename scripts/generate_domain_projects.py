@@ -17,10 +17,27 @@ scripts/generate_model_scaffolds.py: a domain's dbt_project.yml may be
 hand-edited after creation (materialization overrides, etc.), so an
 existing domain directory is never touched, only genuinely new domains get
 scaffolded.
+
+dbt/_shared/ is NOT installed as a dbt package dependency (no
+dependencies.yml, no `dbt deps`) -- every domain gets a direct, physical
+COPY of every macro in dbt/_shared/macros/, synced unconditionally on every
+run (unlike the rest of this script's create-if-missing output, since these
+files are never meant to be hand-edited per domain). This was a deliberate
+correction, not the original design: package-based sharing was tried first
+and looked correct (`dbt deps`/`dbt parse` both succeeded cleanly in every
+domain), but broke for real, live, the first time any domain's model was
+built a SECOND time in the same environment -- 'row_hash is undefined' (and
+the same for generate_schema_name before that), reproducibly, even with
+`--full-refresh` and a fully wiped target/ dir. Confirmed fixed immediately
+by physically copying dbt/_shared/macros/*.sql into the domain's own
+macros/ directory instead. Root cause not further isolated; dbt/_shared/
+stays as the single canonical source a human edits, this script is what
+keeps every domain's copy in sync with it.
 """
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 import psycopg
@@ -35,6 +52,7 @@ CONN_KWARGS = dict(
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOMAINS_DIR = REPO_ROOT / "dbt" / "domains"
+SHARED_MACROS_DIR = REPO_ROOT / "dbt" / "_shared" / "macros"
 
 _SLUG_INVALID = re.compile(r"[^a-z0-9_]+")
 
@@ -95,10 +113,18 @@ models:
 """
 
 
-def _render_dependencies_yml() -> str:
-    return """packages:
-  - local: ../../_shared
-"""
+def sync_shared_macros(domain_dir: Path) -> None:
+    """Physically copies every macro in dbt/_shared/macros/ into this
+    domain's own macros/ directory -- see this module's docstring for why
+    dbt/_shared/ is a template source copied from, not an installed
+    package. Unconditional overwrite on every run (unlike the rest of this
+    script's create-if-missing output): these files are never meant to be
+    hand-edited per domain, dbt/_shared/ is the one place a human edits
+    shared macro logic."""
+    macros_dir = domain_dir / "macros"
+    macros_dir.mkdir(parents=True, exist_ok=True)
+    for src in SHARED_MACROS_DIR.glob("*.sql"):
+        shutil.copy2(src, macros_dir / src.name)
 
 
 def _render_profiles_yml(domain: str) -> str:
@@ -125,7 +151,6 @@ def scaffold_domain(domain: str, domains_dir: Path) -> bool:
 
     domain_dir.mkdir(parents=True, exist_ok=True)
     (domain_dir / "dbt_project.yml").write_text(_render_dbt_project_yml(domain))
-    (domain_dir / "dependencies.yml").write_text(_render_dependencies_yml())
 
     profiles_dir = domain_dir / "profiles"
     profiles_dir.mkdir(exist_ok=True)
@@ -150,6 +175,10 @@ def main() -> None:
 
     created = [d for d in domains if scaffold_domain(d, DOMAINS_DIR)]
     skipped = [d for d in domains if d not in created]
+    # Synced for EVERY domain, new or existing (unlike scaffold_domain()'s
+    # create-if-missing gate) -- see sync_shared_macros()'s own comment for why.
+    for d in domains:
+        sync_shared_macros(DOMAINS_DIR / d)
     print(f"Scaffolded {len(created)} new domain project(s); left {len(skipped)} existing domain(s) untouched.")
     for d in created:
         print(f"  created: dbt/domains/{d}/")

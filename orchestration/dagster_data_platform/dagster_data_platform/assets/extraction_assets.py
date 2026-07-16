@@ -53,7 +53,7 @@ _BASE_CUSTOMERS = [
 
 
 @asset(pool=FEED_POOL, group_name=FEED_FRIENDLY_NAME)
-def landing_customers(
+def extraction_customers(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
     pipeline_init_customers: set,
@@ -72,6 +72,20 @@ def landing_customers(
             (pl.col("name").str.split(" ").list.first().str.to_lowercase() + "@example.com").alias("email"),
             pl.lit(now).alias("updated_at"),
         )
+        # Schema discovery/registry-write is extraction's job, complete
+        # before clean_customers ever runs -- clean_customers only reads
+        # schema_registry (get_current_schema()), it never writes to it.
+        # This is a synthetic tabular-shaped generator, not nested JSON, so
+        # (unlike the REST/json_file connector kinds) there's no flattening
+        # cost to save by also writing to clean here -- clean_customers
+        # keeps its own separate write, gated on "validation".
+        postgres_metadata.sync_schema_registry(
+            data_feed_id=str(data_feed["id"]),
+            discovered_column_definitions=infer_column_definitions(df),
+            metadata_source_pk=data_feed["source_pk"],
+            discovered_primary_key_columns=None,
+            created_by="extraction_customers",
+        )
         log.set_counts(rows_read=df.height)
 
     return Output(df, metadata={"audit_run_id": log.run_id, "row_count": df.height})
@@ -81,7 +95,7 @@ def landing_customers(
 def raw_customers(
     context: AssetExecutionContext,
     postgres_metadata: PostgresMetadataResource,
-    landing_customers: pl.DataFrame,
+    extraction_customers: pl.DataFrame,
 ) -> Output[pl.DataFrame]:
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     with postgres_metadata.log_data_feed_stage(
@@ -94,7 +108,7 @@ def raw_customers(
         # extracted this run -- zero transformation (same contract as
         # raw_police_crimes/raw_sales). No archive step for this feed --
         # synthetic smoketest data, no retention need.
-        df = landing_customers
+        df = extraction_customers
         if not df.is_empty():
             raw_run_dir = _raw_dir() / f"run_id={context.run_id}"
             raw_run_dir.mkdir(parents=True, exist_ok=True)
@@ -129,16 +143,12 @@ def clean_customers(
         # separate commits, the exact race the Phase 5 concurrency pools
         # exist to guard against) with no schema validation at all — see
         # Learnings.md for why this got migrated onto raw_to_clean instead
-        # of staying a special case.
-        sync_result = postgres_metadata.sync_schema_registry(
-            data_feed_id=str(data_feed["id"]),
-            discovered_column_definitions=infer_column_definitions(df),
-            metadata_source_pk=data_feed["source_pk"],
-            discovered_primary_key_columns=None,
-            created_by="clean_customers",
-        )
-        df = reconcile_schema(df, sync_result.column_definitions)
-        validate_schema(df, sync_result.column_definitions)
+        # of staying a special case. Read-only against schema_registry --
+        # extraction_customers already discovered/synced it; this step only
+        # reads the now-current contract to reconcile/validate/write.
+        column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
+        df = reconcile_schema(df, column_definitions)
+        validate_schema(df, column_definitions)
 
         catalog = iceberg_catalog.get_catalog()
         write_clean_snapshot(
@@ -146,7 +156,7 @@ def clean_customers(
             namespace="clean",
             table_name="customers",
             df=df,
-            column_definitions=sync_result.column_definitions,
+            column_definitions=column_definitions,
         )
         log.set_counts(rows_inserted=df.height)
 

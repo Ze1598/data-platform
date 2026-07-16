@@ -64,18 +64,18 @@ class DataPlatformDbtTranslator(DagsterDbtTranslator):
         return super().get_asset_key(dbt_resource_props)
 
     def get_group_name(self, dbt_resource_props: Mapping[str, Any]) -> str | None:
-        # group_name=<domain> (NOT the owning feed anymore -- that split
-        # moved to DOMAIN_JOBS/FEED_JOBS, see
-        # scripts/generate_dagster_pipeline.py) is what lets
-        # AssetSelection.groups(domain) select a whole domain's
-        # transformation+serving dbt assets purely from a metadata string,
-        # no hardcoded per-domain asset lists needed. Feed-level
+        # group_name=domain_group_name(domain) (NOT the owning feed anymore,
+        # and NOT the bare domain string either -- see domain_group_name()'s
+        # own docstring for why the prefix is required) is what lets
+        # AssetSelection.groups(domain_group_name(domain)) select a whole
+        # domain's transformation+serving dbt assets purely from a metadata
+        # string, no hardcoded per-domain asset lists needed. Feed-level
         # landing/raw/clean assets (extraction_assets.py etc.) keep
         # group_name=<feed friendly_name>, unchanged -- these are two
-        # different axes now (see Roadmap.md "multi-project dbt split").
-        # None keeps superclass behavior, so a bare
-        # DataPlatformDbtTranslator() (e.g. tests/test_dbt_assets.py) is
-        # unaffected.
+        # different, deliberately-disambiguated namespaces now (see
+        # Roadmap.md "multi-project dbt split"). None keeps superclass
+        # behavior, so a bare DataPlatformDbtTranslator() (e.g.
+        # tests/test_dbt_assets.py) is unaffected.
         if self._group_name is not None:
             return self._group_name
         return super().get_group_name(dbt_resource_props)
@@ -197,6 +197,24 @@ def _run_dbt_build_and_log_stages(
             log.set_counts(rows_updated=stage_rows.get(stage))
 
 
+def domain_group_name(domain: str) -> str:
+    """The Dagster group_name a domain's dbt assets carry -- 'domain_<domain>',
+    NOT the bare domain string. Confirmed live, the hard way: domain names
+    and feed friendly_names share the same flat group_name string space in
+    the asset graph, so a bare group_name=domain collides whenever a
+    domain happens to be named the same as a feed (e.g. the 'sales' domain
+    vs. the 'sales' feed; the 'police_crimes' ODS domain vs. the
+    'police_crimes' feed it defaults its batch_ods_name from) --
+    AssetSelection.groups(domain) then silently pulls that feed's own
+    landing/raw/clean assets into the domain's transformation_serving_job
+    alongside the intended dbt steps. Prefixed to disambiguate the two
+    namespaces outright rather than relying on domain/feed names never
+    colliding -- matches the 'domain_<domain>' convention already used for
+    each domain's own dbt project/profile name
+    (scripts/generate_domain_projects.py)."""
+    return f"domain_{domain}"
+
+
 def _build_transformation_assets_for_domain(domain: str, feeds: list[str], dbt_project: DbtProject):
     """clean -> staging -> model for one domain -- the 'transformation'
     pipeline step. Excludes the generated serve views (see
@@ -240,7 +258,7 @@ def _build_transformation_assets_for_domain(domain: str, feeds: list[str], dbt_p
 
     @dbt_assets(
         manifest=dbt_project.manifest_path,
-        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=domain),
+        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=domain_group_name(domain)),
         exclude=_SERVING_LAYER_TAG,
         pool=f"domain:{domain}",
         name=f"dbt_{domain}_transformation_assets",
@@ -274,7 +292,7 @@ def _build_serving_assets_for_domain(domain: str, feeds: list[str], dbt_project:
 
     @dbt_assets(
         manifest=dbt_project.manifest_path,
-        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=domain),
+        dagster_dbt_translator=DataPlatformDbtTranslator(group_name=domain_group_name(domain)),
         select=_SERVING_LAYER_TAG,
         pool=f"domain:{domain}",
         name=f"dbt_{domain}_serving_assets",

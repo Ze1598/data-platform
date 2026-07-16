@@ -1,0 +1,24 @@
+name: "domain_metadata"
+version: "1.0.0"
+config-version: 2
+
+profile: "domain_metadata"
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  domain_metadata:
+    staging:
+      +materialized: incremental
+      +incremental_strategy: delete+insert
+    model:
+      +materialized: incremental
+      +incremental_strategy: delete+insert
+    serve:
+      +materialized: view

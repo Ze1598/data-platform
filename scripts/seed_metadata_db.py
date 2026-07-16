@@ -25,68 +25,6 @@ CONN_KWARGS = dict(
     dbname=os.environ.get("POSTGRES_DB", "platform_metadata"),
 )
 
-CUSTOMERS_SCHEMA = [
-    {"name": "customer_id", "data_type": "long", "nullable": False, "ordinal": 1, "description": "Business key"},
-    {"name": "name", "data_type": "string", "nullable": False, "ordinal": 2, "description": "Customer name"},
-    {"name": "email", "data_type": "string", "nullable": False, "ordinal": 3, "description": "Customer email"},
-    {"name": "updated_at", "data_type": "timestamp", "nullable": False, "ordinal": 4, "description": "Last update, UTC"},
-]
-
-SALES_SCHEMA = [
-    {"name": "invoice_id", "data_type": "string", "nullable": False, "ordinal": 1, "description": "Unique transaction identifier"},
-    {"name": "branch", "data_type": "string", "nullable": False, "ordinal": 2, "description": "Branch code (A, B, C)"},
-    {"name": "city", "data_type": "string", "nullable": False, "ordinal": 3, "description": "Branch city"},
-    {"name": "customer_type", "data_type": "string", "nullable": False, "ordinal": 4, "description": "Member or Normal"},
-    {"name": "gender", "data_type": "string", "nullable": False, "ordinal": 5, "description": "Customer gender"},
-    {"name": "product_line", "data_type": "string", "nullable": False, "ordinal": 6, "description": "Product category"},
-    {"name": "unit_price", "data_type": "double", "nullable": False, "ordinal": 7, "description": "Price per unit"},
-    {"name": "quantity", "data_type": "long", "nullable": False, "ordinal": 8, "description": "Units purchased"},
-    {"name": "tax_amount", "data_type": "double", "nullable": False, "ordinal": 9, "description": "Tax amount (5%)"},
-    {"name": "total", "data_type": "double", "nullable": False, "ordinal": 10, "description": "Total incl. tax"},
-    {"name": "payment_method", "data_type": "string", "nullable": False, "ordinal": 11, "description": "Cash, Credit card, or Ewallet"},
-    {"name": "cogs", "data_type": "double", "nullable": False, "ordinal": 12, "description": "Cost of goods sold"},
-    {"name": "gross_income", "data_type": "double", "nullable": False, "ordinal": 13, "description": "Gross income for the line"},
-    {"name": "rating", "data_type": "double", "nullable": True, "ordinal": 14, "description": "Customer satisfaction rating, 1-10"},
-    {"name": "sale_timestamp", "data_type": "timestamp", "nullable": False, "ordinal": 15, "description": "Transaction timestamp, UTC"},
-]
-
-# Phase 9: financial_transactions (CSV file-drop source, incremental on
-# posted_date) -- see scripts/generate_financial_reports.py for the
-# generator this feed's landing asset reads the output of.
-FINANCIAL_TRANSACTIONS_SCHEMA = [
-    {"name": "transaction_id", "data_type": "string", "nullable": False, "ordinal": 1, "description": "Business key, unique per journal-entry line"},
-    {"name": "posted_date", "data_type": "timestamp", "nullable": False, "ordinal": 2, "description": "When the transaction was posted, UTC -- the incremental watermark column"},
-    {"name": "account_code", "data_type": "string", "nullable": False, "ordinal": 3, "description": "Chart-of-accounts code"},
-    {"name": "account_name", "data_type": "string", "nullable": False, "ordinal": 4, "description": "Chart-of-accounts name"},
-    {"name": "description", "data_type": "string", "nullable": False, "ordinal": 5, "description": "Free-text transaction description"},
-    {"name": "debit_amount", "data_type": "double", "nullable": False, "ordinal": 6, "description": "Debit amount; 0 if this line is a credit"},
-    {"name": "credit_amount", "data_type": "double", "nullable": False, "ordinal": 7, "description": "Credit amount; 0 if this line is a debit"},
-    {"name": "currency", "data_type": "string", "nullable": False, "ordinal": 8, "description": "ISO currency code"},
-    {"name": "cost_center", "data_type": "string", "nullable": False, "ordinal": 9, "description": "Owning cost center"},
-]
-
-# Phase 9: police_crimes (UK Police API, https://data.police.uk/docs/,
-# incremental on month -- one calendar month of street-level crime data per
-# run, for a fixed point in central London to keep volume bounded).
-# Flattened from the API's nested location/outcome_status JSON shape,
-# confirmed against a live call before designing this.
-POLICE_CRIMES_SCHEMA = [
-    {"name": "id", "data_type": "long", "nullable": False, "ordinal": 1, "description": "Business key, the crime's own numeric ID"},
-    {"name": "persistent_id", "data_type": "string", "nullable": True, "ordinal": 2, "description": "Stable cross-request ID; often empty per the API"},
-    {"name": "category", "data_type": "string", "nullable": False, "ordinal": 3, "description": "Crime category"},
-    {"name": "location_type", "data_type": "string", "nullable": True, "ordinal": 4, "description": "'Force' or 'BTP' (British Transport Police)"},
-    {"name": "location_subtype", "data_type": "string", "nullable": True, "ordinal": 5, "description": "Further location classification, often empty"},
-    {"name": "street_id", "data_type": "long", "nullable": True, "ordinal": 6, "description": "Anonymised street ID"},
-    {"name": "street_name", "data_type": "string", "nullable": True, "ordinal": 7, "description": "Anonymised street name ('On or near ...')"},
-    {"name": "latitude", "data_type": "double", "nullable": True, "ordinal": 8, "description": "Approximate latitude"},
-    {"name": "longitude", "data_type": "double", "nullable": True, "ordinal": 9, "description": "Approximate longitude"},
-    {"name": "context", "data_type": "string", "nullable": True, "ordinal": 10, "description": "Extra context, often empty"},
-    {"name": "month", "data_type": "string", "nullable": False, "ordinal": 11, "description": "YYYY-MM this record belongs to -- the incremental watermark column"},
-    {"name": "outcome_category", "data_type": "string", "nullable": True, "ordinal": 12, "description": "Latest known outcome category, null if none yet"},
-    {"name": "outcome_date", "data_type": "string", "nullable": True, "ordinal": 13, "description": "YYYY-MM of the latest outcome, null if none yet"},
-]
-
-
 # Connector library plan: metadata_runs (Postgres source, this platform's
 # own metadata DB) -- moved verbatim from the now-deleted
 # metadata_runs_assets.py, which existed only via
@@ -153,6 +91,8 @@ def seed_data_feed(
     batch_group_friendly_name: str | None = None,
     extraction_config: dict | None = None,
     pipeline_steps: str = "0,1,2,3",
+    ods_enabled: bool = False,
+    batch_ods_name: str | None = None,
 ) -> None:
     # Every feed must belong to a batch (see metadata/DataModel.md and
     # 01_platform_metadata.sql's batch_group not-null comment) -- none of
@@ -160,17 +100,24 @@ def seed_data_feed(
     # defaults to being its own singleton batch (batch_group_friendly_name
     # = its own friendly_name) unless a real one is passed in.
     batch_group_friendly_name = batch_group_friendly_name or friendly_name
+    # ods_enabled/batch_ods_name default to off/null for every feed that
+    # doesn't pass them -- matches the DDL's own defaults
+    # (data_feed.ods_enabled default false, batch_ods_name nullable), so
+    # every existing feed's behavior is unchanged unless explicitly opted
+    # in (see Roadmap.md "ODS layer" / "multi-project dbt split").
     cur.execute(
         """
         INSERT INTO data_feed (
             source_system_id, friendly_name, source_object_name, extraction_type,
             source_pk, processing_engine, watermark_column,
-            batch_group, batch_group_friendly_name, extraction_config, pipeline_steps
+            batch_group, batch_group_friendly_name, extraction_config, pipeline_steps,
+            ods_enabled, batch_ods_name
         )
         VALUES (
             (SELECT id FROM source_system WHERE code = %s),
             %s, %s, %s, %s, %s, %s,
-            gen_random_uuid(), %s, %s, %s
+            gen_random_uuid(), %s, %s, %s,
+            %s, %s
         )
         ON CONFLICT (friendly_name) DO NOTHING
         """,
@@ -180,18 +127,8 @@ def seed_data_feed(
             batch_group_friendly_name,
             psycopg.types.json.Json(extraction_config) if extraction_config is not None else None,
             pipeline_steps,
+            ods_enabled, batch_ods_name,
         ),
-    )
-
-
-def seed_schema_registry(cur, *, data_feed_friendly_name: str, version: int, column_definitions: list[dict], created_by: str) -> None:
-    cur.execute(
-        """
-        INSERT INTO schema_registry (data_feed_id, version, column_definitions, is_current, created_by)
-        VALUES ((SELECT id FROM data_feed WHERE friendly_name = %s), %s, %s, true, %s)
-        ON CONFLICT (data_feed_id, version) DO NOTHING
-        """,
-        (data_feed_friendly_name, version, psycopg.types.json.Json(column_definitions), created_by),
     )
 
 
@@ -370,6 +307,17 @@ def main() -> None:
             source_pk=["id"],
             processing_engine="polars",
             watermark_column="month",
+            # No hand-modeled dimension/fact owns this feed -- ODS delivers
+            # an automatic Type 1 model.police_crimes table instead (keyed,
+            # since source_pk is set above), superseding the old
+            # hand-written stg_police_crimes.sql (deleted, see Roadmap.md
+            # "multi-project dbt split" -- a feed with no lakehouse_models
+            # row and no ODS domain has nowhere to build under the
+            # domain-based topology). batch_ods_name defaults to this
+            # feed's own batch_group_friendly_name (itself defaulting to
+            # "police_crimes", its own singleton batch).
+            ods_enabled=True,
+            batch_ods_name="police_crimes",
         )
         # No schema_registry seed row for metadata_runs -- deliberately, to
         # prove the connector library's actual point: schema discovery
@@ -386,10 +334,14 @@ def main() -> None:
             extraction_config={"query": METADATA_RUNS_QUERY},
         )
 
-        seed_schema_registry(cur, data_feed_friendly_name="customers", version=1, column_definitions=CUSTOMERS_SCHEMA, created_by="seed_metadata_db")
-        seed_schema_registry(cur, data_feed_friendly_name="sales", version=1, column_definitions=SALES_SCHEMA, created_by="seed_metadata_db")
-        seed_schema_registry(cur, data_feed_friendly_name="financial_transactions", version=1, column_definitions=FINANCIAL_TRANSACTIONS_SCHEMA, created_by="seed_metadata_db")
-        seed_schema_registry(cur, data_feed_friendly_name="police_crimes", version=1, column_definitions=POLICE_CRIMES_SCHEMA, created_by="seed_metadata_db")
+        # schema_registry is never hand-seeded -- extraction's own schema
+        # discovery (connectors.schema_registry_sync.sync_schema_registry())
+        # populates it for every feed, uniformly, from each feed's first
+        # real run. metadata_runs above already followed this correctly;
+        # customers/sales/financial_transactions/police_crimes used to have
+        # a seed_schema_registry() call here that bypassed discovery
+        # entirely -- removed, see .claude/plans/
+        # fix-schema-registry-extraction-ownership.md.
 
         # Model layer (Phase 7): dim_customer stands alone (no real FK from
         # sales to customers in this dataset -- see Learnings.md); dim_branch
@@ -465,6 +417,68 @@ def main() -> None:
             scd_type=1,
             deletes_enabled=False,
             updates_enabled=False,
+        )
+
+        # metadata domain: Walkthrough_Metadata_Source_Feed.md's worked
+        # example, hand-built directly against dbt/data_platform/ (its own
+        # lakehouse_models rows inserted by hand while following that
+        # walkthrough, never added here) -- backfilled here so the whole
+        # walkthrough scenario becomes reproducible from a fresh cluster,
+        # same "not reproducible until now" fix already applied to
+        # metadata_runs the FEED itself. See the multi-project dbt split
+        # addendum for why this needed resolving now: these three model
+        # files exist on disk with no seeding call, discovered while
+        # migrating dbt/data_platform/ into dbt/domains/.
+        seed_lakehouse_model(
+            cur,
+            friendly_name="dim_metadata_feed",
+            table_name="metadata_dim_feed",
+            model_schema="metadata",
+            table_type="dimension",
+            depends_on_feed_friendly_names=["metadata_runs"],
+            owning_feed_friendly_name="metadata_runs",
+            business_key_columns=["feed_friendly_name"],
+            tracked_columns=[
+                "feed_batch_group_friendly_name", "feed_extraction_type",
+                "feed_processing_engine", "feed_is_active",
+            ],
+            scd_type=1,
+            deletes_enabled=False,
+            updates_enabled=True,
+        )
+        seed_lakehouse_model(
+            cur,
+            friendly_name="dim_metadata_model",
+            table_name="metadata_dim_model",
+            model_schema="metadata",
+            table_type="dimension",
+            depends_on_feed_friendly_names=["metadata_runs"],
+            owning_feed_friendly_name="metadata_runs",
+            business_key_columns=["model_friendly_name"],
+            tracked_columns=[
+                "model_model_schema", "model_table_type", "model_scd_type",
+                "model_updates_enabled", "model_deletes_enabled",
+            ],
+            scd_type=1,
+            deletes_enabled=False,
+            updates_enabled=True,
+        )
+        seed_lakehouse_model(
+            cur,
+            friendly_name="fct_metadata_runs",
+            table_name="metadata_fct_runs",
+            model_schema="metadata",
+            table_type="fact",
+            depends_on_feed_friendly_names=["metadata_runs"],
+            owning_feed_friendly_name="metadata_runs",
+            business_key_columns=["run_id"],
+            tracked_columns=[
+                "job_successful", "job_ended_timestamp", "landing_rows_read", "raw_rows_read",
+                "clean_rows_inserted", "staging_rows_updated", "model_rows_updated", "serve_rows_read",
+            ],
+            scd_type=1,
+            deletes_enabled=False,
+            updates_enabled=True,
         )
 
         # Migrates police_crimes' previously-hardcoded _SCHEDULE_CRON into

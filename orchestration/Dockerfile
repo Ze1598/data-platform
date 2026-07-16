@@ -20,14 +20,16 @@ ENV PATH="/app/.venv/bin:$PATH"
 # it's a no-op and expects each domain's own target/manifest.json to
 # already exist. Loops over every scaffolded domain project (see
 # Roadmap.md "multi-project dbt split") rather than one hardcoded project
-# dir — `dbt deps` is a new required step here (was never needed for the
-# single shared project, since it had no package dependencies of its own;
-# every domain now installs dbt/_shared/ as a local-path package, and `dbt
-# parse` does NOT auto-install packages, confirmed against the installed
-# dbt-core source). Neither command needs a live Trino connection, just a
-# syntactically valid profiles.yml, so this is safe at build time.
+# dir. No `dbt deps` step: dbt/_shared/ is not installed as a package
+# dependency — scripts/generate_domain_projects.py physically copies its
+# macros into every domain's own macros/ directory instead (confirmed live
+# that package-based sharing breaks unpredictably after a project's first
+# build in this dbt version — see that script's own module docstring), so
+# there's no dbt_packages/ to install here. `dbt parse` doesn't need a live
+# Trino connection, just a syntactically valid profiles.yml, so this is
+# safe at build time.
 RUN for d in dbt/domains/*/; do \
       dir="${d%/}"; \
       [ -f "$dir/dbt_project.yml" ] || continue; \
-      (cd "$dir" && dbt deps --profiles-dir profiles && dbt parse --profiles-dir profiles) || exit 1; \
+      (cd "$dir" && dbt parse --profiles-dir profiles) || exit 1; \
     done
