@@ -1,4 +1,5 @@
 .venv/
+.claude/
 __pycache__/
 *.py[cod]
 .env
@@ -6,17 +7,22 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 data-lake/
-dbt/data_platform/target/
-dbt/data_platform/dbt_packages/
-dbt/data_platform/logs/
-dbt/data_platform/profiles/.user.yml
-dbt/data_platform/models/serve/generated/
-dbt/data_platform/models/model/dimensions/generated/
-dbt/data_platform/models/model/ods/generated/
-dbt/data_platform/models/staging/generated/
+# dbt/data_platform/ retired -- every domain under dbt/domains/<domain>/
+# (see Roadmap.md "multi-project dbt split") has the same generated-output
+# shape the single shared project used to, so these are glob patterns now,
+# not one hardcoded path per file.
+dbt/domains/*/target/
+dbt/domains/*/dbt_packages/
+dbt/domains/*/package-lock.yml
+dbt/domains/*/logs/
+dbt/domains/*/profiles/.user.yml
+dbt/domains/*/models/serve/generated/
+dbt/domains/*/models/model/intermediate/generated/
+dbt/domains/*/models/model/ods/generated/
+dbt/domains/*/models/staging/generated/
+dbt/domains/*/models/staging/_sources.yml
 orchestration/dagster_data_platform/dagster_data_platform/pipeline_generated.py
 orchestration/dagster_data_platform/dagster_data_platform/clean_source_tables_generated.py
-dbt/data_platform/models/staging/_sources.yml
 
 # DAGSTER_HOME runtime state (telemetry, compute logs, IO manager pickled
 # storage, log queue) — only dagster.yaml itself is source, everything
