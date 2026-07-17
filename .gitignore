@@ -4,6 +4,16 @@ __pycache__/
 *.py[cod]
 .env
 .DS_Store
+
+# Local k8s Secret manifests -- plaintext dummy credentials for the local
+# learning cluster (never real secrets), but not committed on principle,
+# same as .env. Each has a tracked *.example sibling as the template to
+# copy from (see .env/.env.example for the same convention).
+frontend/k8s/postgres-credentials-secret.yaml
+metadata/k8s/secret.yaml
+orchestration/k8s/postgres-credentials-secret.yaml
+query-engine/minio/secret.yaml
+query-engine/polaris/secret.yaml
 .pytest_cache/
 *.egg-info/
 data-lake/
