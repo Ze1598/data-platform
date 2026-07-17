@@ -1,5 +1,5 @@
 -- Platform metadata schema: source_system, data_feed, schema_registry,
--- lakehouse_models, load_type, schedule, data_processing_runs.
+-- lakehouse_models, load_type, ingestion_triggers, data_processing_runs.
 -- See metadata/DataModel.md for the full design rationale and column-by-
 -- column reasoning behind this schema.
 
@@ -262,25 +262,43 @@ create table lakehouse_models (
 );
 
 -- ---------------------------------------------------------------------------
--- schedule (metadata for Dagster schedules; a build-time codegen step reads
--- this table and constructs the real Dagster ScheduleDefinition objects --
--- not yet built as a functioning consumer, only the table structure lands
--- in this pass)
+-- ingestion_triggers (metadata for how a feed/model's master_pipeline run
+-- actually gets kicked off -- a cron schedule, or a storage/sensor trigger
+-- watching a feed's own landing directory for a new file. A build-time
+-- codegen step, scripts/generate_dagster_pipeline.py, reads this table and
+-- constructs the real Dagster ScheduleDefinition/SensorDefinition objects.
+-- Renamed from the original `schedule` table, which only covered the cron
+-- case -- see Roadmap.md/Backlog.md for the generalization.)
 -- ---------------------------------------------------------------------------
-create table schedule (
+create table ingestion_triggers (
     id                        uuid primary key default gen_random_uuid(),
-    cron                      text not null,
+    trigger_type              text not null check (trigger_type in ('schedule', 'sensor')),
+    -- only meaningful (and only required) for a schedule-type trigger
+    cron                      text,
     -- polymorphic: a data_feed.id or a lakehouse_models.id, depending on controlling_object_type
     controlling_object_id     uuid not null,
     controlling_object_type   text not null check (controlling_object_type in ('model', 'feed')),
-    is_active                 boolean not null default true
+    is_active                 boolean not null default true,
+    constraint chk_ingestion_triggers_cron check (
+        trigger_type <> 'schedule' or cron is not null
+    ),
+    -- a sensor watches a feed's own landing directory -- a model has no
+    -- source/landing concept of its own, so sensor-type is feed-only.
+    -- Row-local (both columns live here), so enforced in the DB in
+    -- addition to the frontend -- unlike the sensor/connector_kind
+    -- eligibility check below, which reaches source_system through two
+    -- joins and can only ever be an application-layer check.
+    constraint chk_ingestion_triggers_sensor_feed_only check (
+        trigger_type <> 'sensor' or controlling_object_type = 'feed'
+    )
 );
 
--- at most one schedule per controlled feed/model -- also what makes idempotent
--- seeding possible (every other table's seed function uses ON CONFLICT against
--- a natural-key unique constraint; schedule had none until this one)
-create unique index uq_schedule_controlling_object
-    on schedule (controlling_object_type, controlling_object_id);
+-- at most one trigger per controlled feed/model -- a feed/model picks
+-- schedule OR sensor, never both at once; not an oversight. Also what makes
+-- idempotent seeding possible (every other table's seed function uses ON
+-- CONFLICT against a natural-key unique constraint).
+create unique index uq_ingestion_triggers_controlling_object
+    on ingestion_triggers (controlling_object_type, controlling_object_id);
 
 -- ---------------------------------------------------------------------------
 -- data_processing_runs (one row per feed-run or model-run per job execution

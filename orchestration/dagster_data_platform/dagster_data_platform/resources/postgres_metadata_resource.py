@@ -401,16 +401,19 @@ class PostgresMetadataResource(ConfigurableResource):
             )
         return result
 
-    def is_schedule_active(self, schedule_id: str) -> bool:
-        """Live re-check at schedule-tick time -- lets a schedule be
-        disabled via the metadata DB and take effect immediately, without
-        waiting for the next `generate_dagster_pipeline.py` regen to remove
-        the ScheduleDefinition object entirely. A missing/deleted row is
-        treated as inactive, not an error -- a schedule row disappearing
-        out from under a still-running generated ScheduleDefinition
-        (stale until the next codegen regen) should skip, not crash."""
+    def is_trigger_active(self, trigger_id: str) -> bool:
+        """Live re-check at schedule-tick or sensor-evaluation time -- lets
+        an ingestion_triggers row be disabled via the metadata DB and take
+        effect immediately, without waiting for the next
+        `generate_dagster_pipeline.py` regen to remove the generated
+        ScheduleDefinition/SensorDefinition object entirely. A missing/
+        deleted row is treated as inactive, not an error -- a trigger row
+        disappearing out from under a still-running generated definition
+        (stale until the next codegen regen) should skip, not crash. One
+        method for both trigger kinds -- schedules and sensors share the
+        same ingestion_triggers row shape, just a different trigger_type."""
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("SELECT is_active FROM schedule WHERE id = %s", (schedule_id,))
+            cur.execute("SELECT is_active FROM ingestion_triggers WHERE id = %s", (trigger_id,))
             row = cur.fetchone()
             return bool(row and row[0])
 

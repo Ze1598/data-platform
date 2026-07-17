@@ -9,8 +9,9 @@ from metadata_db import (
     fetch_table,
     get_engine,
     insert_row,
+    parse_csv_text,
     safe_str,
-    to_json_text,
+    to_csv_text,
     update_row,
 )
 from sqlalchemy import text
@@ -151,12 +152,12 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "feed; required either way so the meaning is never implicit.",
     )
 
-    business_key_columns = st.text_area(
-        "Business key columns (JSON array)", value=defaults["business_key_columns"],
+    business_key_columns = st.text_input(
+        "Business key columns (comma-separated)", value=defaults["business_key_columns"],
         key=f"{key_prefix}_business_key_columns",
     )
-    tracked_columns = st.text_area(
-        "Tracked columns (JSON array)", value=defaults["tracked_columns"], key=f"{key_prefix}_tracked_columns"
+    tracked_columns = st.text_input(
+        "Tracked columns (comma-separated)", value=defaults["tracked_columns"], key=f"{key_prefix}_tracked_columns"
     )
     scd_type = st.selectbox(
         "SCD type", SCD_TYPES, index=SCD_TYPES.index(defaults["scd_type"]),
@@ -211,12 +212,8 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
 
 
 def build_values(form_values: dict) -> dict | None:
-    try:
-        business_key_columns = json.loads(form_values["business_key_columns"] or "[]")
-        tracked_columns = json.loads(form_values["tracked_columns"] or "[]")
-    except json.JSONDecodeError as e:
-        st.error(f"Invalid JSON: {e}")
-        return None
+    business_key_columns = parse_csv_text(form_values["business_key_columns"])
+    tracked_columns = parse_csv_text(form_values["tracked_columns"])
 
     if not form_values["friendly_name"] or not form_values["model_schema"]:
         st.error("Friendly name and model schema are required.")
@@ -304,8 +301,8 @@ if mode == "Add new":
             "table_type": "dimension",
             "depends_on_feed_names": [],
             "owning_feed_name": list(data_feed_lookup.keys())[0],
-            "business_key_columns": "[]",
-            "tracked_columns": "[]",
+            "business_key_columns": "",
+            "tracked_columns": "",
             "scd_type": 2,
             "updates_enabled": True,
             "deletes_enabled": False,
@@ -350,8 +347,8 @@ elif mode == "Edit existing":
                 "owning_feed_name": data_feed_name_by_id.get(
                     str(row["owning_feed_id"]), list(data_feed_lookup.keys())[0]
                 ),
-                "business_key_columns": to_json_text(row["business_key_columns"], default="[]"),
-                "tracked_columns": to_json_text(row["tracked_columns"], default="[]"),
+                "business_key_columns": to_csv_text(row["business_key_columns"]),
+                "tracked_columns": to_csv_text(row["tracked_columns"]),
                 "scd_type": int(row["scd_type"]),
                 "updates_enabled": bool(row["updates_enabled"]),
                 "deletes_enabled": bool(row["deletes_enabled"]),

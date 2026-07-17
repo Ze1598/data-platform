@@ -10,7 +10,9 @@ from metadata_db import (
     fetch_table,
     get_engine,
     insert_row,
+    parse_csv_text,
     safe_str,
+    to_csv_text,
     to_json_text,
     update_row,
 )
@@ -112,8 +114,8 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
     extraction_config = st.text_area(
         "Extraction config (JSON)", value=defaults["extraction_config"], key=f"{key_prefix}_extraction_config"
     )
-    source_pk = st.text_area(
-        "Source PK columns (JSON array)", value=defaults["source_pk"],
+    source_pk = st.text_input(
+        "Source PK columns (comma-separated)", value=defaults["source_pk"],
         help="Column names identifying a row in the source", key=f"{key_prefix}_source_pk",
     )
     processing_engine = st.selectbox(
@@ -175,13 +177,24 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
     }
 
 
-def build_values(form_values: dict) -> dict | None:
+def build_values(form_values: dict, editing_id: str | None = None) -> dict | None:
     try:
         extraction_config = json.loads(form_values["extraction_config"] or "{}")
-        source_pk = json.loads(form_values["source_pk"] or "[]")
     except json.JSONDecodeError as e:
         st.error(f"Invalid JSON: {e}")
         return None
+    source_pk = parse_csv_text(form_values["source_pk"])
+
+    # Resolved once, here, and reused for both the ODS conflict check below
+    # and the final return value -- computing it twice would mint two
+    # different uuid.uuid4() values for a new batch, one used to check for
+    # conflicts and a different one actually stored. df's "batch_group"
+    # column is already stringified by fetch_table, but
+    # form_values["batch_group"] can still be a raw uuid.UUID (picked from
+    # existing_batches, a separate pd.read_sql call that doesn't go through
+    # fetch_table) -- coerce to str, or comparisons against df silently
+    # never match.
+    resolved_batch_group = str(form_values["batch_group"]) if form_values["batch_group"] else str(uuid.uuid4())
 
     if not form_values["friendly_name"] or not form_values["source_object_name"]:
         st.error("Friendly name and source object name are required.")
@@ -211,11 +224,30 @@ def build_values(form_values: dict) -> dict | None:
             )
             return None
 
+        # A batch_group is expected to map to exactly one ODS domain (1:1) --
+        # see Roadmap.md "Master pipeline orchestration" / Backlog.md. Only a
+        # feed with ODS enabled can conflict (one with it off contributes no
+        # batch_ods_name).
+        conflicting = df[
+            (df["batch_group"] == resolved_batch_group)
+            & (df["id"] != editing_id)
+            & (df["ods_enabled"] == True)  # noqa: E712 (pandas boolean-column comparison, not identity)
+            & (df["batch_ods_name"] != form_values["batch_ods_name"])
+        ]
+        if not conflicting.empty:
+            conflict_row = conflicting.iloc[0]
+            st.error(
+                f"Batch group {form_values['batch_group_friendly_name']!r} already has ODS domain "
+                f"{conflict_row['batch_ods_name']!r} (from feed {conflict_row['friendly_name']!r}) -- "
+                "every feed sharing a batch_group must resolve to the same ODS domain name."
+            )
+            return None
+
     return {
         "source_system_id": source_systems[form_values["source_code"]],
         "friendly_name": form_values["friendly_name"],
         "source_object_name": form_values["source_object_name"],
-        "batch_group": form_values["batch_group"] or str(uuid.uuid4()),
+        "batch_group": resolved_batch_group,
         "batch_group_friendly_name": form_values["batch_group_friendly_name"],
         "batch_feed_hierarchy": form_values["batch_feed_hierarchy"],
         "extraction_type": form_values["extraction_type"],
@@ -248,7 +280,7 @@ if mode == "Add new":
             "extraction_type": "full",
             "watermark_column": "",
             "extraction_config": "{}",
-            "source_pk": "[]",
+            "source_pk": "",
             "processing_engine": "polars",
             "pipeline_step_labels": ["extraction", "validation", "transformation", "serving"],
             "ods_enabled": False,
@@ -290,7 +322,7 @@ elif mode == "Edit existing":
                 "extraction_type": row["extraction_type"],
                 "watermark_column": safe_str(row["watermark_column"]),
                 "extraction_config": to_json_text(row["extraction_config"]),
-                "source_pk": to_json_text(row["source_pk"], default="[]"),
+                "source_pk": to_csv_text(row["source_pk"]),
                 "processing_engine": row["processing_engine"],
                 "pipeline_step_labels": _pipeline_step_ids_to_labels(row["pipeline_steps"]),
                 "ods_enabled": bool(row["ods_enabled"]),
@@ -302,7 +334,7 @@ elif mode == "Edit existing":
         )
 
         if submitted:
-            values = build_values(form_values)
+            values = build_values(form_values, editing_id=row["id"])
             if values is not None:
                 values.pop("friendly_name")  # friendly_name is immutable once created
                 try:

@@ -52,7 +52,7 @@ One row per source object/table/endpoint to extract — a database table, an API
 | batch_ods_name | text | nullable — which ODS "domain" (dbt project, see `dbt/domains/`) this feed's ODS table belongs to, playing the same role `lakehouse_models.model_schema` plays for hand-modeled domains. Only meaningful when `ods_enabled=true`. Defaults to this row's own `batch_group_friendly_name` when a feed first enables ODS (a frontend convenience), but is a real, independently-stored, independently-editable value from that point on — multiple `ods_enabled` feeds sharing the same `batch_ods_name` group into one ODS domain project. Allowed to collide with a real `model_schema` value (that domain would just host both hand-modeled and auto-generated ODS tables); not guarded against. A `batch_group` is expected to map to exactly one `batch_ods_name` (1:1) when triggered via `master_pipeline`'s `orchestration_kind='batch_group'` path — not enforced anywhere today, see `Backlog.md` |
 | is_active | boolean | not null, default true |
 
-**Joins/lookups**: `source_system_id` → `source_system.id`. `batch_group` is a bare grouping value (no FK target). `id` is referenced by `schema_registry.data_feed_id`, `lakehouse_models.depends_on_feeds` (comma-separated, not a real FK), `data_processing_runs.data_feed_id`, and `schedule.controlling_object_id` (when `controlling_object_type='feed'`).
+**Joins/lookups**: `source_system_id` → `source_system.id`. `batch_group` is a bare grouping value (no FK target). `id` is referenced by `schema_registry.data_feed_id`, `lakehouse_models.depends_on_feeds` (comma-separated, not a real FK), `data_processing_runs.data_feed_id`, and `ingestion_triggers.controlling_object_id` (when `controlling_object_type='feed'`).
 
 ---
 
@@ -122,7 +122,7 @@ One row per Kimball fact/dimension table the platform builds — **not** staging
 | last_run_id | uuid | nullable |
 | is_active | boolean | not null, default true |
 
-**Joins/lookups**: `depends_on_feeds` holds `data_feed.id` values (comma-separated text, not a real FK). `owning_feed_id` → `data_feed.id` (real FK). `load_type` → `load_type.id`. `id` is referenced by `schedule.controlling_object_id` (when `controlling_object_type='model'`) and `data_processing_runs.model_key`.
+**Joins/lookups**: `depends_on_feeds` holds `data_feed.id` values (comma-separated text, not a real FK). `owning_feed_id` → `data_feed.id` (real FK). `load_type` → `load_type.id`. `id` is referenced by `ingestion_triggers.controlling_object_id` (when `controlling_object_type='model'`) and `data_processing_runs.model_key`.
 
 ### Staging update-tracking rule
 
@@ -175,19 +175,20 @@ Seed rows:
 
 ---
 
-## `schedule`
+## `ingestion_triggers`
 
-Metadata for Dagster schedules. A build-time codegen step (`scripts/generate_dagster_pipeline.py`, matching the serve-view generator's pattern) reads this table and constructs real Dagster `ScheduleDefinition` objects — the schedule object itself has to be code, but its cron string and what it controls live here. Every generated schedule targets the same single `master_pipeline` job (Roadmap.md "Master pipeline orchestration") — exactly one schedule per row now, no per-feed expansion: a feed-type row resolves that feed's own `batch_group_friendly_name` and fires `master_pipeline` with `orchestration_kind='batch_group'`; a model-type row resolves that model's own `model_schema` and fires it with `orchestration_kind='model_schema'` directly — `master_pipeline` itself reverse-engineers whichever feeds it actually needs live, from Postgres, rather than the schedule enumerating them. Every generated schedule's execution function re-reads `is_active` live at each tick (so disabling a schedule here takes effect without a redeploy) and defaults to `DefaultScheduleStatus.STOPPED` in Dagster regardless of this column's value — `is_active` controls whether the schedule *exists and fires when turned on*, not Dagster's own manual on/off toggle.
+Metadata for how a feed/model's `master_pipeline` run actually gets kicked off — a cron schedule, or a storage/sensor trigger watching a feed's own landing directory for a new file. Renamed from the original `schedule` table, which only covered the cron case (see Roadmap.md/Backlog.md for the generalization). A build-time codegen step (`scripts/generate_dagster_pipeline.py`, matching the serve-view generator's pattern) reads this table and constructs real Dagster `ScheduleDefinition`/`SensorDefinition` objects — the definition object itself has to be code, but its cron string (or feed target) and what it controls live here. Every generated trigger targets the same single `master_pipeline` job (Roadmap.md "Master pipeline orchestration") — exactly one Dagster definition per row, no per-feed expansion: a feed-type row resolves that feed's own `batch_group_friendly_name` and fires `master_pipeline` with `orchestration_kind='batch_group'`; a model-type row (schedule-only — see below) resolves that model's own `model_schema` and fires it with `orchestration_kind='model_schema'` directly — `master_pipeline` itself reverse-engineers whichever feeds it actually needs live, from Postgres, rather than the trigger enumerating them. Every generated trigger's execution function re-reads `is_active` live (at each schedule tick, or each sensor evaluation) so disabling a trigger here takes effect without a redeploy, and defaults to `DefaultScheduleStatus.STOPPED`/`DefaultSensorStatus.STOPPED` in Dagster regardless of this column's value — `is_active` controls whether the trigger *exists and fires when turned on*, not Dagster's own manual on/off toggle.
 
 | Column | Type | Constraints |
 |---|---|---|
 | id | uuid | PK, default `gen_random_uuid()` |
-| cron | text | not null |
+| trigger_type | text | not null, check in `('schedule','sensor')` |
+| cron | text | nullable; table constraint `trigger_type <> 'schedule' or cron is not null` — only meaningful (and only required) for a schedule-type trigger |
 | controlling_object_id | uuid | not null — polymorphic: a `data_feed.id` or a `lakehouse_models.id`, depending on `controlling_object_type` |
 | controlling_object_type | text | not null, check in `('model','feed')` |
-| is_active | boolean | not null, default true — lets a schedule be disabled without deleting the row |
+| is_active | boolean | not null, default true — lets a trigger be disabled without deleting the row |
 
-Constraint: unique `(controlling_object_type, controlling_object_id)` — at most one schedule per controlled feed/model. This is also what makes idempotent seeding possible (`scripts/seed_metadata_db.py`'s `seed_schedule()` uses `ON CONFLICT (controlling_object_type, controlling_object_id) DO NOTHING`, the same pattern every other table's natural-key seeding follows).
+Constraints: unique `(controlling_object_type, controlling_object_id)` — at most one trigger per controlled feed/model (a feed/model picks schedule **or** sensor, never both at once — not an oversight). This is also what makes idempotent seeding possible (`scripts/seed_metadata_db.py`'s `seed_ingestion_trigger()` uses `ON CONFLICT (controlling_object_type, controlling_object_id) DO NOTHING`, the same pattern every other table's natural-key seeding follows). A second check constraint, `trigger_type <> 'sensor' or controlling_object_type = 'feed'`, makes sensor-type feed-only in the DB itself — a model has no source/landing concept of its own to watch. A sensor is additionally only meaningful for a feed whose `source_system.connector_kind` is `csv` or `json_file` (the only kinds with a landing directory) — that half of the eligibility check reaches `source_system` through two joins, so it can only ever be an application-layer check (the frontend CRUD page), not a DB constraint.
 
 **Joins/lookups**: `controlling_object_id` → `data_feed.id` when `controlling_object_type='feed'`, or → `lakehouse_models.id` when `controlling_object_type='model'`. Not a real FK (polymorphic target).
 

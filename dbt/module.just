@@ -28,3 +28,10 @@ test tag="":
             (cd "$dir" && uv run dbt test --profiles-dir profiles --select "tag:{{tag}}")
         fi
     done
+    # Cross-checks every lakehouse_models.owning_feed_id against the actual
+    # tags=[...] on its compiled model/snapshot node -- a live-Postgres
+    # check, so it can't be a dbt-side test (see scripts/check_model_feed_tags.py's
+    # own docstring for why). Runs unconditionally, even for a scoped
+    # `just test <tag>` -- it's one query plus a few manifest reads, cheap
+    # enough that the signal is worth it regardless of which tag was asked for.
+    cd {{justfile_directory()}} && uv run python scripts/check_model_feed_tags.py

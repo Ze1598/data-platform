@@ -91,3 +91,24 @@ def to_json_text(value, default: str = "{}") -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value)
+
+
+def to_csv_text(value, default: str = "") -> str:
+    """Render a jsonb list column's Python value (list/None/str) back to
+    editable comma-separated text -- the list-column counterpart to
+    to_json_text, for columns re-worded as plain CSV in the CRUD forms."""
+    import json
+
+    if value is None or (not isinstance(value, list) and pd.isna(value)):
+        return default
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    return ", ".join(str(v) for v in value)
+
+
+def parse_csv_text(text_value: str) -> list[str]:
+    """Inverse of to_csv_text -- split on commas, strip whitespace, drop empty entries."""
+    return [part.strip() for part in text_value.split(",") if part.strip()]

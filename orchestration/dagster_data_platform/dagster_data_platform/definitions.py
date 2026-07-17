@@ -3,7 +3,7 @@ import os
 from dagster import Definitions
 
 from dagster_data_platform.assets.extraction_assets import clean_customers, extraction_customers, raw_customers
-from dagster_data_platform.assets.financial_assets import archive_financial_transactions, financial_transactions_sensor
+from dagster_data_platform.assets.financial_assets import archive_financial_transactions
 from dagster_data_platform.assets.sales_assets import clean_sales, extraction_sales, raw_sales
 from dagster_data_platform.pipeline_generated import (
     ALL_CONNECTOR_ASSETS,
@@ -11,6 +11,7 @@ from dagster_data_platform.pipeline_generated import (
     ALL_EXTRACTION_JOBS,
     ALL_MODELING_JOBS,
     ALL_SCHEDULES,
+    ALL_SENSORS,
     ALL_SERVING_JOBS,
     master_pipeline,
 )
@@ -51,7 +52,7 @@ defs = Definitions(
         *ALL_DBT_ASSETS,
     ],
     jobs=ALL_EXTRACTION_JOBS + ALL_MODELING_JOBS + ALL_SERVING_JOBS + [master_pipeline],
-    sensors=[financial_transactions_sensor],
+    sensors=ALL_SENSORS,
     schedules=ALL_SCHEDULES,
     resources={
         "postgres_metadata": PostgresMetadataResource(

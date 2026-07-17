@@ -1,16 +1,24 @@
-"""Fast, in-process tests for financial_transactions_sensor -- exercises
-the sensor's own evaluation logic directly via a real SensorEvaluationContext
-(dagster.build_sensor_context, the sensor equivalent of test_schedules.py's
-build_schedule_context), no cron/interval wait, no live cluster launch.
+"""Fast, in-process tests for a generated per-feed sensor (see
+scripts/generate_dagster_pipeline.py's `_make_master_pipeline_sensor`) --
+exercises the sensor's own evaluation logic directly via a real
+SensorEvaluationContext (dagster.build_sensor_context, the sensor
+equivalent of test_schedules.py's build_schedule_context), no cron/interval
+wait, no live cluster launch. Tests generically against `ALL_SENSORS`/
+`SENSOR_ORCHESTRATION` (mirroring test_schedules.py's own `ALL_SCHEDULES`
+pattern) rather than a hardcoded sensor object, since Item 2+3's
+ingestion_triggers generalization means any csv/json_file-connector feed
+can have a generated sensor now, not just financial_transactions (the
+original, still-default, proof-of-concept these tests exercise).
 
-This sensor was found bypassing the master pipeline entirely earlier in
-this project's history (see Learnings.md, "A feed whose source is the
-pipeline's own run history..." fourth occurrence, and Backlog.md's
-"verify-pipeline/smoketest rework must also exercise the sensor-triggered
-path") -- that bug survived undetected specifically because nothing in the
-test suite ever evaluated this sensor at all (it's DefaultSensorStatus.STOPPED
+The original hand-written financial_transactions_sensor this replaced was
+found bypassing the master pipeline entirely earlier in this project's
+history (see Learnings.md, "A feed whose source is the pipeline's own run
+history..." fourth occurrence, and Backlog.md's "verify-pipeline/smoketest
+rework must also exercise the sensor-triggered path") -- that bug survived
+undetected specifically because nothing in the test suite ever evaluated
+the sensor at all (every generated sensor is DefaultSensorStatus.STOPPED
 by default, and neither `just smoketest` nor `verify-pipeline`/
-`verify-schedule` ever turns it on). These tests close that gap at the
+`verify-schedule` ever turns one on). These tests close that gap at the
 logic level; a real end-to-end run (starting the sensor, dropping a file,
 waiting for the daemon to actually launch and complete a run) is a
 heavier, separate tier -- see `orchestration/module.just`'s `verify-sensor`
@@ -22,15 +30,16 @@ as test_schedules.py.
 """
 
 import os
-from datetime import datetime, timezone
-from pathlib import Path
 
 import psycopg
 import pytest
 from dagster import DagsterInstance, RunRequest, build_sensor_context
 
-from dagster_data_platform.assets.financial_assets import _landing_dir, financial_transactions_sensor
+from dagster_data_platform.assets.financial_assets import _landing_dir
+from dagster_data_platform.pipeline_generated import ALL_SENSORS, SENSOR_ORCHESTRATION
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
+
+FEED_FRIENDLY_NAME = "financial_transactions"
 
 CONN_KWARGS = dict(
     host=os.environ.get("POSTGRES_HOST", "localhost"),
@@ -64,6 +73,14 @@ def _sensor_context(cursor: str | None = None):
     )
 
 
+def _find_sensor(feed_friendly_name: str):
+    for sensor_def in ALL_SENSORS:
+        target_feed, _orchestration_value = SENSOR_ORCHESTRATION.get(sensor_def.name, (None, None))
+        if target_feed == feed_friendly_name:
+            return sensor_def
+    raise ValueError(f"No generated sensor targets feed {feed_friendly_name!r} -- did seeding run?")
+
+
 @pytest.fixture
 def throwaway_landing_file():
     """A uniquely-named, empty CSV dropped into the real landing directory
@@ -90,10 +107,10 @@ def test_no_run_request_when_landing_is_empty(tmp_path, monkeypatch):
     # confirms the sensor is a true no-op, not just "didn't error", when
     # there's nothing new to see.
     monkeypatch.setenv("DATA_LAKE_PATH", str(tmp_path))
+    sensor_def = _find_sensor(FEED_FRIENDLY_NAME)
     context = _sensor_context()
-    result = financial_transactions_sensor(context)
-    materialized = list(result) if result is not None else []
-    assert materialized == []
+    result = sensor_def(context)
+    assert result is None
 
 
 def test_new_landing_file_yields_run_request_targeting_master_pipeline(throwaway_landing_file):
@@ -101,12 +118,10 @@ def test_new_landing_file_yields_run_request_targeting_master_pipeline(throwaway
         cur.execute("SELECT batch_group_friendly_name FROM data_feed WHERE friendly_name = 'financial_transactions'")
         expected_batch_group = cur.fetchone()[0]
 
+    sensor_def = _find_sensor(FEED_FRIENDLY_NAME)
     context = _sensor_context()
-    result = financial_transactions_sensor(context)
-    requests = list(result) if not isinstance(result, RunRequest) else [result]
+    request = sensor_def(context)
 
-    assert len(requests) == 1
-    request = requests[0]
     assert isinstance(request, RunRequest)
     assert request.run_key == throwaway_landing_file
     op_config = request.run_config["ops"]["run_master_pipeline"]["config"]
@@ -116,7 +131,7 @@ def test_new_landing_file_yields_run_request_targeting_master_pipeline(throwaway
 def test_cursor_already_at_latest_file_yields_nothing(throwaway_landing_file):
     # Simulates "the sensor already saw this file on a previous tick" --
     # the exact case the cursor exists to prevent duplicate RunRequests for.
+    sensor_def = _find_sensor(FEED_FRIENDLY_NAME)
     context = _sensor_context(cursor=throwaway_landing_file)
-    result = financial_transactions_sensor(context)
-    materialized = list(result) if result is not None else []
-    assert materialized == []
+    result = sensor_def(context)
+    assert result is None

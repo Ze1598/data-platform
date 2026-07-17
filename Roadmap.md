@@ -78,7 +78,7 @@ Two independent watermark scopes:
 
 The full table-by-table schema (columns, constraints, purpose, and join/lookup relationships) lives in [metadata/DataModel.md](metadata/DataModel.md) — that file is the source of truth as of the metadata schema redesign; this section intentionally doesn't duplicate it to avoid drift.
 
-Tables: `source_system`, `data_feed`, `schema_registry`, `lakehouse_models` (fact/dim config — staging itself has no metadata row, it's naming-convention-only), `load_type` (lookup), `schedule` (Dagster schedule metadata, not yet consumed by a codegen step), `data_processing_runs` (one wide row per feed-run or model-run per job execution, spanning landing→raw→clean→staging→model→serve).
+Tables: `source_system`, `data_feed`, `schema_registry`, `lakehouse_models` (fact/dim config — staging itself has no metadata row, it's naming-convention-only), `load_type` (lookup), `ingestion_triggers` (schedule or sensor metadata for a feed/model's `master_pipeline` trigger — codegen'd into real Dagster `ScheduleDefinition`/`SensorDefinition` objects by `scripts/generate_dagster_pipeline.py`), `data_processing_runs` (one wide row per feed-run or model-run per job execution, spanning raw→clean→staging→model→serve).
 
 This same Postgres instance also hosts `polaris_db` for Apache Polaris (the Iceberg REST catalog).
 

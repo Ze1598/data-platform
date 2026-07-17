@@ -10,8 +10,8 @@ Every generated schedule now targets the single `master_pipeline` job
 RunRequest's orchestration_kind/orchestration_value, not on which job it
 targets (there's only one).
 
-Requires a live platform_metadata Postgres (same DB `data_feed`/`schedule`/
-`lakehouse_models` state these tests assert against) and DAGSTER_HOME set
+Requires a live platform_metadata Postgres (same DB `data_feed`/
+`ingestion_triggers`/`lakehouse_models` state these tests assert against) and DAGSTER_HOME set
 (same as any other orchestration::test run) -- skipped, not failed, if
 Postgres isn't reachable within 2s, so a fully offline `pytest` invocation
 (no cluster up) doesn't error out here the way test_dbt_assets.py's pure
@@ -63,14 +63,14 @@ def _fetch_schedule_id(cur, *, controlling_object_type: str, friendly_name: str)
     table = "data_feed" if controlling_object_type == "feed" else "lakehouse_models"
     cur.execute(
         f"""
-        SELECT s.id::text FROM schedule s
+        SELECT s.id::text FROM ingestion_triggers s
         JOIN {table} t ON t.id = s.controlling_object_id
-        WHERE s.controlling_object_type = %s AND t.friendly_name = %s
+        WHERE s.controlling_object_type = %s AND s.trigger_type = 'schedule' AND t.friendly_name = %s
         """,
         (controlling_object_type, friendly_name),
     )
     row = cur.fetchone()
-    assert row is not None, f"no schedule row for {controlling_object_type}={friendly_name!r} -- did seeding run?"
+    assert row is not None, f"no schedule-type ingestion_triggers row for {controlling_object_type}={friendly_name!r} -- did seeding run?"
     return row[0]
 
 
@@ -128,12 +128,12 @@ def test_schedule_skips_when_inactive():
 
     schedule_def = find_schedule_for_feed("police_crimes", _postgres_metadata())
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
-        cur.execute("UPDATE schedule SET is_active = false WHERE id = %s", (schedule_id,))
+        cur.execute("UPDATE ingestion_triggers SET is_active = false WHERE id = %s", (schedule_id,))
         conn.commit()
     try:
         result = schedule_def(_schedule_context())
         assert isinstance(result, SkipReason)
     finally:
         with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
-            cur.execute("UPDATE schedule SET is_active = true WHERE id = %s", (schedule_id,))
+            cur.execute("UPDATE ingestion_triggers SET is_active = true WHERE id = %s", (schedule_id,))
             conn.commit()

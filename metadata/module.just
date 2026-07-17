@@ -1,5 +1,5 @@
 # Postgres (source_system/data_feed/schema_registry/lakehouse_models/load_type/
-# schedule/data_processing_runs + polaris_db).
+# ingestion_triggers/data_processing_runs + polaris_db).
 # See DebugReference.md for the manual-command equivalents this wraps.
 # POSTGRES_* env vars come from the root Justfile's `set dotenv-load`.
 

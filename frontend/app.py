@@ -9,6 +9,7 @@ st.markdown(
 
     - **Source Systems** — connection details for source systems (databases, APIs, file drops)
     - **Data Feeds** — individual objects/endpoints to extract from each source system
-    - **Model Feeds** — fact/dimension configuration for the model layer (SCD type, updates, deletions)
+    - **Lakehouse Models** — fact/dimension configuration for the model layer (SCD type, updates, deletions)
+    - **Ingestion Triggers** — how a feed/model's pipeline run actually gets kicked off (a cron schedule, or a sensor watching a feed's landing directory for a new file)
     """
 )

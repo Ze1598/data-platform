@@ -199,12 +199,13 @@ def seed_lakehouse_model(
     )
 
 
-def seed_schedule(
+def seed_ingestion_trigger(
     cur,
     *,
-    cron: str,
+    trigger_type: str,
     controlling_object_type: str,
     controlling_object_friendly_name: str,
+    cron: str | None = None,
 ) -> None:
     table = "data_feed" if controlling_object_type == "feed" else "lakehouse_models"
     # table is an internal literal (one of exactly two values above), not
@@ -212,13 +213,14 @@ def seed_schedule(
     # resource.py's _ensure_run table/column composition.
     cur.execute(
         f"""
-        INSERT INTO schedule (cron, controlling_object_id, controlling_object_type)
-        SELECT %(cron)s, id, %(controlling_object_type)s
+        INSERT INTO ingestion_triggers (trigger_type, cron, controlling_object_id, controlling_object_type)
+        SELECT %(trigger_type)s, %(cron)s, id, %(controlling_object_type)s
         FROM {table}
         WHERE friendly_name = %(friendly_name)s
         ON CONFLICT (controlling_object_type, controlling_object_id) DO NOTHING
         """,
         {
+            "trigger_type": trigger_type,
             "cron": cron,
             "controlling_object_type": controlling_object_type,
             "friendly_name": controlling_object_friendly_name,
@@ -487,8 +489,22 @@ def main() -> None:
         # real metadata; fct_daily_financial_activity is the first
         # model-type schedule (expands into one generated Dagster schedule
         # per dependent feed -- see scripts/generate_dagster_pipeline.py).
-        seed_schedule(cur, cron="0 6 * * *", controlling_object_type="feed", controlling_object_friendly_name="police_crimes")
-        seed_schedule(cur, cron="0 7 * * *", controlling_object_type="model", controlling_object_friendly_name="fct_daily_financial_activity")
+        seed_ingestion_trigger(
+            cur, trigger_type="schedule", cron="0 6 * * *",
+            controlling_object_type="feed", controlling_object_friendly_name="police_crimes",
+        )
+        seed_ingestion_trigger(
+            cur, trigger_type="schedule", cron="0 7 * * *",
+            controlling_object_type="model", controlling_object_friendly_name="fct_daily_financial_activity",
+        )
+        # Migrates the original hand-wired financial_transactions_sensor
+        # into a real, generated, metadata-driven sensor (Item 2+3's
+        # ingestion_triggers generalization) -- financial_transactions is
+        # csv-kind (has a landing directory), so it's sensor-eligible.
+        seed_ingestion_trigger(
+            cur, trigger_type="sensor",
+            controlling_object_type="feed", controlling_object_friendly_name="financial_transactions",
+        )
 
         conn.commit()
     print("Seed complete.")

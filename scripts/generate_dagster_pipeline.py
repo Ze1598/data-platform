@@ -142,9 +142,9 @@ def fetch_feed_schedules(cur) -> list[dict]:
     cur.execute(
         """
         SELECT s.id::text AS schedule_id, s.cron, df.batch_group_friendly_name
-        FROM schedule s
+        FROM ingestion_triggers s
         JOIN data_feed df ON df.id = s.controlling_object_id
-        WHERE s.is_active AND s.controlling_object_type = 'feed' AND df.is_active
+        WHERE s.is_active AND s.trigger_type = 'schedule' AND s.controlling_object_type = 'feed' AND df.is_active
         ORDER BY s.id
         """
     )
@@ -164,9 +164,9 @@ def fetch_model_schedules(cur) -> list[dict]:
     cur.execute(
         """
         SELECT s.id::text AS schedule_id, s.cron, lm.model_schema
-        FROM schedule s
+        FROM ingestion_triggers s
         JOIN lakehouse_models lm ON lm.id = s.controlling_object_id
-        WHERE s.is_active AND s.controlling_object_type = 'model' AND lm.is_active
+        WHERE s.is_active AND s.trigger_type = 'schedule' AND s.controlling_object_type = 'model' AND lm.is_active
         ORDER BY s.id
         """
     )
@@ -174,8 +174,32 @@ def fetch_model_schedules(cur) -> list[dict]:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
-def _schedule_python_name(schedule_id: str) -> str:
-    return f"schedule_{schedule_id.replace('-', '')}"
+def fetch_feed_sensor_triggers(cur) -> list[dict]:
+    # Sensor-type triggers are feed-only (chk_ingestion_triggers_sensor_feed_only
+    # -- a model has no source/landing concept to watch), and only make sense
+    # for a connector_kind with a landing directory (csv/json_file -- see
+    # processing/connectors/connectors/csv.py, json_file.py). connector_kind
+    # comes back here purely to pick the right glob extension at codegen
+    # time (_make_master_pipeline_sensor below), not re-validated here --
+    # the frontend CRUD page and chk_ingestion_triggers_sensor_feed_only
+    # are what actually keep an ineligible row from ever existing.
+    cur.execute(
+        """
+        SELECT s.id::text AS trigger_id, df.friendly_name AS feed_friendly_name,
+               df.batch_group_friendly_name, ss.connector_kind
+        FROM ingestion_triggers s
+        JOIN data_feed df ON df.id = s.controlling_object_id
+        JOIN source_system ss ON ss.id = df.source_system_id
+        WHERE s.is_active AND s.trigger_type = 'sensor' AND s.controlling_object_type = 'feed' AND df.is_active
+        ORDER BY s.id
+        """
+    )
+    columns = [desc.name for desc in cur.description]
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def _trigger_python_name(kind: str, trigger_id: str) -> str:
+    return f"{kind}_{trigger_id.replace('-', '')}"
 
 
 def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
@@ -439,7 +463,7 @@ def clean_{friendly_name}() -> Output[None]:
 
 def render(
     feeds: list[str], connector_feeds: list[dict], feed_schedules: list[dict], model_schedules: list[dict],
-    domain_feeds: dict[str, list[str]],
+    sensor_feed_triggers: list[dict], domain_feeds: dict[str, list[str]],
 ) -> str:
     connector_imports = []
     base_locations = {}
@@ -497,8 +521,8 @@ def render(
     for row in feed_schedules:
         schedule_calls.append(
             "    _make_master_pipeline_schedule(\n"
-            f'        python_name="{_schedule_python_name(row["schedule_id"])}",\n'
-            f'        schedule_id="{row["schedule_id"]}",\n'
+            f'        python_name="{_trigger_python_name("schedule", row["schedule_id"])}",\n'
+            f'        trigger_id="{row["schedule_id"]}",\n'
             f'        cron="{row["cron"]}",\n'
             '        orchestration_kind="batch_group",\n'
             f'        orchestration_value="{row["batch_group_friendly_name"]}",\n'
@@ -507,8 +531,8 @@ def render(
     for row in model_schedules:
         schedule_calls.append(
             "    _make_master_pipeline_schedule(\n"
-            f'        python_name="{_schedule_python_name(row["schedule_id"])}",\n'
-            f'        schedule_id="{row["schedule_id"]}",\n'
+            f'        python_name="{_trigger_python_name("schedule", row["schedule_id"])}",\n'
+            f'        trigger_id="{row["schedule_id"]}",\n'
             f'        cron="{row["cron"]}",\n'
             '        orchestration_kind="model_schema",\n'
             f'        orchestration_value="{row["model_schema"]}",\n'
@@ -522,19 +546,53 @@ def render(
     # _make_master_pipeline_schedule below), so a caller that needs to find
     # "the schedule for feed X" (trigger_schedule_run.py) can no longer
     # look one up by job_name; this is the structural lookup that replaces
-    # it. Keyed by python_name, not the raw schedule_id -- _schedule_python_name()
-    # strips schedule_id's dashes, which would make recovering the original
-    # schedule_id from a ScheduleDefinition's own .name lossy.
+    # it. Keyed by python_name, not the raw trigger id -- _trigger_python_name()
+    # strips the id's dashes, which would make recovering the original id
+    # from a ScheduleDefinition's own .name lossy.
     schedule_orchestration_entries = []
     for row in feed_schedules:
         schedule_orchestration_entries.append(
-            f'"{_schedule_python_name(row["schedule_id"])}": ("batch_group", "{row["batch_group_friendly_name"]}")'
+            f'"{_trigger_python_name("schedule", row["schedule_id"])}": ("batch_group", "{row["batch_group_friendly_name"]}")'
         )
     for row in model_schedules:
         schedule_orchestration_entries.append(
-            f'"{_schedule_python_name(row["schedule_id"])}": ("model_schema", "{row["model_schema"]}")'
+            f'"{_trigger_python_name("schedule", row["schedule_id"])}": ("model_schema", "{row["model_schema"]}")'
         )
     schedule_orchestration_repr = "{" + ", ".join(schedule_orchestration_entries) + "}"
+
+    # Sensor triggers: feed-only (chk_ingestion_triggers_sensor_feed_only),
+    # glob pattern picked per feed by connector_kind (csv/json_file are the
+    # only sensor-eligible kinds -- see fetch_feed_sensor_triggers).
+    # orchestration_value here mirrors a feed-type schedule's own
+    # resolution exactly (that feed's batch_group_friendly_name,
+    # orchestration_kind="batch_group") -- the only thing actually
+    # different between a schedule and a sensor is what triggers the tick,
+    # not what gets launched.
+    sensor_calls = []
+    for row in sensor_feed_triggers:
+        glob_pattern = "*.csv" if row["connector_kind"] == "csv" else "*.json"
+        sensor_calls.append(
+            "    _make_master_pipeline_sensor(\n"
+            f'        python_name="{_trigger_python_name("sensor", row["trigger_id"])}",\n'
+            f'        trigger_id="{row["trigger_id"]}",\n'
+            f'        feed_friendly_name="{row["feed_friendly_name"]}",\n'
+            f'        glob_pattern="{glob_pattern}",\n'
+            f'        orchestration_value="{row["batch_group_friendly_name"]}",\n'
+            "    ),"
+        )
+    sensors_block = "\n".join(sensor_calls) if sensor_calls else "    # no active sensor-type ingestion_triggers rows"
+
+    # SensorDefinition.name -> (feed_friendly_name, orchestration_value) --
+    # same "every generated trigger targets the same master_pipeline job,
+    # so a job_name match can't find 'the sensor for feed X'" reasoning as
+    # SCHEDULE_ORCHESTRATION above, kept as its own dict rather than merged
+    # into it since a sensor lookup is always by feed_friendly_name
+    # directly (a sensor is always feed-scoped), not by batch_group.
+    sensor_orchestration_entries = [
+        f'"{_trigger_python_name("sensor", row["trigger_id"])}": ("{row["feed_friendly_name"]}", "{row["batch_group_friendly_name"]}")'
+        for row in sensor_feed_triggers
+    ]
+    sensor_orchestration_repr = "{" + ", ".join(sensor_orchestration_entries) + "}"
 
     return f'''"""GENERATED by scripts/generate_dagster_pipeline.py -- DO NOT EDIT BY HAND.
 
@@ -552,6 +610,7 @@ from dagster import (
     AssetSelection,
     Config,
     DefaultScheduleStatus,
+    DefaultSensorStatus,
     Failure,
     OpExecutionContext,
     Output,
@@ -562,6 +621,7 @@ from dagster import (
     job,
     op,
     schedule,
+    sensor,
 )
 from dagster_dbt import DbtProject
 
@@ -812,7 +872,7 @@ def master_pipeline():
     run_master_pipeline()
 
 
-def _make_master_pipeline_schedule(*, python_name, schedule_id, cron, orchestration_kind, orchestration_value):
+def _make_master_pipeline_schedule(*, python_name, trigger_id, cron, orchestration_kind, orchestration_value):
     # postgres_metadata is declared as a direct parameter (not pulled from
     # context.resources) -- Dagster infers the resource requirement from
     # the parameter name itself; passing required_resource_keys= as well
@@ -826,11 +886,11 @@ def _make_master_pipeline_schedule(*, python_name, schedule_id, cron, orchestrat
         default_status=DefaultScheduleStatus.STOPPED,
     )
     def _fn(context, postgres_metadata: PostgresMetadataResource):
-        if not postgres_metadata.is_schedule_active(schedule_id):
-            return SkipReason(f"schedule {{schedule_id}} is no longer active")
+        if not postgres_metadata.is_trigger_active(trigger_id):
+            return SkipReason(f"ingestion trigger {{trigger_id}} is no longer active")
         return RunRequest(
             tags={{
-                "schedule_id": schedule_id,
+                "schedule_id": trigger_id,
                 "orchestration_kind": orchestration_kind,
                 "orchestration_value": orchestration_value,
             }},
@@ -855,6 +915,57 @@ ALL_SCHEDULES = [
 # (every schedule targets the same master_pipeline job now, so looking one
 # up "for feed X" needs this rather than a job_name match).
 SCHEDULE_ORCHESTRATION = {schedule_orchestration_repr}
+
+
+def _make_master_pipeline_sensor(*, python_name, trigger_id, feed_friendly_name, glob_pattern, orchestration_value):
+    # Reuses the exact proven shape of the original hand-written
+    # financial_transactions_sensor (see Roadmap.md/Backlog.md, Item 2+3's
+    # ingestion_triggers generalization) -- cursor = latest filename seen
+    # (filenames sort chronologically by convention), a plain string
+    # comparison is enough to detect "a newer file landed". Adds one real
+    # improvement the hand-written original never had: an is_trigger_active
+    # check, for true symmetry with schedules (a sensor can be disabled via
+    # the metadata DB and take effect immediately, same as a schedule).
+    @sensor(
+        name=python_name,
+        job=master_pipeline,
+        minimum_interval_seconds=30,
+        default_status=DefaultSensorStatus.STOPPED,
+    )
+    def _fn(context, postgres_metadata: PostgresMetadataResource):
+        if not postgres_metadata.is_trigger_active(trigger_id):
+            return SkipReason(f"ingestion trigger {{trigger_id}} is no longer active")
+        landing_dir = _data_lake_dir() / "landing" / feed_friendly_name
+        if not landing_dir.exists():
+            return
+        matches = sorted(landing_dir.glob(glob_pattern))
+        if not matches:
+            return
+        latest_file = matches[-1]
+        if context.cursor is not None and latest_file.name <= context.cursor:
+            return
+        context.update_cursor(latest_file.name)
+        return RunRequest(
+            run_key=latest_file.name,
+            run_config={{
+                "ops": {{
+                    "run_master_pipeline": {{
+                        "config": {{"orchestration_kind": "batch_group", "orchestration_value": orchestration_value}}
+                    }}
+                }}
+            }},
+        )
+
+    return _fn
+
+
+ALL_SENSORS = [
+{sensors_block}
+]
+
+# SensorDefinition.name -> (feed_friendly_name, orchestration_value) -- see
+# scripts/generate_dagster_pipeline.py's render() for why this exists.
+SENSOR_ORCHESTRATION = {sensor_orchestration_repr}
 '''
 
 
@@ -884,14 +995,15 @@ def main() -> None:
         connector_feeds = fetch_connector_feeds(cur)
         feed_schedules = fetch_feed_schedules(cur)
         model_schedules = fetch_model_schedules(cur)
+        sensor_feed_triggers = fetch_feed_sensor_triggers(cur)
         domain_feeds = fetch_domain_dependent_feeds(cur)
 
-    OUTPUT_PATH.write_text(render(feeds, connector_feeds, feed_schedules, model_schedules, domain_feeds))
+    OUTPUT_PATH.write_text(render(feeds, connector_feeds, feed_schedules, model_schedules, sensor_feed_triggers, domain_feeds))
     CLEAN_SOURCE_TABLES_OUTPUT_PATH.write_text(_render_clean_source_tables(feeds))
     print(
         f"Generated {OUTPUT_PATH} -- {len(feeds)} extraction job(s), {len(domain_feeds)} modeling/serving job pair(s), "
         f"{len(connector_feeds)} connector-driven feed(s), {len(feed_schedules) + len(model_schedules)} schedule(s), "
-        f"1 master_pipeline job."
+        f"{len(sensor_feed_triggers)} sensor(s), 1 master_pipeline job."
     )
     print(f"Generated {CLEAN_SOURCE_TABLES_OUTPUT_PATH} -- {len(feeds)} clean source table(s).")
 

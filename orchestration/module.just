@@ -459,7 +459,9 @@ verify-schedule:
 
 # Real end-to-end test for the sensor-triggered path (not just its
 # evaluation logic, which tests/test_sensors.py already covers in-process):
-# starts financial_transactions_sensor for real (it's STOPPED by default),
+# starts the generated sensor for financial_transactions (--feed defaults
+# to it; every generated sensor is STOPPED by default -- see
+# scripts/generate_dagster_pipeline.py's _make_master_pipeline_sensor),
 # drops a genuine CSV into the landing directory, waits for the daemon's
 # own sensor-tick loop to detect it and launch master_pipeline, waits for
 # that run to finish, then always stops the sensor again afterward
