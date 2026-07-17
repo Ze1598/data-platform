@@ -1,8 +1,34 @@
 # Debug Reference: frontend (Streamlit)
 
+**Update 2026-07-17 — the frontend now runs fully in-cluster** (`frontend/k8s/`, a real `Deployment`+`Service`, NodePort-mapped to `localhost:8501` same as before — see Roadmap.md "Master pipeline orchestration"). The **"Run the app locally" entry below describes the OLD workflow (`nohup streamlit run app.py` on the host) and is no longer the standard operating mode** — kept here, not deleted, since a local run is still occasionally useful for fast iteration on frontend code without a full image rebuild. Annotated inline rather than removed.
+
 Commands for running and verifying the Streamlit CRUD app. See [../metadata/DebugReference.md](../metadata/DebugReference.md) for checking the Postgres state this app reads/writes, and [../Learnings.md](../Learnings.md) for the `uv sync`/canvas-rendering gotchas referenced below.
 
 ---
+
+## In-cluster (current)
+
+### Rebuild + reload after a code change, and check pod health
+**Scenario**: same "kind doesn't pull from a registry" reasoning as every other module's image — a code change needs an explicit rebuild+reload before the running pod sees it, and (unlike `orchestration`'s code-server) the frontend Deployment DOES need a rollout restart too, for the same reason: the image tag itself (`data-platform-frontend:latest`) doesn't change, so `kubectl apply` sees no spec diff and won't recreate the pod on its own.
+```bash
+just frontend::start   # rebuilds, reloads, applies manifests, and waits for rollout in one step
+# or, if iterating without a full start:
+docker build -f frontend/Dockerfile -t data-platform-frontend:latest .
+kind load docker-image data-platform-frontend:latest --name data-platform
+kubectl rollout restart deployment/frontend -n frontend
+kubectl rollout status deployment/frontend -n frontend
+kubectl logs -n frontend deployment/frontend --tail=100
+```
+
+### Reach it
+```bash
+curl -s -o /dev/null -w "http:%{http_code}\n" http://localhost:8501
+open http://localhost:8501
+```
+
+---
+
+## Local dev (superseded — the app no longer runs as a local process day to day)
 
 ### Run the app locally against the in-cluster Postgres
 **Scenario**: after any frontend code change, or after Postgres moves/changes, confirm the app still actually works end-to-end, not just that it starts.
@@ -12,7 +38,7 @@ nohup uv run streamlit run frontend/app.py --server.headless true --server.port 
 sleep 6
 curl -s -o /dev/null -w "http:%{http_code}\n" http://localhost:8501
 ```
-`set -a && source .env && set +a` exports every variable from `.env` into the shell (so the app picks up `POSTGRES_HOST` etc.) without needing a separate env-loading library. Check `ps aux | grep streamlit` afterward if something seems off — `uv sync --all-packages` (not plain `uv sync`) is required at least once for the workspace member's dependencies to actually be installed; otherwise the command can silently fall back to a stray global streamlit install (see Learnings.md).
+`set -a && source .env && set +a` exports every variable from `.env` into the shell (so the app picks up `POSTGRES_HOST` etc.) without needing a separate env-loading library. Check `ps aux | grep streamlit` afterward if something seems off — `uv sync --all-packages` (not plain `uv sync`) is required at least once for the workspace member's dependencies to actually be installed; otherwise the command can silently fall back to a stray global streamlit install (see Learnings.md). **If the in-cluster Deployment is also running, you'll have two Streamlit instances up at once** — harmless for this app specifically (it has no daemon/heartbeat concept the way Dagster does), but stop the local one (`pkill -f "streamlit run app.py"`) once done so `localhost:8501` unambiguously points at one instance.
 
 ### Drive it with a headless browser (not just curl)
 **Scenario**: proving an actual UI flow works (create/edit/delete through real form interactions), not just that the server responds to HTTP.
