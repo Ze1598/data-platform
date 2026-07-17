@@ -119,10 +119,10 @@ def raw_sales(
         # extracted this run -- zero transformation (same contract as
         # raw_police_crimes/raw_customers). No archive step for this feed --
         # synthetic smoketest data, no retention need.
-        write_raw_snapshot(FEED_FRIENDLY_NAME, context.run_id, df)
+        write_raw_snapshot(FEED_FRIENDLY_NAME, log.storage_watermark, df)
         log.set_counts(
             rows_read=df.height,
-            output_path=str(raw_snapshot_path(FEED_FRIENDLY_NAME, context.run_id)) if not df.is_empty() else None,
+            output_path=str(raw_snapshot_path(FEED_FRIENDLY_NAME, log.storage_watermark)) if not df.is_empty() else None,
         )
 
     return Output(None, metadata={"audit_run_id": log.run_id, "row_count": df.height})
@@ -142,13 +142,13 @@ def clean_sales(
     # IO manager treats an upstream Output(None) as nothing-to-load).
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     master_dagster_run_id = context.run.tags["master_dagster_run_id"]
-    df = read_raw_snapshot(FEED_FRIENDLY_NAME, context.run_id)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         stage="clean",
         master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
+        df = read_raw_snapshot(FEED_FRIENDLY_NAME, log.storage_watermark)
         # Read-only against schema_registry -- extraction_sales already
         # discovered/synced it; this step only reads the now-current
         # contract to reconcile/validate/write.

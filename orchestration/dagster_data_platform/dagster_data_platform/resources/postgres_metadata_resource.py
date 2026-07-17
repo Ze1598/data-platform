@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
 import psycopg
@@ -45,8 +46,12 @@ class IngestionStepLog:
     if it raised. The exception always re-raises after being logged; this
     only observes failures, it doesn't swallow them."""
 
-    def __init__(self, run_id: str):
+    def __init__(self, run_id: str, storage_watermark: Optional[str] = None):
         self.run_id = run_id
+        # Only ever set for a feed-run row's raw/clean stages (see
+        # record_run_started()) -- None for staging/model/serve stages,
+        # which never touch raw and have no use for it.
+        self.storage_watermark = storage_watermark
         self._counts: dict[str, Any] = {}
 
     def set_counts(
@@ -429,12 +434,17 @@ class PostgresMetadataResource(ConfigurableResource):
         downstream dbt build fails outright with TABLE_NOT_FOUND rather
         than building on an empty/thin first run. Idempotent -- calling
         this more than once for the same (data_feed_id,
-        master_dagster_run_id) is always safe, a no-op after the first."""
+        master_dagster_run_id) is always safe, a no-op after the first --
+        including the storage_watermark generated below: `_ensure_run`'s
+        ON CONFLICT branch never overwrites it, so a retried call reuses
+        the same watermark rather than minting a new one."""
+        storage_watermark = datetime.now(timezone.utc).strftime("%Y/%m/%d/%H/%M/%S")
         self._ensure_run(
             insert_columns={
                 "data_feed_id": data_feed_id,
                 "tracking_group": tracking_group,
                 "tracking_group_type": "batch_group",
+                "storage_watermark": storage_watermark,
             },
             conflict_columns=("data_feed_id", "master_dagster_run_id"),
             conflict_where="data_feed_id IS NOT NULL",
@@ -533,14 +543,14 @@ class PostgresMetadataResource(ConfigurableResource):
     ) -> Iterator[IngestionStepLog]:
         if stage not in valid_stages:
             raise ValueError(f"Unknown stage {stage!r}, expected one of {valid_stages}")
-        run_id = self._find_run(
+        run_id, storage_watermark = self._find_run(
             identity_column=identity_column,
             identity_value=identity_value,
             master_dagster_run_id=master_dagster_run_id,
             stage_run_id_column=_STAGE_TO_RUN_ID_COLUMN[stage],
             dagster_run_id=dagster_run_id,
         )
-        log = IngestionStepLog(run_id)
+        log = IngestionStepLog(run_id, storage_watermark)
         try:
             yield log
         except Exception as e:
@@ -557,7 +567,7 @@ class PostgresMetadataResource(ConfigurableResource):
         master_dagster_run_id: str,
         stage_run_id_column: str,
         dagster_run_id: str,
-    ) -> str:
+    ) -> tuple[str, Optional[str]]:
         # identity_column/stage_run_id_column are always internal literals
         # passed by log_data_feed_stage/log_data_model_stage above, never
         # caller-supplied free text -- same safety property as the f-string
@@ -569,7 +579,10 @@ class PostgresMetadataResource(ConfigurableResource):
         # never ran (or the wrong master_dagster_run_id was threaded
         # through), which is a real bug worth a clear error, not a silent
         # row creation that would violate the "one master, several stage
-        # run ids" invariant.
+        # run ids" invariant. Also returns storage_watermark -- set on the
+        # row at creation time by record_run_started(), never by this
+        # UPDATE -- so the raw/clean steps can read/write the right raw
+        # path without a second round trip.
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -577,7 +590,7 @@ class PostgresMetadataResource(ConfigurableResource):
                 SET {stage_run_id_column} = %(dagster_run_id)s
                 WHERE {identity_column} = %(identity_value)s
                   AND master_dagster_run_id = %(master_dagster_run_id)s
-                RETURNING run_id
+                RETURNING run_id, storage_watermark
                 """,
                 {
                     "dagster_run_id": dagster_run_id,
@@ -591,7 +604,7 @@ class PostgresMetadataResource(ConfigurableResource):
                     f"No data_processing_runs row for {identity_column}={identity_value!r}, "
                     f"master_dagster_run_id={master_dagster_run_id!r} -- did the master pipeline run first?"
                 )
-            return str(row[0])
+            return str(row[0]), row[1]
 
     def _ensure_run(
         self,

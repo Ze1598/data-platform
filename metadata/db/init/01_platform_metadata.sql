@@ -315,6 +315,15 @@ create table data_processing_runs (
     -- future rerun-just-raw-to-clean feature would need, even though this
     -- doesn't build that feature.
     master_dagster_run_id           text not null,
+    -- The watermark folder path (YYYY/MM/DD/HH/MI/SS) this run's raw data is
+    -- extracted into -- generated once, at row-creation time (the master
+    -- pipeline's record_run_started()), not derived later from
+    -- extraction_dagster_run_id. Pins the raw read path unambiguously: the
+    -- clean step reads from exactly this path rather than relying on
+    -- context.run_id parity between the raw and clean steps of the same
+    -- job. Populated for feed-run rows only -- a model-run row never
+    -- touches raw. See metadata/DataModel.md.
+    storage_watermark               text,
     extraction_dagster_run_id       text,
     transformation_dagster_run_id   text,
     serving_dagster_run_id          text,

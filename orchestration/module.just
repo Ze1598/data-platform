@@ -392,16 +392,18 @@ verify-pipeline:
     # customers/sales raw durability fix -- confirms raw_customers/raw_sales
     # actually write a verbatim file now, not just pass the DataFrame
     # through in memory (see extraction_assets.py/sales_assets.py). Looked
-    # up via each feed's own extraction_dagster_run_id (a separate Dagster
-    # run from the master's own, since EXTRACTION_JOBS[feed] is its own
-    # job/pod -- raw_storage.py keys the file path by that run's own
-    # context.run_id, not master_dagster_run_id), not assumed to equal
-    # $sales_run_id the way a single __ASSET_JOB run used to allow.
+    # up via each feed's own storage_watermark (Roadmap.md "Incremental
+    # Loading & Watermarks") -- generated once by record_run_started() at
+    # row-creation time and shared by both the raw-writing and
+    # clean-reading steps of that feed's own EXTRACTION_JOBS[feed] job/pod,
+    # not by extraction_dagster_run_id (which raw_storage.py's path no
+    # longer keys by) and not assumed to equal $sales_run_id the way a
+    # single __ASSET_JOB run used to allow.
     for feed in customers sales; do
-        extraction_run_id=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+        storage_watermark=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
             -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-            "select r.extraction_dagster_run_id from data_processing_runs r join data_feed df on df.id = r.data_feed_id where r.master_dagster_run_id = '$sales_run_id' and df.friendly_name = '$feed';")
-        f="data-lake/raw/$feed/run_id=$extraction_run_id/$feed.parquet"
+            "select r.storage_watermark from data_processing_runs r join data_feed df on df.id = r.data_feed_id where r.master_dagster_run_id = '$sales_run_id' and df.friendly_name = '$feed';")
+        f="data-lake/raw/$feed/$storage_watermark/$feed.parquet"
         if [ ! -f "{{justfile_directory()}}/$f" ]; then
             echo "Expected durable raw file missing: $f" >&2
             exit 1

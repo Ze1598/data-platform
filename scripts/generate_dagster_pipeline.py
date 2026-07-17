@@ -276,10 +276,10 @@ def raw_{friendly_name}(
         master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
-        write_raw_snapshot("{friendly_name}", context.run_id, df)
+        write_raw_snapshot("{friendly_name}", log.storage_watermark, df)
         log.set_counts(
             rows_read=df.height,
-            output_path=str(raw_snapshot_path("{friendly_name}", context.run_id)) if not df.is_empty() else None,
+            output_path=str(raw_snapshot_path("{friendly_name}", log.storage_watermark)) if not df.is_empty() else None,
             watermark_value_start=last_watermark,
             watermark_value_end=(str(df[watermark_column].max()) if (not df.is_empty() and watermark_column) else last_watermark),
         )
@@ -309,13 +309,13 @@ def clean_{friendly_name}(
     # passing None itself.
     data_feed = postgres_metadata.get_data_feed("{friendly_name}")
     master_dagster_run_id = context.run.tags["master_dagster_run_id"]
-    df = read_raw_snapshot("{friendly_name}", context.run_id)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         stage="clean",
         master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
+        df = read_raw_snapshot("{friendly_name}", log.storage_watermark)
         if not df.is_empty():
             column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
             df = reconcile_schema(df, column_definitions)
@@ -418,10 +418,10 @@ def raw_{friendly_name}(
         master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
-        write_raw_snapshot("{friendly_name}", context.run_id, df)
+        write_raw_snapshot("{friendly_name}", log.storage_watermark, df)
         log.set_counts(
             rows_read=df.height,
-            output_path=str(raw_snapshot_path("{friendly_name}", context.run_id)) if not df.is_empty() else None,
+            output_path=str(raw_snapshot_path("{friendly_name}", log.storage_watermark)) if not df.is_empty() else None,
         )
     return Output(None, metadata={{"audit_run_id": log.run_id, "row_count": df.height}})
 

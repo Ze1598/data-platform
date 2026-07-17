@@ -89,10 +89,10 @@ def raw_customers(
         # extracted this run -- zero transformation (same contract as
         # raw_police_crimes/raw_sales). No archive step for this feed --
         # synthetic smoketest data, no retention need.
-        write_raw_snapshot(FEED_FRIENDLY_NAME, context.run_id, df)
+        write_raw_snapshot(FEED_FRIENDLY_NAME, log.storage_watermark, df)
         log.set_counts(
             rows_read=df.height,
-            output_path=str(raw_snapshot_path(FEED_FRIENDLY_NAME, context.run_id)) if not df.is_empty() else None,
+            output_path=str(raw_snapshot_path(FEED_FRIENDLY_NAME, log.storage_watermark)) if not df.is_empty() else None,
         )
 
     return Output(None, metadata={"audit_run_id": log.run_id, "row_count": df.height})
@@ -116,13 +116,13 @@ def clean_customers(
     # doesn't pass a value at all, rather than passing None itself.
     data_feed = postgres_metadata.get_data_feed(FEED_FRIENDLY_NAME)
     master_dagster_run_id = context.run.tags["master_dagster_run_id"]
-    df = read_raw_snapshot(FEED_FRIENDLY_NAME, context.run_id)
     with postgres_metadata.log_data_feed_stage(
         data_feed_id=str(data_feed["id"]),
         stage="clean",
         master_dagster_run_id=master_dagster_run_id,
         dagster_run_id=context.run_id,
     ) as log:
+        df = read_raw_snapshot(FEED_FRIENDLY_NAME, log.storage_watermark)
         # Same real path as clean_sales — PyIceberg for the atomic
         # overwrite (clean is a snapshot per run, not cumulative, Roadmap.md
         # "Layer Model"), Polars for the DataFrame, schema_registry for
