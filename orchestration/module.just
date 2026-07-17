@@ -25,6 +25,7 @@ start:
     just orchestration::generate-model-scaffolds
     just orchestration::generate-ods-models
     just orchestration::build-image
+    just orchestration::build-domain-images
 
     # dagster-instance: unchanged, mounted by K8sRunLauncher into every
     # *launched run* pod (load_incluster_config: false -- these pods never
@@ -147,6 +148,31 @@ kill:
 build-image:
     docker build -f Dockerfile -t data-platform-orchestration:latest {{justfile_directory()}}
     kind load docker-image data-platform-orchestration:latest --name data-platform
+
+# One image per scaffolded domain (dbt/domains/<domain>/, discovered from
+# disk the same way generate_domain_projects.py itself derives them from
+# Postgres) -- MODELING_JOBS[domain]/SERVING_JOBS[domain] (the only jobs
+# that actually run domain-specific dbt code) are tagged to use
+# data-platform-domain-<domain> instead of the shared
+# data-platform-orchestration image (scripts/generate_dagster_pipeline.py's
+# dagster-k8s/config tag). Same Dockerfile, one different DOMAIN build
+# arg -- every domain's build shares the same cached uv-sync layer, only
+# the final `dbt parse` layer differs, so a change to one domain's models
+# never needs another domain's image rebuilt. ODS-derived domains (e.g.
+# police_crimes) get identical treatment -- no special-casing, since this
+# loop only ever sees real scaffolded directories on disk, the same way
+# every other domain-scoped recipe here does.
+build-domain-images:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for d in {{justfile_directory()}}/dbt/domains/*/; do
+        dir="${d%/}"
+        domain="$(basename "$dir")"
+        [ -f "$dir/dbt_project.yml" ] || continue
+        echo "Building data-platform-domain-$domain..."
+        docker build -f Dockerfile --build-arg "DOMAIN=$domain" -t "data-platform-domain-$domain:latest" {{justfile_directory()}}
+        kind load docker-image "data-platform-domain-$domain:latest" --name data-platform
+    done
 
 # Ensure at least one financial_transactions landing batch exists before the
 # pipeline's first run. clean_financial_transactions deliberately skips its
@@ -428,6 +454,36 @@ verify-schedule:
         exit 1
     fi
     echo "Schedule-triggered run $run_id verified: successful feed-run row confirmed in data_processing_runs."
+
+# Real end-to-end test for the sensor-triggered path (not just its
+# evaluation logic, which tests/test_sensors.py already covers in-process):
+# starts financial_transactions_sensor for real (it's STOPPED by default),
+# drops a genuine CSV into the landing directory, waits for the daemon's
+# own sensor-tick loop to detect it and launch master_pipeline, waits for
+# that run to finish, then always stops the sensor again afterward
+# (verify_sensor_trigger.py's own finally block) -- closes the gap noted
+# in Backlog.md: this exact trigger path bypassed the master pipeline
+# entirely earlier in this project's history, and nothing exercised it
+# live until now.
+verify-sensor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
+    export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
+    cd dagster_data_platform
+
+    run_id=$(uv run python -m dagster_data_platform.verify_sensor_trigger | tail -1)
+    echo "Sensor-triggered master_pipeline run $run_id succeeded."
+
+    ok=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+        -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+        "select count(*) from data_processing_runs where master_dagster_run_id = '$run_id' and data_feed_id is not null and job_successful = true;")
+    if [[ "$ok" -lt 1 ]]; then
+        echo "Sensor-triggered run $run_id did not produce a successful feed-run row in data_processing_runs" >&2
+        exit 1
+    fi
+    echo "Sensor-triggered run $run_id verified: successful feed-run row confirmed in data_processing_runs."
 
 # Unit tests -- pure logic, no live cluster needed.
 # Defensive .pth sweep here too, not just in `start`/`verify-pipeline` --

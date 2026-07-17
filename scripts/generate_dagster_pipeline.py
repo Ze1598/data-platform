@@ -611,26 +611,48 @@ DOMAIN_FEEDS = {domain_feeds_repr}
 # docstring) -- two independently-computed lists that must agree, enforced
 # by `just start`'s ordering (generate-domain-projects always runs before
 # either glob ever executes), not by a shared source at runtime.
+#
+# Requires target/manifest.json to actually exist, not just dbt_project.yml
+# -- this is what makes metadata-driven per-domain Docker images work
+# (Roadmap.md "Master pipeline orchestration"): the shared
+# data-platform-orchestration image bakes in every domain's manifest
+# (unchanged), but each domain's own narrower data-platform-domain-<domain>
+# image only runs `dbt parse` for that one domain at build time, leaving
+# every other domain's directory present on disk with no manifest. A pod
+# launched from a narrower image therefore only ever constructs THIS
+# process's own DBT_PROJECTS/TRANSFORMATION_ASSETS/SERVING_ASSETS/
+# MODELING_JOBS/SERVING_JOBS for the one domain it actually has -- every
+# other domain is silently absent from these dicts in that process, which
+# is fine: that pod was only ever launched to run one specific domain's
+# job, never asked to resolve any other domain's. The shared image (used
+# by dagster-code-server/webserver/daemon/master_pipeline/EXTRACTION_JOBS)
+# always has every domain, so nothing there is affected.
 DOMAINS_DIR = REPO_ROOT / "dbt" / "domains"
 DBT_PROJECTS = {{}}
 for _domain_dir in sorted(DOMAINS_DIR.glob("*")):
     if not (_domain_dir / "dbt_project.yml").exists():
+        continue
+    if not (_domain_dir / "target" / "manifest.json").exists():
         continue
     _project = DbtProject(project_dir=_domain_dir, profiles_dir=_domain_dir / "profiles")
     _project.prepare_if_dev()
     DBT_PROJECTS[_domain_dir.name] = _project
 
 # One _build_transformation_assets_for_domain(...)/_build_serving_assets_for_domain(...)
-# call per resolved domain, and only here -- calling either factory twice for
-# the same domain would construct two @dbt_assets defs both claiming the
-# same AssetKeys, which Dagster rejects.
+# call per resolved domain THIS PROCESS ACTUALLY HAS a manifest for (see
+# DBT_PROJECTS above) -- calling either factory twice for the same domain
+# would construct two @dbt_assets defs both claiming the same AssetKeys,
+# which Dagster rejects; skipping a domain missing from DBT_PROJECTS is
+# what lets a narrower per-domain image import successfully at all.
 TRANSFORMATION_ASSETS = {{
     domain: _build_transformation_assets_for_domain(domain, feeds, DBT_PROJECTS[domain])
     for domain, feeds in DOMAIN_FEEDS.items()
+    if domain in DBT_PROJECTS
 }}
 SERVING_ASSETS = {{
     domain: _build_serving_assets_for_domain(domain, feeds, DBT_PROJECTS[domain])
     for domain, feeds in DOMAIN_FEEDS.items()
+    if domain in DBT_PROJECTS
 }}
 ALL_DBT_ASSETS = list(TRANSFORMATION_ASSETS.values()) + list(SERVING_ASSETS.values())
 
@@ -657,23 +679,43 @@ EXTRACTION_JOBS = {{
 ALL_EXTRACTION_JOBS = list(EXTRACTION_JOBS.values())
 
 # --- MODELING_JOBS[domain] / SERVING_JOBS[domain] ---------------------------
-# One pair per resolved domain -- MODELING_JOBS covers clean -> staging ->
-# model (the 'transformation' pipeline step); SERVING_JOBS covers model ->
-# serve. Selected via the exact AssetsDefinition object each domain factory
-# returned above (TRANSFORMATION_ASSETS[domain]/SERVING_ASSETS[domain]), not
+# One pair per domain THIS PROCESS ACTUALLY HAS (see TRANSFORMATION_ASSETS/
+# SERVING_ASSETS above, not DOMAIN_FEEDS directly -- a narrower per-domain
+# image only ever constructs the one domain it has a manifest for).
+# MODELING_JOBS covers clean -> staging -> model (the 'transformation'
+# pipeline step); SERVING_JOBS covers model -> serve. Selected via the
+# exact AssetsDefinition object each domain factory returned above
+# (TRANSFORMATION_ASSETS[domain]/SERVING_ASSETS[domain]), not
 # AssetSelection.groups(...) -- both dbt-assets defs for one domain share
 # the same group_name (domain_group_name(domain), see dbt_assets.py), so a
 # group-based selection would pull both into either job; selecting the
 # AssetsDefinition object directly is unambiguous. No k8s_job_executor here
 # -- each of these is already its own top-level job/pod (dropped entirely,
 # see this script's module docstring).
+#
+# Tagged with dagster-k8s/config's container_config.image, overriding
+# K8sRunLauncher's static job_image config (data-platform-orchestration,
+# the shared image every OTHER job uses) with that domain's own narrower
+# data-platform-domain-<domain> image -- confirmed against the installed
+# dagster_k8s source that a per-job container_config.image value takes
+# priority over the launcher's own configured default
+# (dagster_k8s/job.py::construct_dagster_k8s_job: `container_config.pop("image",
+# job_config.job_image)`).
 MODELING_JOBS = {{
-    domain: define_asset_job(f"{{domain}}_modeling_job", selection=[TRANSFORMATION_ASSETS[domain]])
-    for domain in DOMAIN_FEEDS
+    domain: define_asset_job(
+        f"{{domain}}_modeling_job",
+        selection=[TRANSFORMATION_ASSETS[domain]],
+        tags={{"dagster-k8s/config": {{"container_config": {{"image": f"data-platform-domain-{{domain}}:latest"}}}}}},
+    )
+    for domain in TRANSFORMATION_ASSETS
 }}
 SERVING_JOBS = {{
-    domain: define_asset_job(f"{{domain}}_serving_job", selection=[SERVING_ASSETS[domain]])
-    for domain in DOMAIN_FEEDS
+    domain: define_asset_job(
+        f"{{domain}}_serving_job",
+        selection=[SERVING_ASSETS[domain]],
+        tags={{"dagster-k8s/config": {{"container_config": {{"image": f"data-platform-domain-{{domain}}:latest"}}}}}},
+    )
+    for domain in SERVING_ASSETS
 }}
 ALL_MODELING_JOBS = list(MODELING_JOBS.values())
 ALL_SERVING_JOBS = list(SERVING_JOBS.values())

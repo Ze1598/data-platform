@@ -1,0 +1,18 @@
+# NodePort (not plain ClusterIP): paired with a kind extraPortMapping
+# (hostPort 8501 -> containerPort 30501, platform/kind/kind-cluster.yaml),
+# keeps `localhost:8501` working for a browser exactly as it did when
+# Streamlit ran as a local process -- same pattern as Postgres/Trino/
+# Dagster's webserver.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: frontend
+spec:
+  type: NodePort
+  selector:
+    app: frontend
+  ports:
+    - port: 8501
+      targetPort: 8501
+      nodePort: 30501

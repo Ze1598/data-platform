@@ -1,0 +1,44 @@
+# The Streamlit CRUD frontend -- real in-cluster Deployment replacing the
+# local `nohup streamlit run app.py` process (Roadmap.md "Kubernetes
+# Hosting Model", the last of the "documented but never actually built"
+# in-cluster Deployments this project's docs always described).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: data-platform-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8501
+              name: http
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          env:
+            - name: POSTGRES_HOST
+              value: postgres.metadata.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+          readinessProbe:
+            tcpSocket:
+              port: 8501
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8501
+            initialDelaySeconds: 20
+            periodSeconds: 10

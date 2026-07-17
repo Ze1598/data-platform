@@ -42,3 +42,13 @@ nodes:
       - containerPort: 30300
         hostPort: 3000
         protocol: TCP
+      # Streamlit frontend, exposed via a NodePort Service
+      # (frontend/k8s/service.yaml) now that it runs in-cluster instead of
+      # a local `nohup streamlit run app.py` process (Roadmap.md
+      # "Kubernetes Hosting Model") — keeps localhost:8501 working for a
+      # browser, same reasoning as Postgres/Trino/Dagster's webserver
+      # above. Extra{PortMappings} only apply at cluster *creation* time --
+      # an existing cluster needs a full recreate to pick this up.
+      - containerPort: 30501
+        hostPort: 8501
+        protocol: TCP
