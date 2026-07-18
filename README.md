@@ -35,6 +35,12 @@ flowchart TB
     K8S["Kubernetes (platform/)"] -. hosts .-> MP
     K8S -. hosts .-> ICE
     K8S -. hosts .-> UI
+
+    META -->|"streaming_source config"| SCG["Codegen scripts\n(scripts/generate_streaming_ingestion.py)"]
+    SCG -->|"generates Flink SQL +\nFlinkDeployment CRs"| KFK["Kafka -> Flink\n(streaming/, real-time ingestion)"]
+    KFK --> ICE
+    DBT -.->|"hand-authored\nserve-layer join"| ICE
+    K8S -. hosts .-> KFK
 ```
 
 Five storage layers, one chain per feed: **raw** (verbatim durable copy) → **clean** (schema-validated) → **staging** (cumulative, upserted by business key) → **model** (Kimball facts/dimensions, SCD1/SCD2) → **serve** (query-facing views). A feed's `pipeline_steps` metadata can narrow this to extraction-only, or skip serving, etc. — resolved live per run by `master_pipeline`, the single entry point every trigger path (schedule, sensor, manual launch) goes through; it derives which feeds/domains to run from Postgres and launches each stage as its own independently-isolated pod (`EXTRACTION_JOBS`/`MODELING_JOBS`/`SERVING_JOBS`), never a nested child pod.
@@ -50,7 +56,8 @@ Five storage layers, one chain per feed: **raw** (verbatim durable copy) → **c
 | `processing/raw_to_clean/` | Generic raw→clean validation logic (schema coercion against the metadata-tracked schema registry) — one shared module every feed's `clean` step uses. |
 | `dbt/domains/<domain>/` | One compile-isolated dbt project per business domain — staging/model/serve SQL, plus macros copied in from `dbt/_shared/`. This is where most day-to-day modeling work happens. Each domain also gets its own Docker image, built/rebuilt independently of every other domain's. |
 | `query-engine/` | Trino (compute) and Apache Polaris (Iceberg REST catalog) — config and Kubernetes manifests, no custom application code. |
-| `frontend/` | Streamlit CRUD app for all metadata tables (source systems, feeds, lakehouse models, schedules) — a real in-cluster Deployment, `frontend/k8s/`. |
+| `streaming/` | Real-time ingestion: Kafka (KRaft, single broker) → Flink (Kubernetes Operator, one `FlinkDeployment` per active `streaming_source` row) → the same Iceberg warehouse everything else uses. Metadata-driven onboarding like a batch feed (`streaming_source` table + codegen), plus `streaming/testing/` — isolated, in-cluster tests proving each source end-to-end without needing the batch pipeline to have run first. |
+| `frontend/` | Streamlit CRUD app for all metadata tables (source systems, feeds, lakehouse models, schedules, streaming sources) — a real in-cluster Deployment, `frontend/k8s/`. |
 | `platform/` | Cluster-wide concerns not owned by any one module: the local kind cluster definition and Kubernetes namespaces. |
 | `tests/` | Cross-module integration tests (as opposed to each module's own unit tests, which live inside that module). |
 

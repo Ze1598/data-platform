@@ -84,12 +84,12 @@ This same Postgres instance also hosts `polaris_db` for Apache Polaris (the Iceb
 
 ## Kubernetes Hosting Model
 
-One kind cluster for the whole platform — not split across multiple clusters. Modules are separated by **namespace** (`metadata`, `orchestration`, `processing`, `query-engine`, `frontend`), and within a namespace, workloads split by lifecycle, not by module:
+One kind cluster for the whole platform — not split across multiple clusters. Modules are separated by **namespace** (`metadata`, `orchestration`, `processing`, `query-engine`, `frontend`, `streaming`, `keda`), and within a namespace, workloads split by lifecycle, not by module:
 
-- **Long-running services** (Postgres, Apache Polaris, Trino, Dagster webserver+daemon, Streamlit) — `Deployment`/`StatefulSet` + `Service`, always up.
-- **On-demand compute** (a dbt run, a Spark extraction) — `Job` or `SparkApplication` CR, launched per run by Dagster's `K8sRunLauncher`, runs to completion, pod disappears. dbt has no server component; it's a CLI invoked inside a pod on demand.
+- **Long-running services** (Postgres, Apache Polaris, Trino, Dagster webserver+daemon, Streamlit, Kafka, the Flink Kubernetes Operator) — `Deployment`/`StatefulSet` + `Service`, always up (subject to KEDA scale-to-zero for `orchestration`'s webserver/code-server — see "Kubernetes scaling options compared" in Learnings.md).
+- **On-demand compute** (a dbt run, a Spark extraction, a `FlinkDeployment`'s own job pods, an isolated streaming test) — `Job`/`SparkApplication`/`FlinkDeployment` CR, launched per run (by Dagster's `K8sRunLauncher`, `flink::start`, or `streaming-testing::test`), runs to completion (or continuously, for a `FlinkDeployment`), pod disappears when killed. dbt has no server component; it's a CLI invoked inside a pod on demand.
 
-Each module gets exactly one container image it owns (custom-built where the module has its own code; off-the-shelf where it doesn't) — **`orchestration` is the one deliberate exception**, see below.
+Each module gets exactly one container image it owns (custom-built where the module has its own code; off-the-shelf where it doesn't) — **`orchestration` and `streaming` are the deliberate exceptions**, see below.
 
 | Module | Image | Workload type |
 |---|---|---|
@@ -99,6 +99,7 @@ Each module gets exactly one container image it owns (custom-built where the mod
 | `dbt` | custom-built (dbt project + deps), image consumed by `orchestration`'s op pods | no standalone deployment — runs inside orchestration-launched Jobs |
 | `processing` | custom-built (PySpark job code) | `SparkApplication` CR (via `processing`'s spark-operator, itself off-the-shelf) |
 | `frontend` | custom-built (Streamlit) | Deployment |
+| `streaming` | official `apache/kafka` (config-driven) + Flink Kubernetes Operator (Helm chart) + **three custom-built images**: `data-platform-streaming-flink` (Maven-built Java SQL-runner + connector jars, run by every `FlinkDeployment`), `data-platform-streaming-producer` (synthetic `sales_events` producer), `data-platform-streaming-testing` (isolated streaming test runner, see Progress.md's "Isolated streaming test suite" entry) | Deployment (Kafka, the Flink Operator, the producer) + one `FlinkDeployment` CR per active `streaming_source` row (its own JobManager+TaskManager pods, continuous) + Jobs (`kafka-create-topics`, `streaming-testing-*`) |
 
 ## Repo Structure (module-first — each module owns its code, Dockerfile, and k8s manifests)
 
@@ -106,14 +107,15 @@ Each module gets exactly one container image it owns (custom-built where the mod
 data-platform/
   pyproject.toml, uv.lock          # uv workspace root (members: frontend, scripts, domain_naming,
                                    # orchestration/dagster_data_platform, processing/connectors,
-                                   # processing/raw_to_clean, query-engine/polaris_client, tests/integration)
+                                   # processing/raw_to_clean, query-engine/polaris_client, tests/integration,
+                                   # streaming/producer, streaming/testing)
   Justfile                        # cross-module sequencing (start/kill/smoketest/test) -- see each module's own module.just for what a recipe actually does
   README.md, CLAUDE.md, .env.example
   Roadmap.md, Progress.md, Backlog.md, Learnings.md   # this file, build record, deferred items, technical gotchas
   .claude/plans/                  # working plan/resume files for in-progress multi-session efforts
   platform/                       # cluster-wide concerns, not owned by one module
     kind/kind-cluster.yaml         # single-node, extraMounts -> ./data-lake, extraPortMappings for every NodePort (Postgres/Trino/Dagster webserver/Streamlit)
-    namespaces/                    # metadata.yaml, orchestration.yaml, processing.yaml, query-engine.yaml, frontend.yaml
+    namespaces/                    # metadata.yaml, orchestration.yaml, processing.yaml, query-engine.yaml, frontend.yaml, streaming.yaml, keda.yaml
   metadata/                        # module: platform config DB
     DataModel.md                  # full table-by-table schema -- source of truth, see this file before Roadmap.md's own (intentionally non-duplicated) schema prose
     db/init/                       # 01_platform_metadata.sql, 02_polaris_db.sql
@@ -131,7 +133,18 @@ data-platform/
       models/model/intermediate/  # int_<feed>_with_deletes.sql (deletes_enabled feeds), generated deletion-synthesis views
       models/model/dimensions/, models/model/facts/   # hand-authored Type 1 dims/facts; snapshots/ for Type 2 dims
       models/serve/generated/     # codegen output (_latest/_historical per lakehouse_models row or ODS feed)
+      models/serve/streaming/     # streaming serve views (write-if-missing scaffold + hand-authored join, see scripts/generate_streaming_serve_scaffolds.py) -- tagged out of the regular transformation job (dbt_assets.py's _STREAMING_TAG), never part of master_pipeline
     module.just                   # dbt-specific recipes (per-domain dbt build/test)
+  streaming/                       # module: Kafka -> Flink -> Iceberg real-time ingestion (Roadmap Phase 11)
+    kafka/                         # KRaft-mode single broker; generated/create-topics-job.yaml (one topic per ready streaming_source row, codegen'd)
+    flink/                         # Flink Kubernetes Operator + one FlinkDeployment per ready streaming_source row (Application Mode, not a shared session cluster)
+      sql-runner/                  # vendored Java driver (org.apache.flink.examples.SqlRunner, from apache/flink-kubernetes-operator) -- see Learnings.md for why, not PyFlink
+      sql-scripts/generated/       # codegen'd Flink SQL sink scripts (scripts/generate_streaming_ingestion.py) -- pure mechanical plumbing, no business logic
+      generated/                   # codegen'd FlinkDeployment CRs, one per ready streaming_source row
+    producer/                      # uv workspace member -- synthetic sales_events producer (Deployment, not a Job -- the one long-running custom compute in this repo)
+    testing/                       # uv workspace member -- isolated streaming tests (Progress.md's "Isolated streaming test suite" entry), own image, runs as one-shot Jobs in-cluster (Kafka's Service is ClusterIP-only)
+    module.just                   # composite start/kill (generate-ingestion -> kafka -> flink -> producer)
+    DebugReference.md              # manual-command equivalents for every module.just recipe here
   orchestration/                   # module: Dagster -- the master pipeline + in-cluster Dagster deployment itself
     dagster_data_platform/         # uv workspace member (dagster, dagster-dbt, dbt-core, dbt-trino)
       definitions.py               # wires generated assets/jobs/schedules + hand-written ones into one Definitions object
@@ -146,7 +159,7 @@ data-platform/
       tests/                       # test_schedules.py, test_sensors.py, test_pipeline_steps.py, etc.
     dagster_home/                  # dagster.yaml (local/run-pod config) + dagster-incluster.yaml (webserver/daemon config, load_incluster_config: true) + workspace.yaml (points at dagster-code-server)
     Dockerfile                     # uv-based; optional DOMAIN build arg selects a narrower per-domain image
-    k8s/                           # dagster-webserver/dagster-daemon/dagster-code-server Deployments+Services, RBAC, postgres-credentials Secret (namespace: orchestration)
+    k8s/                           # dagster-webserver/dagster-daemon/dagster-code-server Deployments+Services, RBAC, postgres-credentials Secret, keda-scaledobjects.yaml (webserver+code-server scale-to-zero, daemon excluded -- see Learnings.md's "Kubernetes scaling options compared") (namespace: orchestration)
   processing/
     connectors/                    # uv workspace member -- generic, reusable extraction connector framework (Postgres/CSV/JSON-file/REST base classes + schema discovery)
     raw_to_clean/                  # uv workspace member -- generic raw->clean validation logic (schema coercion against schema_registry)
@@ -176,7 +189,7 @@ Phases 1–10, 13, 14, and 15 are all done (see `Progress.md`), and **Phase 11 (
 8. **Serve layer** — codegen step generates `_latest`/`_historical` dbt view models from `lakehouse_models`, wired as a Dagster asset downstream of model.
 9. **End-to-end hardening** — one real source (REST API or CSV drop), Dagster schedules/sensors, full watermark handling, failure-path testing and safe re-run.
 10. **Metadata data model review** — a full audit of the metadata schema against what the code actually reads/writes, rather than what it was originally provisioned for. Completed: every column the Phase 6-era tech-debt audit had flagged as dead (`processing_engine`, `landing_path_template`/`raw_path_template`, `incremental_column`/`incremental_column_type`, `schedule_cron`, `schema_registry` versioning) was either wired up for real or dropped outright, and `data_feed_run`/`data_model_run` were merged into today's single `data_processing_runs` table — no column was left in an ambiguous "maybe someone reads it" state. Resulted in a full metadata schema redesign (`source_system`/`data_feed`/`lakehouse_models` all renamed and restructured from their original names). See [metadata/DataModel.md](metadata/DataModel.md) for the resulting schema (source of truth) and `Progress.md`'s Phase 10 section for the complete audit record.
-11. **Real-time / streaming ingestion** — **built (2026-07-18), including its generalization (2026-07-18)**; see `Progress.md`'s Phase 11 and "Phase 11 (continued)" sections for the full build record. New `streaming/` module: Kafka (KRaft, single broker) as the ingest broker, and Flink (via the Flink Kubernetes Operator + a `FlinkDeployment`, driven by a vendored Java SQL-runner rather than PyFlink — see Learnings.md for why) landing each topic as an append-only Iceberg table in the same Polaris-cataloged warehouse everything else lives in. **The interesting architectural property is confirmed live, not just designed**: because the streaming sink writes a plain Iceberg table into the same warehouse, **Trino needs no new integration to query it** — a dbt view joins the streaming table straight into the already-persisted `model` layer using ordinary SQL. **Now metadata-driven, matching a batch feed's onboarding**: a new `streaming_source` table + polymorphic `schema_registry` + codegen for both ingestion (`generate_streaming_ingestion.py`, 100% generated) and serve scaffolds (`generate_streaming_serve_scaffolds.py`, write-if-missing), plus a Streamlit CRUD/schema-discovery page — onboarding a new stream is now metadata config + a business-logic join, the same shape as a batch feed. Two independent sources (`sales_events`, `inventory_events`) confirmed running and growing concurrently. **Deliberately still open, not part of this pass**: streaming stays serve-only — no fold-in to `staging`/`model`'s SCD merge logic — see Backlog.md.
+11. **Real-time / streaming ingestion** — **built (2026-07-18), including its generalization (2026-07-18)**; see `Progress.md`'s Phase 11 and "Phase 11 (continued)" sections for the full build record. New `streaming/` module: Kafka (KRaft, single broker) as the ingest broker, and Flink (via the Flink Kubernetes Operator + a `FlinkDeployment`, driven by a vendored Java SQL-runner rather than PyFlink — see Learnings.md for why) landing each topic as an append-only Iceberg table in the same Polaris-cataloged warehouse everything else lives in. **The interesting architectural property is confirmed live, not just designed**: because the streaming sink writes a plain Iceberg table into the same warehouse, **Trino needs no new integration to query it** — a dbt view joins the streaming table straight into the already-persisted `model` layer using ordinary SQL. **Now metadata-driven, matching a batch feed's onboarding**: a new `streaming_source` table + polymorphic `schema_registry` + codegen for both ingestion (`generate_streaming_ingestion.py`, 100% generated) and serve scaffolds (`generate_streaming_serve_scaffolds.py`, write-if-missing), plus a Streamlit CRUD/schema-discovery page — onboarding a new stream is now metadata config + a business-logic join, the same shape as a batch feed. Two independent sources (`sales_events`, `inventory_events`) confirmed running and growing concurrently. **By design, not a gap**: streaming stays serve-only, with no fold-in to `staging`/`model`'s SCD merge logic — confirmed directly with the user (2026-07-19). Streaming (hot path, low-latency) and batch (cold path — a nightly catch-up, or a periodic/sensor-driven job persisting streaming payloads into a `model` table as one of its sources) are intentionally separate mechanisms serving different purposes, not one pipeline streaming is missing a merge into. If a real need for batch to periodically absorb streaming data ever comes up, it's a new batch source reading from `streaming.*` like any other source, not a fold-in.
 
 **Azure portability** is a deliberate design intention behind this project (see "Storage" above) — real ADLS Gen2 isn't a phase on this build order, and isn't something to implement here. Noted for context only.
 
