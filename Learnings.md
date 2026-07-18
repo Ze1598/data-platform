@@ -164,6 +164,56 @@ Only affects models that set an explicit `schema` config.
 
 ---
 
+## Flink + Kafka + Iceberg (streaming/ module)
+
+### PyFlink is a dead end for this project's arm64 (Apple Silicon) local cluster
+
+**Symptom**: a FlinkDeployment pod built with PyFlink as the job driver sits in `ImagePullBackOff` forever, even though `imagePullPolicy: IfNotPresent` is set correctly on the pod spec and the image was already `kind load docker-image`'d onto the node. `kubectl describe pod` shows kubelet repeatedly attempting a real registry pull (`pull access denied, repository does not exist`) for a purely local, never-published image name.
+
+**Root cause chain, confirmed at each step rather than assumed**:
+1. PyFlink's `pemja` dependency (the Python↔JVM bridge) has no published `manylinux_aarch64` wheel on PyPI — only `manylinux1_x86_64` (Linux) and `macosx_*_arm64` (native macOS, not a Linux container). Confirmed directly against PyPI's release file listing, not from a GitHub issue or blog post.
+2. This forces the Flink image to be built `--platform linux/amd64` even on an arm64 host, since `pip install apache-flink` needs a prebuilt `pemja` wheel and won't find one for `linux/aarch64`.
+3. `docker build --platform linux/amd64` itself succeeds fine (BuildKit's QEMU-based emulation handles the build steps) — the build has no dependency on the host or target cluster's architecture.
+4. The failure is specifically in `kind load docker-image` on an arm64 kind node: the image blob does get imported into containerd's content store (confirmed via `ctr -n k8s.io images list`, which showed the correct tag, digest, and `linux/amd64` platform), but the CRI image service — the layer kubelet actually queries via `crictl images` — never surfaces it as present. Kubelet concludes the image is missing and falls back to a real registry pull, which fails because the image was never published anywhere.
+
+**What was tried and ruled out**: rebuilding without BuildKit's default provenance/attestation manifest (`--provenance=false`) fixed a *different*, real problem (a multi-manifest image `kind load` mishandled) but did not fix this one — confirmed by testing both fixes independently, not conflated as one incident.
+
+**Resolution**: abandoned PyFlink entirely. Switched to a vendored Java driver (`org.apache.flink.examples.SqlRunner`, copied verbatim from `apache/flink-kubernetes-operator`'s own `examples/flink-sql-runner-example`) that reads a `.sql` file and executes its statements via `TableEnvironment#executeSql` — see `streaming/flink/sql-runner/`. This removes the PyFlink/`pemja` dependency entirely, so the image goes back to building natively for the host architecture (no `--platform` flag, no emulation, no cross-arch `kind load` problem) — the same category of image as every other custom-built image in this repo.
+
+**Broader lesson, not just a PyFlink-specific one**: `kind load docker-image` cannot be trusted for a foreign-architecture image on this project's local arm64 cluster. If a future component genuinely needs a `--platform linux/amd64` image (not ruled out forever, just not needed today), budget real time for solving the CRI-visibility gap first — pushing to a real (even local/throwaway) registry and doing an actual `imagePullSecrets`-authenticated pull, rather than the `kind load` shortcut, is the more likely fix to investigate first.
+
+**Also worth knowing for the tradeoff itself**: the actual Java involved in the SqlRunner path is small and static — one ~70-line generic class plus a boilerplate `pom.xml`, both from the operator project's own reference implementation, not hand-written pipeline logic. It needs zero modification to support a new streaming source; onboarding a new source is purely a new `.sql` file (see `streaming/flink/sql-scripts/`). PyFlink's apparent "zero Java" benefit didn't actually reduce per-source work (each new source still needs its own bespoke Python driver file) and came with the structural arm64 problem above — the SqlRunner path is both less code to maintain per source *and* architecture-portable.
+
+### `iceberg-flink-runtime` needs `org.apache.hadoop.conf.Configuration` on the classpath even for a pure REST-catalog + S3FileIO setup that never touches HDFS
+
+**Symptom**: `NoClassDefFoundError: org/apache/hadoop/conf/Configuration` → `ClassNotFoundException: org.apache.hadoop.conf.Configuration`, thrown from `org.apache.iceberg.flink.FlinkCatalogFactory.clusterHadoopConf()`, on the very first `CREATE CATALOG ... WITH ('type'='iceberg', 'catalog-type'='rest', ...)` statement — even though nothing about a REST catalog + `S3FileIO` setup should need Hadoop at all.
+
+**Cause**: confirmed live, not assumed from a tutorial — `FlinkCatalogFactory.createCatalog()` unconditionally calls `clusterHadoopConf()`, which unconditionally instantiates a Hadoop `Configuration` object, regardless of which catalog type or FileIO implementation is actually configured. Iceberg's own Flink getting-started docs allude to this ("By default, Iceberg ships with Hadoop jars for Hadoop catalog") but don't call out that it's a hard classload-time dependency even for non-Hadoop catalogs.
+
+**Resolution**: add Hadoop's classpath to the image. The commonly-cited fix in older tutorials, `flink-shaded-hadoop-2-uber`, tops out at `2.8.3-10.0` on Maven Central (last published years ago) — used the modern, actively-maintained equivalent instead: `org.apache.hadoop:hadoop-client-api` + `org.apache.hadoop:hadoop-client-runtime` (both `3.5.0` as of this writing), Hadoop's own official self-contained shaded jars for exactly this "I need Hadoop-compatible classes without a real Hadoop install" scenario. Dropped into `/opt/flink/lib/` alongside the Kafka/Iceberg connector jars.
+
+### A Flink TaskManager builds its own separate AWS S3 client for actual data writes — catalog-level `s3.*` properties don't reach it
+
+**Symptom**: the Iceberg REST catalog connects fine (`CREATE CATALOG`/`CREATE TABLE` succeed), but the actual `INSERT` job fails on the TaskManager with `software.amazon.awssdk.core.exception.SdkClientException: Unable to load region from any of the providers in the chain` — even though the catalog was created with `'s3.region' = 'us-east-1'` and `'s3.endpoint' = 'http://minio...'` set explicitly.
+
+**Cause**: this is the same class of problem already documented above for Polaris's own server-side `S3FileIO` client (see "Polaris `S3` storage type against MinIO", symptom #4) — a JVM component building a *fresh* AWS SDK v2 client for actual I/O (here: `IcebergStreamWriter` opening an `S3OutputFile` to write a real data file) doesn't necessarily inherit the catalog-level properties the same client-construction code path used elsewhere did. The AWS SDK's own `DefaultAwsRegionProviderChain` only checks environment variables, system properties, a local AWS profile, or EC2 instance metadata — never arbitrary Iceberg catalog properties.
+
+**Resolution**: same fix as the Polaris entry, applied to the Flink pods this time — set `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_ENDPOINT_URL_S3` as literal environment variables directly on the FlinkDeployment's `podTemplate` (both JobManager and TaskManager pods get it from the shared top-level `podTemplate`). Confirmed working: the very next run committed a real Iceberg snapshot (`IcebergFilesCommitter` logged `Committing append for checkpoint ... with summary: CommitSummary{dataFilesCount=1, ...}`, `Committed snapshot ... (MergeAppend)`), and the row was immediately queryable from Trino.
+
+**Pattern worth generalizing**: any *new* JVM component added to this platform's Iceberg/S3 stack (Flink here, Polaris earlier) should be expected to need this same explicit `AWS_*` env var quartet, regardless of whatever catalog-level `s3.*` properties are also set — don't assume catalog properties alone are sufficient just because they work for the client that creates/reads metadata; the client that actually writes data files may be a structurally different code path.
+
+### Flink SQL's `CAST(string AS TIMESTAMP(n))` fails silently on an ISO-8601 `'T'`-separated string
+
+**Symptom**: a row produced to the Kafka source topic simply never appears in the Iceberg sink table — no exception anywhere in the JobManager or TaskManager logs, the job stays healthy and `RUNNING` throughout. The only visible trace: `IcebergFilesCommitter` logs a real commit attempt (not the usual "skip commit, no data files" no-op) with `CommitSummary{dataFilesCount=0, dataFilesRecordCount=0, ...}` — i.e. the writer had a record to flush, and produced a snapshot commit for it, but with zero actual rows/files.
+
+**Cause**: confirmed via direct A/B test (same topic, same schema, only the timestamp string format changed) — `CAST(event_timestamp AS TIMESTAMP(6))` where `event_timestamp` is a `STRING` column expects the **SQL-standard `'yyyy-MM-dd HH:mm:ss.SSSSSS'` format (space separator between date and time)**. An ISO-8601-style string with a `'T'` separator (`'2026-07-18T14:40:00.000000'`, the default `datetime.isoformat()` output in Python) fails the cast **without raising anything catchable** — not a `json.ignore-parse-errors`-covered issue (that only governs JSON *deserialization* into the source table's declared `STRING` column, which always succeeds regardless of the string's content) and not a `ClassCastException` either — the row is just dropped somewhere between the CAST expression and the sink writer.
+
+**Resolution**: any producer feeding this pipeline (`streaming/producer/`) must emit `event_timestamp` in the space-separated SQL format, not `datetime.isoformat()`'s default `'T'`-separated one — e.g. Python: `dt.strftime('%Y-%m-%d %H:%M:%S.%f')`, not `dt.isoformat()`.
+
+**Broader lesson**: this class of "silent row drop with a misleadingly-normal-looking commit log line" is a real Flink SQL failure mode worth remembering — a `dataFilesCount=0` commit (as opposed to a "skip commit, no data files" no-op) is itself the tell that something was attempted and produced nothing, not that nothing happened at all. Worth checking explicitly rather than assuming "no exception in the logs" means "the row made it through."
+
+---
+
 ## PyIceberg
 
 ### Credential vending fails against an STS-less catalog (MinIO or similar)

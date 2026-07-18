@@ -13,6 +13,10 @@ mod minio 'query-engine/minio/module.just'
 mod polaris 'query-engine/polaris/module.just'
 mod trino 'query-engine/trino/module.just'
 mod query-engine 'query-engine/module.just'
+mod kafka 'streaming/kafka/module.just'
+mod flink 'streaming/flink/module.just'
+mod producer 'streaming/producer/module.just'
+mod streaming 'streaming/module.just'
 mod orchestration 'orchestration/module.just'
 mod processing 'processing/module.just'
 mod dbt 'dbt/module.just'
@@ -50,6 +54,7 @@ start module="": _ensure-venv-visible
         just platform::start
         just metadata::start
         just query-engine::start
+        just streaming::start
         just orchestration::start
         just frontend::start
     else
@@ -66,6 +71,7 @@ kill module="":
     if [ -z "{{module}}" ]; then
         just frontend::kill
         just orchestration::kill
+        just streaming::kill
         just query-engine::kill
         just metadata::kill
         just platform::kill

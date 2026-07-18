@@ -37,7 +37,7 @@ CATALOG_NAME = "data_platform"
 # another failed rebuild. Creating all of them here, once, as part of
 # bootstrap removes the race entirely rather than relying on concurrent
 # runtime code to handle it safely.
-REQUIRED_NAMESPACES = ["clean", "staging", "model", "serve"]
+REQUIRED_NAMESPACES = ["clean", "staging", "model", "serve", "streaming"]
 
 
 def main() -> None:

@@ -1,0 +1,14 @@
+# Hand-authored source declaration for the streaming/ module's Iceberg
+# sink table (Kafka -> Flink -> Iceberg, Roadmap Phase 11) -- deliberately
+# NOT in models/staging/_sources.yml, which scripts/generate_sources.py
+# wipes-and-regenerates from clean.* sources only. This table isn't a
+# clean-layer source (it bypasses clean/staging/model entirely, landed
+# directly by Flink), so it lives in its own file the codegen never
+# touches, colocated with the hand-authored view that consumes it.
+version: 2
+sources:
+  - name: streaming
+    database: iceberg
+    schema: streaming
+    tables:
+      - name: sales_events

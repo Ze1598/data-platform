@@ -1,0 +1,39 @@
+# A genuine long-running Deployment, not a Job -- unlike every other
+# custom compute in this repo (Dagster op pods, dbt Jobs), this runs
+# forever, continuously producing synthetic events. No PVC/state -- purely
+# in-memory generation, nothing to persist.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sales-events-producer
+  namespace: streaming
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sales-events-producer
+  template:
+    metadata:
+      labels:
+        app: sales-events-producer
+    spec:
+      containers:
+        - name: producer
+          image: data-platform-streaming-producer:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka.streaming.svc.cluster.local:9092"
+            - name: EVENT_INTERVAL_SECONDS
+              value: "5"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "producer.main"]
+            initialDelaySeconds: 10
+            periodSeconds: 30

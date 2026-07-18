@@ -1,0 +1,26 @@
+# One-off topic creation -- Kafka doesn't auto-create topics with the wanted
+# partition/replication settings. Safe to re-run (--if-not-exists no-ops).
+# One partition / replication-factor 1 -- matches the single broker, and
+# Flink's own job parallelism stays at 1 too, so more partitions buy nothing
+# here. Binary path confirmed directly against the image (not on PATH):
+# /opt/kafka/bin/kafka-topics.sh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-create-topic
+  namespace: streaming
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: create-topic
+          image: apache/kafka:latest
+          command:
+            - sh
+            - -c
+            - |
+              /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
+                --bootstrap-server kafka.streaming.svc.cluster.local:9092 \
+                --topic sales-events --partitions 1 --replication-factor 1
