@@ -28,17 +28,6 @@ with source_raw as (
         cast(staging_rows_updated as bigint) as staging_rows_updated,
         cast(model_rows_updated as bigint) as model_rows_updated,
         cast(serve_rows_read as bigint) as serve_rows_read,
-        cast(feed_friendly_name as varchar) as feed_friendly_name,
-        cast(feed_batch_group_friendly_name as varchar) as feed_batch_group_friendly_name,
-        cast(feed_extraction_type as varchar) as feed_extraction_type,
-        cast(feed_processing_engine as varchar) as feed_processing_engine,
-        cast(feed_is_active as boolean) as feed_is_active,
-        cast(model_friendly_name as varchar) as model_friendly_name,
-        cast(model_model_schema as varchar) as model_model_schema,
-        cast(model_table_type as varchar) as model_table_type,
-        cast(model_scd_type as bigint) as model_scd_type,
-        cast(model_updates_enabled as boolean) as model_updates_enabled,
-        cast(model_deletes_enabled as boolean) as model_deletes_enabled,
         {{ row_hash(['run_id']) }} as _key_hash,
         {{ row_hash(['job_successful', 'job_ended_timestamp', 'raw_rows_read', 'clean_rows_inserted', 'staging_rows_updated', 'model_rows_updated', 'serve_rows_read']) }} as _attr_hash
     from {{ source('clean', 'metadata_runs') }}

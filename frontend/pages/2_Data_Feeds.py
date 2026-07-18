@@ -282,7 +282,7 @@ if mode == "Add new":
             "extraction_config": "{}",
             "source_pk": "",
             "processing_engine": "polars",
-            "pipeline_step_labels": ["extraction", "validation", "transformation", "serving"],
+            "pipeline_step_labels": ["extraction", "transformation", "serving"],
             "ods_enabled": False,
             "batch_ods_name": None,
             "is_active": True,

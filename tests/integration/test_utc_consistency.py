@@ -67,12 +67,19 @@ def test_staging_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
         # config) -- no staging_table_name metadata column to read anymore.
         columns = describe_columns(trino_conn, "staging", friendly_name)
         assert columns, f"iceberg.staging.{friendly_name} does not exist — has stg_{friendly_name} ever run?"
-        # the feed's own passed-through column(s), plus the technical
-        # _loaded_at column every staging model stamps (see
-        # dbt/domains/<domain>/models/staging/stg_*.sql)
+        # schema_registry reflects clean's full discovered schema, which
+        # can be wider than what a hand-written staging model actually
+        # selects (e.g. a feed extracted via a generic `SELECT *` -- see
+        # metadata/DataModel.md, data_feed.extraction_config) -- curating
+        # columns down in staging is normal, intended dbt modeling, not a
+        # gap, so only check timestamp columns staging actually carries
+        # through, plus the technical _loaded_at column every staging
+        # model stamps (see dbt/domains/<domain>/models/staging/stg_*.sql).
         for col in [*timestamp_columns, "_loaded_at"]:
-            trino_type = columns.get(col)
-            if trino_type is None or "with time zone" not in trino_type:
+            if col not in columns:
+                continue
+            trino_type = columns[col]
+            if "with time zone" not in trino_type:
                 failures.append(
                     f"staging.{friendly_name}.{col}: expected 'timestamp(...) with time zone', got {trino_type!r}"
                 )

@@ -209,6 +209,17 @@ def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
     tabular kinds (postgres/csv) never need it, since their watermark
     filtering happens after fetch(), on the caller's side."""
     if kind == "postgres":
+        # Default case (extraction_config empty or null): no query
+        # override, so table_name falls back to this feed's own
+        # source_object_name -- PostgresConnector builds a plain
+        # `SELECT * FROM <table_name>` internally. table_name stays None
+        # when a custom query IS given and no explicit table_name override
+        # was provided alongside it -- a genuinely multi-table custom
+        # query has no single real table to default to, and guessing
+        # wrong would silently corrupt discover_primary_key() (see
+        # processing/connectors/connectors/postgres.py). extraction_config
+        # itself is nullable (a feed that's never set one has a real SQL
+        # NULL, not `{}`) -- `or {}` guards every access below.
         return (
             'PostgresConnector(\n'
             '            host=os.environ.get("POSTGRES_HOST", "localhost"),\n'
@@ -216,8 +227,9 @@ def _connector_build_expr(kind: str, feed: str, *, with_watermark: bool) -> str:
             '            dbname=os.environ.get("POSTGRES_DB", "platform_metadata"),\n'
             '            user=os.environ.get("POSTGRES_USER", "platform"),\n'
             '            password=os.environ.get("POSTGRES_PASSWORD", "platform"),\n'
-            '            query=data_feed["extraction_config"]["query"],\n'
-            '            table_name=data_feed["extraction_config"].get("table_name"),\n'
+            '            query=(data_feed["extraction_config"] or {}).get("query"),\n'
+            '            table_name=(data_feed["extraction_config"] or {}).get("table_name")\n'
+            '                or (data_feed["source_object_name"] if not (data_feed["extraction_config"] or {}).get("query") else None),\n'
             '        )'
         )
     if kind == "csv":

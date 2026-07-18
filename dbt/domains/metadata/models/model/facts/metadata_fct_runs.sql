@@ -4,18 +4,14 @@
 
 with base as (
     select
-        s.run_id, s.master_dagster_run_id, s.extraction_dagster_run_id,
-        s.transformation_dagster_run_id,
-        s.serving_dagster_run_id, s.tracking_group, s.tracking_group_type,
-        s.job_started_timestamp, s.job_ended_timestamp, s.job_successful,
-        s.raw_rows_read, s.clean_rows_inserted,
-        s.staging_rows_updated, s.model_rows_updated, s.serve_rows_read,
-        f._key_hash as feed_key,
-        m._key_hash as lakehouse_model_key,
+        run_id, data_feed_id, model_key, master_dagster_run_id,
+        extraction_dagster_run_id, transformation_dagster_run_id,
+        serving_dagster_run_id, tracking_group, tracking_group_type,
+        job_started_timestamp, job_ended_timestamp, job_successful,
+        raw_rows_read, clean_rows_inserted,
+        staging_rows_updated, model_rows_updated, serve_rows_read,
         false as is_deleted
-    from {{ ref('stg_metadata_runs') }} s
-    left join {{ ref('metadata_dim_feed') }} f on s.feed_friendly_name = f.feed_friendly_name
-    left join {{ ref('metadata_dim_model') }} m on s.model_friendly_name = m.model_friendly_name
+    from {{ ref('stg_metadata_runs') }}
 ),
 hashed as (
     select *,

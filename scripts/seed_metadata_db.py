@@ -25,38 +25,6 @@ CONN_KWARGS = dict(
     dbname=os.environ.get("POSTGRES_DB", "platform_metadata"),
 )
 
-# Connector library plan: metadata_runs (Postgres source, this platform's
-# own metadata DB) -- moved verbatim from the now-deleted
-# metadata_runs_assets.py, which existed only via
-# Walkthrough_Metadata_Source_Feed.md's manual setup. Stored as
-# data_feed.extraction_config, read live by the generated PostgresConnector
-# at landing time -- never baked into generated code.
-METADATA_RUNS_QUERY = """
-    select
-        r.run_id::text as run_id, r.data_feed_id::text as data_feed_id, r.model_key,
-        r.tracking_group, r.tracking_group_type, r.master_dagster_run_id,
-        r.extraction_dagster_run_id,
-        r.transformation_dagster_run_id, r.serving_dagster_run_id,
-        r.job_started_timestamp, r.job_ended_timestamp, r.job_successful,
-        r.raw_rows_read, r.clean_rows_inserted,
-        r.staging_rows_updated, r.model_rows_updated, r.serve_rows_read,
-        df.friendly_name as feed_friendly_name,
-        df.batch_group_friendly_name as feed_batch_group_friendly_name,
-        df.extraction_type as feed_extraction_type,
-        df.processing_engine as feed_processing_engine,
-        df.is_active as feed_is_active,
-        lm.friendly_name as model_friendly_name,
-        lm.model_schema as model_model_schema,
-        lm.table_type as model_table_type,
-        lm.scd_type as model_scd_type,
-        lm.updates_enabled as model_updates_enabled,
-        lm.deletes_enabled as model_deletes_enabled
-    from data_processing_runs r
-    left join data_feed df on df.id = r.data_feed_id
-    left join lakehouse_models lm on lm.friendly_name = r.model_key
-"""
-
-
 def seed_source_system(
     cur,
     *,
@@ -261,10 +229,9 @@ def main() -> None:
             connector_kind="rest",
             base_location="https://data.police.uk/api",
         )
-        # Connector library plan: metadata_runs queries this platform's own
-        # data_processing_runs table (a real Postgres source, previously
-        # only reachable by hand-following Walkthrough_Metadata_Source_Feed.md's
-        # manual SQL -- not reproducible from a fresh cluster until now).
+        # metadata_runs queries this platform's own data_processing_runs
+        # table, a real Postgres source -- see Walkthrough_Metadata_Ingestion.md
+        # for the full reproducible-from-a-fresh-cluster setup.
         seed_source_system(
             cur,
             code="platform_metadata_db",
@@ -313,12 +280,11 @@ def main() -> None:
             watermark_column="month",
             # No hand-modeled dimension/fact owns this feed -- ODS delivers
             # an automatic Type 1 model.police_crimes table instead (keyed,
-            # since source_pk is set above), superseding the old
-            # hand-written stg_police_crimes.sql (deleted, see Roadmap.md
-            # "multi-project dbt split" -- a feed with no lakehouse_models
+            # since source_pk is set above). A feed with no lakehouse_models
             # row and no ODS domain has nowhere to build under the
-            # domain-based topology). batch_ods_name defaults to this
-            # feed's own batch_group_friendly_name (itself defaulting to
+            # domain-based topology (Roadmap.md "multi-project dbt split").
+            # batch_ods_name defaults to this feed's own
+            # batch_group_friendly_name (itself defaulting to
             # "police_crimes", its own singleton batch).
             ods_enabled=True,
             batch_ods_name="police_crimes",
@@ -327,6 +293,11 @@ def main() -> None:
         # prove the connector library's actual point: schema discovery
         # bootstraps schema_registry on its own on the first real run, no
         # hand-written baseline needed (see connectors/schema_registry_sync.py).
+        # extraction_config left unset (the default): PostgresConnector
+        # builds a plain SELECT * FROM data_processing_runs from
+        # source_object_name alone -- no custom query needed for a
+        # single-table source (see metadata/DataModel.md,
+        # data_feed.extraction_config).
         seed_data_feed(
             cur,
             source_system_code="platform_metadata_db",
@@ -335,31 +306,25 @@ def main() -> None:
             extraction_type="full",
             source_pk=["run_id"],
             processing_engine="polars",
-            extraction_config={"query": METADATA_RUNS_QUERY},
         )
 
         # schema_registry is never hand-seeded -- extraction's own schema
         # discovery (connectors.schema_registry_sync.sync_schema_registry())
         # populates it for every feed, uniformly, from each feed's first
-        # real run. metadata_runs above already followed this correctly;
-        # customers/sales/financial_transactions/police_crimes used to have
-        # a seed_schema_registry() call here that bypassed discovery
-        # entirely -- removed, see .claude/plans/
-        # fix-schema-registry-extraction-ownership.md.
+        # real run.
 
         # Model layer (Phase 7): dim_customer stands alone (no real FK from
         # sales to customers in this dataset -- see Learnings.md); dim_branch
         # is conformed out of sales' own branch/city columns, and fct_sales
         # joins to it. See Roadmap.md "Model Layer: SCD Design".
         #
-        # updates_enabled=False on dim_branch/fct_sales carries forward the
-        # already-established "sales is immutable" reasoning (a posted
-        # invoice line isn't edited in place, only refunded/voided) -- this
-        # used to live on data_feed.updates_enabled, which the metadata
-        # redesign removed in favor of the "OR across depends_on_feeds"
-        # staging rule (see metadata/DataModel.md, "Staging update-tracking
-        # rule"). Setting it false on both dependents is what's required to
-        # keep that rule's outcome unchanged for the sales feed.
+        # updates_enabled=False on dim_branch/fct_sales reflects sales being
+        # immutable (a posted invoice line isn't edited in place, only
+        # refunded/voided) -- see metadata/DataModel.md, "Staging
+        # update-tracking rule" for how this flag propagates (staging only
+        # tracks updates for a feed if at least one dependent model has
+        # updates_enabled=true; setting it false on both of sales' models
+        # keeps that feed's staging insert-only).
         seed_lakehouse_model(
             cur,
             friendly_name="dim_customer_snapshot",
@@ -423,50 +388,8 @@ def main() -> None:
             updates_enabled=False,
         )
 
-        # metadata domain: Walkthrough_Metadata_Source_Feed.md's worked
-        # example, hand-built directly against dbt/data_platform/ (its own
-        # lakehouse_models rows inserted by hand while following that
-        # walkthrough, never added here) -- backfilled here so the whole
-        # walkthrough scenario becomes reproducible from a fresh cluster,
-        # same "not reproducible until now" fix already applied to
-        # metadata_runs the FEED itself. See the multi-project dbt split
-        # addendum for why this needed resolving now: these three model
-        # files exist on disk with no seeding call, discovered while
-        # migrating dbt/data_platform/ into dbt/domains/.
-        seed_lakehouse_model(
-            cur,
-            friendly_name="dim_metadata_feed",
-            table_name="metadata_dim_feed",
-            model_schema="metadata",
-            table_type="dimension",
-            depends_on_feed_friendly_names=["metadata_runs"],
-            owning_feed_friendly_name="metadata_runs",
-            business_key_columns=["feed_friendly_name"],
-            tracked_columns=[
-                "feed_batch_group_friendly_name", "feed_extraction_type",
-                "feed_processing_engine", "feed_is_active",
-            ],
-            scd_type=1,
-            deletes_enabled=False,
-            updates_enabled=True,
-        )
-        seed_lakehouse_model(
-            cur,
-            friendly_name="dim_metadata_model",
-            table_name="metadata_dim_model",
-            model_schema="metadata",
-            table_type="dimension",
-            depends_on_feed_friendly_names=["metadata_runs"],
-            owning_feed_friendly_name="metadata_runs",
-            business_key_columns=["model_friendly_name"],
-            tracked_columns=[
-                "model_model_schema", "model_table_type", "model_scd_type",
-                "model_updates_enabled", "model_deletes_enabled",
-            ],
-            scd_type=1,
-            deletes_enabled=False,
-            updates_enabled=True,
-        )
+        # metadata domain (the metadata_runs feed's own fact) -- see
+        # Walkthrough_Metadata_Ingestion.md for the full reproducible setup.
         seed_lakehouse_model(
             cur,
             friendly_name="fct_metadata_runs",
@@ -485,10 +408,8 @@ def main() -> None:
             updates_enabled=True,
         )
 
-        # Migrates police_crimes' previously-hardcoded _SCHEDULE_CRON into
-        # real metadata; fct_daily_financial_activity is the first
-        # model-type schedule (expands into one generated Dagster schedule
-        # per dependent feed -- see scripts/generate_dagster_pipeline.py).
+        # police_crimes' cron schedule; fct_daily_financial_activity is a
+        # model-type schedule (see scripts/generate_dagster_pipeline.py).
         seed_ingestion_trigger(
             cur, trigger_type="schedule", cron="0 6 * * *",
             controlling_object_type="feed", controlling_object_friendly_name="police_crimes",
