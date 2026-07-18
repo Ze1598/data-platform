@@ -44,13 +44,37 @@ A Postgres `jsonb` column or a nested JSON API response has nowhere obvious to m
 
 Pipeline authoring is 100% code — no visual authoring surface for someone who isn't hand-writing Python asset files and dbt models. And `data_processing_runs` (this platform's own run-tracking) already duplicates Dagster's own run-history/observability layer, so Dagster's UI isn't earning much beyond what's already custom-built. Neither gap is closed by the master pipeline rebuild (`Roadmap.md`'s "Master pipeline orchestration") — that solved *sequencing*, not these two. Not scheduled; revisit deliberately if either becomes a real pain point, not reflexively.
 
-### Generalizing streaming source onboarding beyond the first hand-built slice
+### Streaming source discovery still isn't automated for `just start`'s normal path (only for `streaming-testing::test`)
 
-`streaming/` (Roadmap Phase 11) is deliberately a first, bounded slice: one hardcoded Kafka topic, one hardcoded Flink SQL script, one hand-authored serve view — static config, not metadata-driven the way a batch feed is. A second real streaming source would currently mean hand-writing all of that again. Whether this becomes a real metadata-driven onboarding system (a new `source_system`/topic registration path, codegen'd Flink SQL scripts and `FlinkDeployment` CRs the way `generate_dagster_pipeline.py` does for batch jobs) depends on whether a second real stream ever actually shows up — deliberately not built ahead of that need, per the same reasoning that kept every other codegen script in this project metadata-driven only once a second real consumer existed.
+`schema_registry` is deliberately never seeded for a `streaming_source` row, same rule as `data_feed` — "discovery bootstraps it, no hand-written baseline needed." `streaming/testing/` (new, see Progress.md's isolated-streaming-tests entry) now automates this *for testing purposes* — `run.py`'s hand-maintained `_MESSAGE_FIXTURES` dict seeds sample messages and runs real discovery against them for every known source. But that dict is hand-maintained, same "no metadata describes the message shape ahead of discovery" reasoning as everywhere else in this module — a genuinely new streaming source with no fixture entry still needs a human to either write it a real producer or discover it by hand via the Streamlit "Discover schema" action, and `just start`/plain `just smoketest` (without the streaming-testing step) still never bring up a `FlinkDeployment` on their own after a nuke. Worth automating further if this becomes a recurring friction point for real (not test) usage; deliberately not built beyond the test fixture today.
 
 ### Streaming table fold-in to `staging`/`model` — not built
 
 `streaming.sales_events` stays a serve-only real-time view for now (joined directly into `model.sales_dim_branch` via a hand-authored dbt view) — it never flows through `staging`'s hash-gated SCD merge logic the way batch feeds do. Folding it in would mean reintroducing a "run" concept (a periodic micro-batch merge) for something that's supposed to be continuous — a real, harder design problem, deliberately deferred rather than solved as part of the first pass. See `Roadmap.md`'s Phase 11 entry.
+
+### Streamlit: "Trigger a Dagster run" feature — not yet built
+
+There's currently no UI path in the frontend to trigger a Dagster run at all — all triggering today happens via `just orchestration::verify-pipeline`/`verify-schedule`/`verify-sensor` or direct GraphQL/CLI calls, never through Streamlit. A real prerequisite for on-demand Dagster triggering (and for the cooperative wake-up mechanism below) to mean anything.
+
+### Cooperative wake-up mechanism for Dagster from Streamlit
+
+Once the trigger feature above exists: Streamlit's backend explicitly scales `dagster-webserver`/`dagster-code-server` to 1 replica (a real Kubernetes API call from Streamlit's own server-side code), polls for readiness, then submits the trigger — an application-aware "wake the thing I'm about to call" pattern, deliberately chosen to avoid needing KEDA's HTTP Add-on (see below) for this specific case, since Streamlit already knows exactly when it's about to need Dagster.
+
+### Streamlit's own scale-to-zero — blocked on HTTP-triggered-scale-from-zero maturity
+
+Scaling Streamlit itself to zero when idle needs something to wake it the instant a real browser request arrives — the same mechanism a manual Dagster trigger needs, but with no "cooperative" caller to lean on (a human opening a browser can't scale the pod up first). The two real options: KEDA's HTTP Add-on (confirmed live this session: still beta, not v1.0, undocumented WebSocket support — a real risk given Streamlit's live UI depends on WebSocket) or Knative Serving (CNCF Incubating, purpose-built for exactly this, but needs its own networking layer — Istio, Kourier, or Contour — a bigger architectural commitment). Revisit once either matures, not on a fixed timer.
+
+### VPA-based dynamic (non-zero-floor) resourcing for Postgres/Streamlit
+
+The alternative to scale-to-zero for foundational always-on services: never scale replicas to 0, but continuously right-size CPU/memory requests/limits based on real observed usage (Vertical Pod Autoscaler). Confirmed live this session: in-place Pod resource resizing (changing a running container's requests/limits without recreating the pod) is stable exactly as of Kubernetes v1.36, and this cluster already runs v1.36.1 — genuinely viable now, not a someday feature. But **memory resizing still defaults to requiring a container restart** (`resizePolicy: RestartContainer` is memory's default; only CPU resizes in-place by default), and memory is the dimension that's actually constrained this platform. Whether VPA's own controller has been updated to exploit the in-place primitive for memory, or still defaults to evict-and-recreate (a real disruption cost for a stateful Postgres), is unverified — a real spike to run before adopting this, not an assumption either way.
+
+### Metadata-driven KEDA Cron windows, generated from `ingestion_triggers`
+
+The first KEDA `ScaledObject` for `dagster-webserver`/`dagster-code-server` is deliberately hand-written for today's two real schedules (`police_crimes_schedule`, `fct_daily_financial_activity`), matching this project's own established pattern of proving a mechanism by hand before generalizing it. Once proven, generating the Cron trigger windows from `ingestion_triggers` (mirroring `scripts/generate_dagster_pipeline.py`'s own role for the schedules/sensors themselves) means a new schedule row doesn't also need a hand-edited `ScaledObject`.
+
+### Postgres/Trino/Polaris's own demand-following scaling — deferred, higher risk
+
+Postgres is foundational (Polaris's own catalog DB, and everything else's metadata store) and stateful — scaling it based on demand carries real cold-start-latency-for-everything and StatefulSet-scale-to-zero-maturity risk. Trino/Polaris's demand is also not a single clean trigger — it's the union of Dagster's dbt builds *and* any streaming source's serve-view reads. Deliberately not tackled alongside the `orchestration`-scoped first phase; needs its own dedicated design.
 
 ### Roadmap phases not started
 

@@ -57,6 +57,17 @@ spec:
               value: "9000"
             - name: DATA_LAKE_PATH
               value: /data-lake
+          # No requests/limits existed at all before this (confirmed live)
+          # -- this Deployment is now also a KEDA scale-to-zero target (see
+          # ../module.just's `install-keda`/ScaledObject and Learnings.md's
+          # "Kubernetes scaling options compared" entry). Initial estimate,
+          # not measured against real load -- worth tuning from observation.
+          resources:
+            requests:
+              memory: "384Mi"
+              cpu: "200m"
+            limits:
+              memory: "768Mi"
           volumeMounts:
             - name: data-lake
               mountPath: /data-lake

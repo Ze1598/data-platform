@@ -77,6 +77,85 @@ def delete_row(engine: Engine, table: str, id_col: str, id_value) -> None:
         conn.execute(stmt, {"__id": id_value})
 
 
+def write_schema_registry_version(
+    engine: Engine,
+    controlling_object_id: str,
+    controlling_object_type: str,
+    column_definitions: list[dict],
+    primary_key_columns: list[str],
+    created_by: str,
+) -> None:
+    """Writes a new current schema_registry version -- the frontend-side
+    equivalent of orchestration's PostgresMetadataResource.
+    update_schema_registry() (same two-statement transaction: flip the
+    existing is_current row false, then insert the new one, required by
+    uq_schema_registry_current's partial unique index). Used by
+    4_Streaming_Sources.py's "Discover Schema" action -- a streaming_source
+    has no equivalent to sync_schema_registry()'s per-run diff-then-write
+    (discovery here is a deliberate, manual, one-time action, not an
+    automated per-run check), so this always writes a new version rather
+    than first comparing against the current one."""
+    import json
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE schema_registry
+                SET is_current = false, effective_to = now()
+                WHERE controlling_object_id = :controlling_object_id
+                  AND controlling_object_type = :controlling_object_type
+                  AND is_current
+                """
+            ),
+            {"controlling_object_id": controlling_object_id, "controlling_object_type": controlling_object_type},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO schema_registry
+                    (controlling_object_id, controlling_object_type, version, column_definitions, primary_key_columns, is_current, effective_from, created_by)
+                VALUES (
+                    :controlling_object_id,
+                    :controlling_object_type,
+                    coalesce((SELECT max(version) FROM schema_registry
+                              WHERE controlling_object_id = :controlling_object_id
+                                AND controlling_object_type = :controlling_object_type), 0) + 1,
+                    cast(:column_definitions as jsonb),
+                    cast(:primary_key_columns as jsonb),
+                    true,
+                    now(),
+                    :created_by
+                )
+                """
+            ),
+            {
+                "controlling_object_id": controlling_object_id,
+                "controlling_object_type": controlling_object_type,
+                "column_definitions": json.dumps(column_definitions),
+                "primary_key_columns": json.dumps(primary_key_columns),
+                "created_by": created_by,
+            },
+        )
+
+
+def fetch_current_schema(engine: Engine, controlling_object_id: str, controlling_object_type: str) -> list[dict] | None:
+    """The current schema_registry.column_definitions for a
+    controlling_object, or None if discovery hasn't run yet. Frontend-side
+    read counterpart to write_schema_registry_version() above."""
+    df = pd.read_sql(
+        text(
+            "SELECT column_definitions FROM schema_registry "
+            "WHERE controlling_object_id = :id AND controlling_object_type = :type AND is_current"
+        ),
+        engine,
+        params={"id": controlling_object_id, "type": controlling_object_type},
+    )
+    if df.empty:
+        return None
+    return df.iloc[0]["column_definitions"]
+
+
 def safe_str(value) -> str:
     """NaN/None-safe string coercion for prefilling form fields from a DataFrame row."""
     return "" if pd.isna(value) else str(value)

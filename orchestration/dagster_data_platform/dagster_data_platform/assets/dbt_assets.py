@@ -96,6 +96,22 @@ class DataPlatformDbtTranslator(DagsterDbtTranslator):
 # generated view with this, alongside its owning feed tag.
 _SERVING_LAYER_TAG = "tag:serving_layer"
 
+# Every streaming/ serve view (dbt/domains/<schema>/models/serve/streaming/,
+# see generate_streaming_serve_scaffolds.py) carries this blanket tag,
+# regardless of model_schema/streaming_source. Confirmed live: without this
+# exclusion, a plain `sales_modeling_job` run (the ordinary batch
+# transformation step, unrelated to streaming) tried to build
+# serve.sales_events/serve.inventory_events and failed with
+# TrinoUserError TABLE_NOT_FOUND -- those views select from
+# iceberg.streaming.* tables that only exist once Flink has done its first
+# checkpoint, which nothing in the batch pipeline waits for or should have
+# to. Batch and streaming are deliberately independent build graphs now
+# (the only real coupling is streaming serve views joining OUT to
+# already-persisted model-layer tables, which are assumed to already exist
+# -- see Roadmap.md) -- this tag is what keeps master_pipeline's
+# MODELING_JOBS/SERVING_JOBS from ever touching a streaming serve view.
+_STREAMING_TAG = "tag:streaming"
+
 
 def _run_dbt_build_and_log_stages(
     *,
@@ -229,10 +245,16 @@ def _build_transformation_assets_for_domain(domain: str, feeds: list[str], dbt_p
     select=/exclude= no longer need a `tag:<feed>` term to scope down to
     one feed out of a shared manifest -- this domain's manifest ONLY ever
     contains this domain's own models (compile isolation, see Roadmap.md
-    "multi-project dbt split"), so exclude=_SERVING_LAYER_TAG alone is
-    already the full transformation set. Per-feed tags still matter for the
-    cherry-picking done inside _run_dbt_build_and_log_stages, just not for
-    this selector.
+    "multi-project dbt split"), so exclude=_SERVING_LAYER_TAG is already
+    the full transformation set modulo streaming. Per-feed tags still
+    matter for the cherry-picking done inside _run_dbt_build_and_log_stages,
+    just not for this selector.
+
+    Also excludes _STREAMING_TAG -- streaming/ serve views (see its own
+    docstring) are a deliberately separate build graph from batch, not
+    part of MODELING_JOBS/SERVING_JOBS at all; they're built directly via
+    the streaming module's own tooling once their source Iceberg table
+    exists, never through master_pipeline.
 
     One @dbt_assets function per domain, not one for the whole platform,
     same reasoning as before the split: a single function running
@@ -261,7 +283,7 @@ def _build_transformation_assets_for_domain(domain: str, feeds: list[str], dbt_p
     @dbt_assets(
         manifest=dbt_project.manifest_path,
         dagster_dbt_translator=DataPlatformDbtTranslator(group_name=domain_group_name(domain)),
-        exclude=_SERVING_LAYER_TAG,
+        exclude=f"{_SERVING_LAYER_TAG} {_STREAMING_TAG}",
         pool=f"domain:{domain}",
         name=f"dbt_{domain}_transformation_assets",
     )

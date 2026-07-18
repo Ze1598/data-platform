@@ -16,6 +16,7 @@ mod query-engine 'query-engine/module.just'
 mod kafka 'streaming/kafka/module.just'
 mod flink 'streaming/flink/module.just'
 mod producer 'streaming/producer/module.just'
+mod streaming-testing 'streaming/testing/module.just'
 mod streaming 'streaming/module.just'
 mod orchestration 'orchestration/module.just'
 mod processing 'processing/module.just'
@@ -92,16 +93,30 @@ nuke:
     echo "Nuked. Run 'just start' to rebuild from scratch."
 
 # Drop the whole solution, rebuild from zero, and prove it actually works:
-# nuke -> start -> live pipeline verification -> full test suite. This is
-# the project's standing regression-testing methodology (see Learnings.md,
-# "Phase 6 (continued)") as one command instead of a hand-run sequence.
-smoketest:
+# nuke -> start -> live pipeline verification -> full test suite -> isolated
+# streaming tests. This is the project's standing regression-testing
+# methodology (see Learnings.md, "Phase 6 (continued)") as one command
+# instead of a hand-run sequence.
+#
+# skip_streaming="true" skips only the streaming-testing::test step at the
+# end -- everything else (including streaming/'s own harmless no-op
+# `start`, which never deploys a FlinkDeployment without discovery having
+# run first, see Backlog.md) still runs. For work that's genuinely
+# unrelated to streaming and shouldn't be gated on it/its own memory cost.
+smoketest skip_streaming="false":
+    #!/usr/bin/env bash
+    set -euo pipefail
     just nuke
     just start
     just orchestration::verify-pipeline
     just orchestration::verify-schedule
     just orchestration::verify-sensor
     just test
+    if [ "{{skip_streaming}}" = "true" ]; then
+        echo "Skipping streaming tests (skip_streaming=true)."
+    else
+        just streaming-testing::test
+    fi
 
 # Run tests: no arg runs everything; a known module name scopes to that
 # module's unit tests; anything else is treated as a dbt tag (feed code),

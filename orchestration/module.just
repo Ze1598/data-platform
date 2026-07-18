@@ -23,6 +23,7 @@ start:
     just orchestration::generate-serve-views
     just orchestration::generate-deletion-synthesis-views
     just orchestration::generate-model-scaffolds
+    just orchestration::generate-streaming-serve-scaffolds
     just orchestration::generate-ods-models
     just orchestration::build-image
     just orchestration::build-domain-images
@@ -124,6 +125,69 @@ start:
     fi
     echo "Dagster up in-cluster (webserver: localhost:3000, or 'kubectl logs -n orchestration deployment/dagster-webserver' / 'deployment/dagster-daemon' / 'deployment/dagster-code-server')."
 
+    # Applied LAST, deliberately -- after every health check above already
+    # confirmed webserver/daemon/code-server came up healthy at their
+    # normal replicas:1. KEDA will start driving webserver/code-server to 0
+    # outside the configured cron windows shortly after this applies (its
+    # own polling interval, ~30s default) -- fine, since it only happens
+    # once `start` has already proven the deployment healthy, not during
+    # the bring-up sequence itself.
+    just orchestration::install-keda
+    kubectl apply -f k8s/keda-scaledobjects.yaml
+
+# KEDA (core only, no HTTP Add-on -- see Learnings.md's "Kubernetes scaling
+# options compared" for why) -- installed from this module since it's the
+# first (and so far only) consumer, mirrors streaming/flink/module.just's
+# own precedent of installing the Flink Kubernetes Operator from the
+# module that needs it. `helm upgrade --install` is idempotent, so a
+# future second KEDA consumer wouldn't need to reinstall it.
+install-keda:
+    helm repo add kedacore https://kedacore.github.io/charts
+    helm repo update kedacore
+    helm upgrade --install keda kedacore/keda -n keda
+    kubectl rollout status deployment/keda-operator -n keda --timeout=120s
+
+# Cooperative wake -- webserver/code-server may be scaled to 0 by KEDA's
+# Cron scaler outside the configured schedule windows (see
+# k8s/keda-scaledobjects.yaml). Every recipe below that talks to Dagster
+# needs them at replicas:1 first; this is the same "scale up, wait for
+# ready, then proceed" pattern Backlog.md's planned Streamlit trigger
+# feature will eventually need too, applied here to this project's own
+# verification tooling first. Safe to call when already at replicas:1 --
+# the annotate and rollout status calls both no-op quickly.
+#
+# NOT a plain `kubectl scale`: once a ScaledObject targets a Deployment,
+# KEDA installs an HPA that owns that Deployment's replica count and
+# continuously reconciles it back to the trigger's computed value -- 0
+# outside the configured Cron windows. Confirmed live: a manual `kubectl
+# scale --replicas=1` got reverted to 0 by KEDA within ~15s, before the
+# GraphQL client could even connect, surfacing as a bare connection-reset
+# error that looked like a readiness-probe race but wasn't one. The
+# `autoscaling.keda.sh/paused-replicas` annotation is KEDA's own supported
+# override for exactly this: setting it forces the target to that replica
+# count and makes KEDA stop reconciling it until the annotation is
+# removed (see _sleep-orchestration). See Learnings.md.
+_wake-orchestration:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl annotate scaledobject dagster-webserver-scaler dagster-code-server-scaler -n orchestration \
+        autoscaling.keda.sh/paused-replicas=1 --overwrite
+    kubectl rollout status deployment/dagster-webserver -n orchestration --timeout=120s
+    kubectl rollout status deployment/dagster-code-server -n orchestration --timeout=120s
+
+# Hands replica control back to KEDA once ad hoc work is done -- removing
+# the pause annotation resumes normal Cron-trigger reconciliation, which
+# scales back to 0 on its own (respecting cooldownPeriod) since this is
+# called outside the configured windows. Mirrors this project's existing
+# "kill every process/container spun up for a phase's work once it's done"
+# convention (see CLAUDE.md), applied to a KEDA-paused replica count
+# instead of a local process.
+_sleep-orchestration:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl annotate scaledobject dagster-webserver-scaler dagster-code-server-scaler -n orchestration \
+        autoscaling.keda.sh/paused-replicas- --overwrite 2>/dev/null || true
+
 # Tears down every in-cluster Dagster piece start brought up -- mirrors
 # start exactly (same manifest list), same "full teardown" convention as
 # every other k8s-hosted module's kill recipe (see metadata::kill,
@@ -135,6 +199,8 @@ start:
 kill:
     #!/usr/bin/env bash
     set -euo pipefail
+    kubectl delete -f k8s/keda-scaledobjects.yaml --ignore-not-found
+    helm uninstall keda -n keda || true
     kubectl delete -f k8s/daemon-deployment.yaml \
         -f k8s/webserver-service.yaml -f k8s/webserver-deployment.yaml \
         -f k8s/code-server-service.yaml -f k8s/code-server-deployment.yaml \
@@ -295,6 +361,20 @@ generate-model-scaffolds:
     just _ensure-venv-visible
     cd {{justfile_directory()}} && uv run python scripts/generate_model_scaffolds.py
 
+# Scaffold new streaming serve-view .sql/.yml files (Roadmap Phase 11
+# generalization) from streaming_source (scripts/generate_streaming_serve_scaffolds.py)
+# -- same "must exist on disk before dbt parse builds target/manifest.json"
+# reasoning as generate-serve-views above, and same never-overwrite-an-
+# existing-file behavior as generate-model-scaffolds (the streaming analog
+# for the exact same reason -- a hand-filled-in join is real business
+# logic, not something to regenerate over). Also runnable standalone
+# after adding a new streaming_source row.
+generate-streaming-serve-scaffolds:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _ensure-venv-visible
+    cd {{justfile_directory()}} && uv run python scripts/generate_streaming_serve_scaffolds.py
+
 # Regenerate the ODS (Operational Data Store) layer's staging + model-layer
 # .sql files from data_feed.ods_enabled + schema_registry
 # (scripts/generate_ods_models.py) -- same "must exist on disk before dbt
@@ -330,6 +410,8 @@ verify-pipeline:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
+    just orchestration::_wake-orchestration
+    trap 'just orchestration::_sleep-orchestration' EXIT
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
 
@@ -429,6 +511,8 @@ verify-schedule:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
+    just orchestration::_wake-orchestration
+    trap 'just orchestration::_sleep-orchestration' EXIT
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
     cd dagster_data_platform
@@ -473,6 +557,8 @@ verify-sensor:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
+    just orchestration::_wake-orchestration
+    trap 'just orchestration::_sleep-orchestration' EXIT
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
     cd dagster_data_platform

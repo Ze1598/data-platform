@@ -25,6 +25,7 @@ members = [
     "raw-to-clean",
     "scripts",
     "streaming-producer",
+    "streaming-testing",
 ]
 
 [[package]]
@@ -1018,6 +1019,8 @@ name = "frontend"
 version = "0.1.0"
 source = { virtual = "frontend" }
 dependencies = [
+    { name = "confluent-kafka" },
+    { name = "connectors" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy" },
@@ -1031,6 +1034,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "confluent-kafka", specifier = ">=2.5" },
+    { name = "connectors", editable = "processing/connectors" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "sqlalchemy", specifier = ">=2.0" },
@@ -3383,6 +3388,27 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "confluent-kafka", specifier = ">=2.5" }]
+
+[[package]]
+name = "streaming-testing"
+version = "0.1.0"
+source = { virtual = "streaming/testing" }
+dependencies = [
+    { name = "confluent-kafka" },
+    { name = "connectors" },
+    { name = "polars" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "trino" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "confluent-kafka", specifier = ">=2.5" },
+    { name = "connectors", editable = "processing/connectors" },
+    { name = "polars", specifier = ">=1.30" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "trino", specifier = ">=0.330" },
+]
 
 [[package]]
 name = "streamlit"

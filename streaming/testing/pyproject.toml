@@ -1,0 +1,17 @@
+[project]
+name = "streaming-testing"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "confluent-kafka>=2.5",
+    "trino>=0.330",
+    "psycopg[binary]>=3.2",
+    "polars>=1.30",
+    "connectors",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+connectors = { workspace = true }

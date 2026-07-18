@@ -1,0 +1,7 @@
+version: 2
+sources:
+  - name: streaming
+    database: iceberg
+    schema: streaming
+    tables:
+      - name: inventory_events

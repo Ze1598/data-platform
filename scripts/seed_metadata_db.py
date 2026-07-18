@@ -1,5 +1,5 @@
-"""Idempotently seeds source_system/data_feed/schema_registry/lakehouse_models
-rows for this project's feeds. These are business-configuration rows, not
+"""Idempotently seeds source_system/data_feed/schema_registry/lakehouse_models/
+streaming_source rows for this project's feeds. These are business-configuration rows, not
 schema — DDL migrations (metadata/db/init/*.sql) create the tables, this
 populates them.
 
@@ -193,6 +193,31 @@ def seed_ingestion_trigger(
             "controlling_object_type": controlling_object_type,
             "friendly_name": controlling_object_friendly_name,
         },
+    )
+
+
+def seed_streaming_source(
+    cur,
+    *,
+    friendly_name: str,
+    topic_name: str,
+    table_name: str,
+    model_schema: str,
+) -> None:
+    # Roadmap Phase 11 generalization -- streaming_source is a real
+    # metadata row (seeded here, same as data_feed/lakehouse_models rows
+    # above), but its schema_registry entry is never hand-seeded, same
+    # "discovery bootstraps it, no hand-written baseline needed" rule as
+    # a data_feed's schema_registry entry -- see 4_Streaming_Sources.py's
+    # "Discover Schema" action. event_timestamp_column is likewise left
+    # null here, set by hand via the frontend once discovery has run.
+    cur.execute(
+        """
+        INSERT INTO streaming_source (friendly_name, topic_name, table_name, model_schema)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (friendly_name) DO NOTHING
+        """,
+        (friendly_name, topic_name, table_name, model_schema),
     )
 
 
@@ -425,6 +450,34 @@ def main() -> None:
         seed_ingestion_trigger(
             cur, trigger_type="sensor",
             controlling_object_type="feed", controlling_object_friendly_name="financial_transactions",
+        )
+
+        # streaming_source (Roadmap Phase 11 generalization) -- migrates
+        # the original hand-built sales_events stream into the new
+        # metadata-driven onboarding flow (streaming/'s first hand-written
+        # slice, see Progress.md's Phase 11 section). model_schema='sales'
+        # since its serve view joins to sales_dim_branch, seeded above.
+        seed_streaming_source(
+            cur,
+            friendly_name="sales_events",
+            topic_name="sales-events",
+            table_name="sales_events",
+            model_schema="sales",
+        )
+        # Second concurrent source -- deliberately kept seeded, not just a
+        # one-off manual test row, so every nuke-and-rebuild (this
+        # project's own regression-testing methodology) continues to prove
+        # two independent Flink TaskManagers/Iceberg sinks run side by
+        # side, not just one. Its serve view is still a bare
+        # generate_streaming_serve_scaffolds.py TODO scaffold (see
+        # dbt/domains/sales/models/serve/streaming/inventory_events.sql) --
+        # no real dimension to join yet, same as when this was proven live.
+        seed_streaming_source(
+            cur,
+            friendly_name="inventory_events",
+            topic_name="inventory-events",
+            table_name="inventory_events",
+            model_schema="sales",
         )
 
         conn.commit()

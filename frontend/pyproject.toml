@@ -7,6 +7,8 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "pandas>=2.2",
+    "confluent-kafka>=2.5",
+    "connectors",
 ]
 
 [dependency-groups]
@@ -14,6 +16,9 @@ dev = ["pytest>=8.0"]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+connectors = { workspace = true }
 
 [tool.pytest.ini_options]
 # frontend is `package = false` -- metadata_db.py is a loose script file,

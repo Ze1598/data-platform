@@ -86,3 +86,34 @@ kubectl exec -n query-engine deployment/trino-coordinator -- trino --execute \
   "SELECT count(*) FROM iceberg.streaming.sales_events"
 # re-run 30s later, confirm the count increased
 ```
+
+## Isolated streaming tests (`streaming/testing/`)
+
+`just streaming-testing::test` runs the whole cycle below as one command
+(also the last step of `just smoketest`, skippable via `skip_streaming=true`).
+Each stage also runs standalone via `just streaming-testing::<setup|verify-raw|verify-serve>`.
+
+### Watch a test stage's own Job while it runs
+```bash
+kubectl get pods -n streaming -l job-name=streaming-testing-setup -w
+kubectl logs -n streaming job/streaming-testing-setup -f
+```
+
+### Manually check what a test run actually proved
+```bash
+# Dummy model-layer fixture (non-destructive -- see run.py's _MODEL_LAYER_FIXTURES)
+kubectl exec -n query-engine deployment/trino-coordinator -- trino --execute \
+  "SELECT * FROM iceberg.model.sales_dim_branch"
+
+# The join itself resolved (zero nulls means the fixture/real dimension matched)
+kubectl exec -n query-engine deployment/trino-coordinator -- trino --execute \
+  "SELECT count(*) FROM iceberg.serve.sales_events WHERE city IS NULL"
+```
+
+### Re-run just the Job, without going through `just`
+```bash
+kubectl delete job streaming-testing-setup -n streaming --ignore-not-found
+kubectl create job streaming-testing-setup -n streaming \
+  --image=data-platform-streaming-testing:latest -- python run.py setup
+kubectl logs -n streaming job/streaming-testing-setup -f
+```

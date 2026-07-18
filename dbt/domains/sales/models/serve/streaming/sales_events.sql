@@ -1,4 +1,4 @@
-{{ config(schema='serve', materialized='view', tags=['sales', 'streaming']) }}
+{{ config(schema='serve', materialized='view', tags=['streaming', 'streaming_sales', 'streaming_sales_events']) }}
 
 {#
     Real-time sales_events (Kafka -> Flink -> Iceberg, streaming/ module)

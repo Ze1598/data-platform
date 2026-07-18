@@ -22,6 +22,20 @@ spec:
           envFrom:
             - secretRef:
                 name: postgres-credentials
+          # No requests/limits existed at all before this (confirmed live) --
+          # Postgres stays always-on (foundational to everything else, see
+          # Learnings.md's "Kubernetes scaling options compared" entry), but
+          # still needs honest, correctly-sized values rather than being
+          # invisible to the scheduler's capacity accounting. Initial
+          # estimate, not measured against real load -- no metrics-server in
+          # this cluster yet to observe against; worth tuning later the same
+          # way Trino's own sizing was refined empirically, not guessed once.
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data

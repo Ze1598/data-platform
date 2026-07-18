@@ -236,35 +236,42 @@ class PostgresMetadataResource(ConfigurableResource):
             )
 
     def update_schema_registry(
-        self, *, data_feed_id: str, column_definitions: list[dict[str, Any]],
+        self, *, controlling_object_id: str, controlling_object_type: str = "feed",
+        column_definitions: list[dict[str, Any]],
         primary_key_columns: list[str], created_by: str,
     ) -> None:
-        """Writes a new current schema_registry version for a feed --
+        """Writes a new current schema_registry version for a feed or
+        streaming_source (controlling_object_type -- see
+        metadata/DataModel.md, polymorphic like ingestion_triggers) --
         called by connectors.schema_registry_sync.sync_schema_registry()
-        when discovery finds a new column, a changed column type, or a
-        different resolved primary key (see Roadmap.md "Metadata Schema").
-        Both writes happen in one transaction: flip the existing
-        is_current row to false first, then insert the new one --
-        required by uq_schema_registry_current (a partial unique index
-        allowing only one is_current=true row per data_feed_id), so the
-        old row must stop being current before the new one can become
-        current."""
+        for a feed when discovery finds a new column, a changed column
+        type, or a different resolved primary key (see Roadmap.md
+        "Metadata Schema"), or directly from the frontend's "Discover
+        Schema" action for a streaming_source. Both writes happen in one
+        transaction: flip the existing is_current row to false first,
+        then insert the new one -- required by uq_schema_registry_current
+        (a partial unique index allowing only one is_current=true row per
+        (controlling_object_id, controlling_object_type)), so the old row
+        must stop being current before the new one can become current."""
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE schema_registry
                 SET is_current = false,
                     effective_to = now()
-                WHERE data_feed_id = %(data_feed_id)s AND is_current
+                WHERE controlling_object_id = %(controlling_object_id)s
+                  AND controlling_object_type = %(controlling_object_type)s
+                  AND is_current
                 """,
-                {"data_feed_id": data_feed_id},
+                {"controlling_object_id": controlling_object_id, "controlling_object_type": controlling_object_type},
             )
             cur.execute(
                 """
-                INSERT INTO schema_registry (data_feed_id, version, column_definitions, primary_key_columns, is_current, effective_from, created_by)
+                INSERT INTO schema_registry (controlling_object_id, controlling_object_type, version, column_definitions, primary_key_columns, is_current, effective_from, created_by)
                 VALUES (
-                    %(data_feed_id)s,
-                    coalesce((SELECT max(version) FROM schema_registry WHERE data_feed_id = %(data_feed_id)s), 0) + 1,
+                    %(controlling_object_id)s,
+                    %(controlling_object_type)s,
+                    coalesce((SELECT max(version) FROM schema_registry WHERE controlling_object_id = %(controlling_object_id)s AND controlling_object_type = %(controlling_object_type)s), 0) + 1,
                     %(column_definitions)s,
                     %(primary_key_columns)s,
                     true,
@@ -273,7 +280,8 @@ class PostgresMetadataResource(ConfigurableResource):
                 )
                 """,
                 {
-                    "data_feed_id": data_feed_id,
+                    "controlling_object_id": controlling_object_id,
+                    "controlling_object_type": controlling_object_type,
                     "column_definitions": psycopg.types.json.Json(column_definitions),
                     "primary_key_columns": psycopg.types.json.Json(primary_key_columns),
                     "created_by": created_by,
@@ -322,33 +330,42 @@ class PostgresMetadataResource(ConfigurableResource):
             )
             return {model_name: updates_enabled for model_name, updates_enabled in cur.fetchall()}
 
-    def get_current_schema(self, data_feed_id: str) -> list[dict[str, Any]]:
-        """The current schema_registry.column_definitions for a feed —
-        raw_to_clean.validate_schema()'s contract, see Roadmap.md "Metadata
-        Schema"."""
+    def get_current_schema(self, controlling_object_id: str, controlling_object_type: str = "feed") -> list[dict[str, Any]]:
+        """The current schema_registry.column_definitions for a feed (the
+        default) or a streaming_source (controlling_object_type=
+        "streaming_source") -- raw_to_clean.validate_schema()'s contract
+        for a feed, see Roadmap.md "Metadata Schema". controlling_object_type
+        defaults to "feed" so every pre-existing single-positional-arg call
+        site (the overwhelmingly common case) keeps working unchanged."""
         with self._connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(
-                "SELECT column_definitions FROM schema_registry WHERE data_feed_id = %s AND is_current",
-                (data_feed_id,),
+                "SELECT column_definitions FROM schema_registry WHERE controlling_object_id = %s AND controlling_object_type = %s AND is_current",
+                (controlling_object_id, controlling_object_type),
             )
             row = cur.fetchone()
             if row is None:
-                raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
+                raise ValueError(
+                    f"No current schema_registry entry for controlling_object_id={controlling_object_id!r}, "
+                    f"controlling_object_type={controlling_object_type!r}"
+                )
             return row["column_definitions"]
 
-    def get_current_primary_key_columns(self, data_feed_id: str) -> list[str]:
+    def get_current_primary_key_columns(self, controlling_object_id: str, controlling_object_type: str = "feed") -> list[str]:
         """The current schema_registry.primary_key_columns for a feed --
         the ODS layer's (scripts/generate_ods_models.py) only consumer
         today, deciding upsert-by-key vs. insert-only. Mirrors
         get_current_schema()'s shape/error handling exactly."""
         with self._connect() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(
-                "SELECT primary_key_columns FROM schema_registry WHERE data_feed_id = %s AND is_current",
-                (data_feed_id,),
+                "SELECT primary_key_columns FROM schema_registry WHERE controlling_object_id = %s AND controlling_object_type = %s AND is_current",
+                (controlling_object_id, controlling_object_type),
             )
             row = cur.fetchone()
             if row is None:
-                raise ValueError(f"No current schema_registry entry for data_feed_id={data_feed_id!r}")
+                raise ValueError(
+                    f"No current schema_registry entry for controlling_object_id={controlling_object_id!r}, "
+                    f"controlling_object_type={controlling_object_type!r}"
+                )
             return row["primary_key_columns"]
 
     def sync_schema_registry(
@@ -356,7 +373,21 @@ class PostgresMetadataResource(ConfigurableResource):
         metadata_source_pk: list[str], discovered_primary_key_columns: Optional[list[str]],
         created_by: str,
     ) -> SchemaSyncResult:
-        """Establishes/updates a feed's schema_registry contract from a
+        """Feed-specific -- this is the one function in this class that
+        stays batch-only (its primary-key resolution logic below is
+        meaningless for a streaming_source, which has no primary-key
+        concept), so its own signature keeps the feed-specific
+        `data_feed_id` name rather than the generalized
+        `controlling_object_id`/`controlling_object_type` pair
+        get_current_schema()/get_current_primary_key_columns()/
+        update_schema_registry() now take -- internally, this always
+        passes controlling_object_type="feed" to those. A
+        streaming_source's schema (see metadata/DataModel.md,
+        streaming_source) is written directly via update_schema_registry()
+        from the frontend's "Discover Schema" action instead, since there's
+        no equivalent primary-key precedence to resolve there.
+
+        Establishes/updates a feed's schema_registry contract from a
         freshly discovered schema (connector.discover_schema() /
         connectors.infer_column_definitions()) -- the extraction-time
         schema *discovery* step, run once before raw_to_clean.
@@ -394,7 +425,8 @@ class PostgresMetadataResource(ConfigurableResource):
         result = compute_schema_sync(discovered_column_definitions, current_columns, resolved_pk, current_pk)
         if result.changed:
             self.update_schema_registry(
-                data_feed_id=data_feed_id,
+                controlling_object_id=data_feed_id,
+                controlling_object_type="feed",
                 column_definitions=result.column_definitions,
                 primary_key_columns=result.primary_key_columns,
                 created_by=created_by,

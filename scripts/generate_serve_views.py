@@ -124,7 +124,7 @@ def fetch_ods_feeds(cur) -> list[dict]:
                df.friendly_name as owning_feed,
                (jsonb_array_length(sr.primary_key_columns) > 0) as has_primary_key
         from data_feed df
-        join schema_registry sr on sr.data_feed_id = df.id and sr.is_current
+        join schema_registry sr on sr.controlling_object_id = df.id and sr.controlling_object_type = 'feed' and sr.is_current
         where df.ods_enabled = true
           and df.is_active = true
           and df.batch_ods_name is not null

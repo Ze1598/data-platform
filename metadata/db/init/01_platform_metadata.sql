@@ -123,13 +123,78 @@ create table data_feed (
 create index idx_data_feed_source_system on data_feed (source_system_id);
 
 -- ---------------------------------------------------------------------------
--- schema_registry (versioned expected schema of each feed's clean output)
+-- streaming_source (Roadmap Phase 11 generalization, 2026-07-18) -- one row
+-- per real-time Kafka->Flink->Iceberg ingestion pipeline. Deliberately a
+-- new, standalone top-level concept, NOT a data_feed row and NOT FK'd to
+-- source_system -- source_system.connector_kind's vocabulary (postgres/csv/
+-- json_file/rest) is pull-based/batch-shaped and doesn't fit a continuous
+-- push source; data_feed's extraction_type/watermark_column/
+-- last_watermark_value assume a discrete, bounded run, which streaming
+-- isn't. Forcing this into either existing table would repeat the exact
+-- mistake this project already walked back once (Phase 6: "merging
+-- data_model_run into model_feed... would be worse debt than the
+-- duplication it was meant to fix").
+-- ---------------------------------------------------------------------------
+create table streaming_source (
+    id                       uuid primary key default gen_random_uuid(),
+    friendly_name            text not null unique,
+    -- the Kafka topic to consume -- must already exist with real messages
+    -- flowing before schema discovery (the frontend's "Discover Schema"
+    -- action) can run; this platform has exactly one shared Kafka broker
+    -- (kafka.streaming.svc.cluster.local:9092), so bootstrap servers are a
+    -- platform-wide constant, not per-row metadata, same category as
+    -- Trino/Postgres connection info never being per-feed metadata.
+    topic_name               text not null,
+    -- target Iceberg table identifier (streaming.<table_name>) -- one
+    -- complete string, same "<domain>_<name>"-style convention as
+    -- lakehouse_models.table_name, not composed from parts.
+    table_name               text not null unique,
+    -- which dbt domain (dbt/domains/<model_schema>/) the generated serve
+    -- scaffold lands in -- same role as lakehouse_models.model_schema.
+    model_schema             text not null,
+    -- which discovered column (see schema_registry, controlling_object_type
+    -- ='streaming_source') represents event time -- null until schema
+    -- discovery has run and the user has picked one; required before
+    -- generate_streaming_ingestion.py will generate this source's sink SQL
+    -- (the Iceberg sink's INSERT needs a CAST(... AS TIMESTAMP(6)) target).
+    event_timestamp_column   text,
+    -- Optional per-source Flink resource sizing -- null means "use the
+    -- platform default" (see streaming/flink/module.just). Real production
+    -- Kubernetes clusters run multi-node with autoscaling, so a JobManager+
+    -- TaskManager pair per source (Application Mode -- see Learnings.md/
+    -- Roadmap.md for why this, not a shared Session-mode cluster) is
+    -- trivial overhead there; these fields exist so a source with real
+    -- throughput can be sized deliberately rather than only ever getting
+    -- the demo-sized default.
+    jobmanager_memory        text,
+    taskmanager_memory       text,
+    taskmanager_cpu          numeric,
+    parallelism              int,
+    -- the Flink Kubernetes Operator's own built-in autoscaler
+    -- (job.autoscaler.enabled -- adjusts per-job-vertex parallelism from
+    -- observed load). Opt-in only -- flagged experimental in the
+    -- operator's own current docs, same posture as data_feed.
+    -- processing_engine's Polars-default/Spark-opt-in split.
+    autoscaler_enabled       boolean not null default false,
+    is_active                boolean not null default true
+);
+
+-- ---------------------------------------------------------------------------
+-- schema_registry (versioned expected schema of each feed/streaming_source's
+-- data). Polymorphic (controlling_object_id/controlling_object_type), same
+-- pattern as ingestion_triggers below -- generalized 2026-07-18 to also
+-- cover streaming_source (Roadmap Phase 11 generalization) alongside the
+-- original data_feed, one source of truth for "what does this thing's data
+-- look like" across both batch and streaming rather than two parallel
+-- concepts. No FK enforced across the polymorphic pair (same reasoning as
+-- ingestion_triggers -- a single column can't FK to two different tables).
 -- ---------------------------------------------------------------------------
 create table schema_registry (
-    id                   uuid primary key default gen_random_uuid(),
-    data_feed_id         uuid not null references data_feed(id),
-    version              int not null,
-    column_definitions   jsonb not null,
+    id                       uuid primary key default gen_random_uuid(),
+    controlling_object_id    uuid not null,
+    controlling_object_type  text not null check (controlling_object_type in ('feed', 'streaming_source')),
+    version                  int not null,
+    column_definitions       jsonb not null,
     -- resolved primary key for this feed, precedence: data_feed.source_pk
     -- (manual metadata entry) wins if non-empty; else a live-discovered key
     -- (see connectors.postgres.PostgresConnector.discover_primary_key());
@@ -137,19 +202,21 @@ create table schema_registry (
     -- from data_feed.source_pk directly at runtime) so every consumer reads
     -- one resolved source of truth. Currently only consumed by the ODS
     -- layer (scripts/generate_ods_models.py) to decide upsert-by-key vs.
-    -- insert-only.
-    primary_key_columns  jsonb not null default '[]'::jsonb,
-    is_current           boolean not null default true,
-    effective_from       timestamptz not null default now(),
-    effective_to         timestamptz,
-    created_at           timestamptz not null default now(),
-    created_by           text,
-    unique (data_feed_id, version)
+    -- insert-only. Not meaningful for controlling_object_type='streaming_source'
+    -- (a stream has no primary-key concept the way a batch source does) --
+    -- left at its default empty array for streaming rows.
+    primary_key_columns      jsonb not null default '[]'::jsonb,
+    is_current               boolean not null default true,
+    effective_from           timestamptz not null default now(),
+    effective_to             timestamptz,
+    created_at               timestamptz not null default now(),
+    created_by               text,
+    unique (controlling_object_id, controlling_object_type, version)
 );
 
--- only one current schema version per feed
+-- only one current schema version per feed/streaming_source
 create unique index uq_schema_registry_current
-    on schema_registry (data_feed_id)
+    on schema_registry (controlling_object_id, controlling_object_type)
     where is_current;
 
 -- ---------------------------------------------------------------------------

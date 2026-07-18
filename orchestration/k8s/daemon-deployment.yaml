@@ -55,6 +55,18 @@ spec:
               value: postgres.metadata.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
+          # No requests/limits existed at all before this (confirmed live).
+          # Unlike webserver/code-server, the daemon is deliberately NOT a
+          # KEDA scale-to-zero target -- it's what evaluates schedules/
+          # sensors, so if it were asleep, nothing would wake it on a real
+          # trigger (see Learnings.md's "Kubernetes scaling options
+          # compared" entry). Stays always-on; still needs honest sizing.
+          resources:
+            requests:
+              memory: "384Mi"
+              cpu: "200m"
+            limits:
+              memory: "768Mi"
           volumeMounts:
             - name: dagster-home
               mountPath: /dagster_home

@@ -1,0 +1,70 @@
+# KEDA Cron scaler for dagster-webserver + dagster-code-server -- scales
+# both to 0 replicas outside a window around this project's actual
+# configured schedules (police_crimes_schedule 0 6 * * *,
+# fct_daily_financial_activity 0 7 * * *, both from scripts/seed_metadata_db.py),
+# back to 1 inside it. Deliberately hand-written for today's two real
+# schedules, not generated from ingestion_triggers yet -- see Backlog.md
+# ("Metadata-driven KEDA Cron windows") for why that's a deliberate,
+# separate follow-up, matching this project's own pattern of proving a
+# mechanism by hand before generalizing it.
+#
+# dagster-daemon is deliberately NOT a target here -- it's what evaluates
+# schedules/sensors in the first place; scaling it to zero would mean
+# nothing ever wakes it on a real trigger. See Learnings.md, "Kubernetes
+# scaling options compared".
+#
+# Real, stated limitation: with no cooperative-wake mechanism yet (see
+# Backlog.md -- Streamlit has no "trigger a Dagster run" feature at all
+# today), a manual trigger attempted while these are at 0 replicas will
+# fail/hang until the next scheduled window. Not a regression (there's no
+# way to manually trigger from Streamlit today either), but a real
+# boundary of what this covers.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: dagster-webserver-scaler
+  namespace: orchestration
+spec:
+  scaleTargetRef:
+    name: dagster-webserver
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 300
+  triggers:
+    - type: cron
+      metadata:
+        timezone: UTC
+        start: "55 5 * * *"
+        end: "15 6 * * *"
+        desiredReplicas: "1"
+    - type: cron
+      metadata:
+        timezone: UTC
+        start: "55 6 * * *"
+        end: "15 7 * * *"
+        desiredReplicas: "1"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: dagster-code-server-scaler
+  namespace: orchestration
+spec:
+  scaleTargetRef:
+    name: dagster-code-server
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 300
+  triggers:
+    - type: cron
+      metadata:
+        timezone: UTC
+        start: "55 5 * * *"
+        end: "15 6 * * *"
+        desiredReplicas: "1"
+    - type: cron
+      metadata:
+        timezone: UTC
+        start: "55 6 * * *"
+        end: "15 7 * * *"
+        desiredReplicas: "1"

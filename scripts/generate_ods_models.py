@@ -80,7 +80,7 @@ def fetch_ods_candidates(cur) -> list[dict]:
         select df.friendly_name, df.batch_ods_name, df.extraction_type,
                sr.column_definitions, sr.primary_key_columns
         from data_feed df
-        join schema_registry sr on sr.data_feed_id = df.id and sr.is_current
+        join schema_registry sr on sr.controlling_object_id = df.id and sr.controlling_object_type = 'feed' and sr.is_current
         where df.ods_enabled = true
           and df.is_active = true
           and df.batch_ods_name is not null

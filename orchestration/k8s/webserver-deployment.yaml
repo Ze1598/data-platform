@@ -61,6 +61,20 @@ spec:
               value: postgres.metadata.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
+          # No requests/limits existed at all before this (confirmed live)
+          # -- this Deployment is now also a KEDA scale-to-zero target (see
+          # ../module.just's `install-keda`/ScaledObject and Learnings.md's
+          # "Kubernetes scaling options compared" entry), so honest sizing
+          # matters even more than usual: KEDA scales *replica count*, not
+          # per-pod footprint, so an underestimate here still costs real
+          # memory the moment this scales back up. Initial estimate, not
+          # measured against real load -- worth tuning from observation.
+          resources:
+            requests:
+              memory: "384Mi"
+              cpu: "200m"
+            limits:
+              memory: "768Mi"
           volumeMounts:
             - name: dagster-home
               mountPath: /dagster_home

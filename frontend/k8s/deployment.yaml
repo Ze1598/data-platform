@@ -32,6 +32,18 @@ spec:
               value: postgres.metadata.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
+          # No requests/limits existed at all before this (confirmed live) --
+          # frontend stays always-on for now (ad hoc but not business-
+          # critical; see Learnings.md's "Kubernetes scaling options
+          # compared" entry and Backlog.md for why true scale-to-zero is
+          # deferred), but still needs honest, correctly-sized values.
+          # Initial estimate, worth tuning from real observation later.
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
           readinessProbe:
             tcpSocket:
               port: 8501

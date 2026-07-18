@@ -52,32 +52,60 @@ One row per source object/table/endpoint to extract — a database table, an API
 | batch_ods_name | text | nullable — which ODS "domain" (dbt project, see `dbt/domains/`) this feed's ODS table belongs to, playing the same role `lakehouse_models.model_schema` plays for hand-modeled domains. Only meaningful when `ods_enabled=true`. Defaults to this row's own `batch_group_friendly_name` when a feed first enables ODS (a frontend convenience), but is a real, independently-stored, independently-editable value from that point on — multiple `ods_enabled` feeds sharing the same `batch_ods_name` group into one ODS domain project. Allowed to collide with a real `model_schema` value (that domain would just host both hand-modeled and auto-generated ODS tables); not guarded against. A `batch_group` is expected to map to exactly one `batch_ods_name` (1:1) when triggered via `master_pipeline`'s `orchestration_kind='batch_group'` path — not enforced anywhere today, see `Backlog.md` |
 | is_active | boolean | not null, default true |
 
-**Joins/lookups**: `source_system_id` → `source_system.id`. `batch_group` is a bare grouping value (no FK target). `id` is referenced by `schema_registry.data_feed_id`, `lakehouse_models.depends_on_feeds` (comma-separated, not a real FK), `data_processing_runs.data_feed_id`, and `ingestion_triggers.controlling_object_id` (when `controlling_object_type='feed'`).
+**Joins/lookups**: `source_system_id` → `source_system.id`. `batch_group` is a bare grouping value (no FK target). `id` is referenced by `schema_registry.controlling_object_id` (when `controlling_object_type='feed'`), `lakehouse_models.depends_on_feeds` (comma-separated, not a real FK), `data_processing_runs.data_feed_id`, and `ingestion_triggers.controlling_object_id` (when `controlling_object_type='feed'`).
+
+---
+
+## `streaming_source`
+
+One row per real-time Kafka→Flink→Iceberg ingestion pipeline (Roadmap Phase 11 generalization, 2026-07-18). A new, standalone top-level concept — **not** a `data_feed` row and **not** FK'd to `source_system`: `source_system.connector_kind`'s vocabulary (`postgres`/`csv`/`json_file`/`rest`) is pull-based/batch-shaped and doesn't fit a continuous push source, and `data_feed`'s `extraction_type`/`watermark_column`/`last_watermark_value` all assume a discrete, bounded run, which streaming isn't. User-authored via the frontend CRUD (`frontend/pages/4_Streaming_Sources.py`), same as `data_feed`.
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | uuid | PK, default `gen_random_uuid()` |
+| friendly_name | text | not null, unique |
+| topic_name | text | not null — the Kafka topic to consume. Must already exist with real messages flowing before schema discovery (the frontend's "Discover Schema" action) can run — this platform has exactly one shared Kafka broker (`kafka.streaming.svc.cluster.local:9092`), a platform-wide constant, not per-row metadata, same category as Trino/Postgres connection info never being per-feed metadata |
+| table_name | text | not null, unique — target Iceberg table identifier (`streaming.<table_name>`), one complete string, same `<domain>_<name>`-style convention as `lakehouse_models.table_name` |
+| model_schema | text | not null — which dbt domain (`dbt/domains/<model_schema>/`) the generated serve scaffold lands in, same role as `lakehouse_models.model_schema` |
+| event_timestamp_column | text | nullable — which discovered column (see `schema_registry`, `controlling_object_type='streaming_source'`) represents event time. Null until schema discovery has run and the user has picked one; required before `scripts/generate_streaming_ingestion.py` will generate this source's sink SQL (the Iceberg sink's `INSERT` needs a `CAST(... AS TIMESTAMP(6))` target) |
+| jobmanager_memory | text | nullable — e.g. `"1024m"`; null falls back to the platform default |
+| taskmanager_memory | text | nullable, same fallback |
+| taskmanager_cpu | numeric | nullable, same fallback |
+| parallelism | int | nullable, same fallback |
+| autoscaler_enabled | boolean | not null, default false — the Flink Kubernetes Operator's own built-in autoscaler (`job.autoscaler.enabled`, adjusts per-job-vertex parallelism from observed load). Opt-in only — flagged experimental in the operator's own current docs, same posture as `data_feed.processing_engine`'s Polars-default/Spark-opt-in split |
+| is_active | boolean | not null, default true |
+
+**Joins/lookups**: `id` is referenced by `schema_registry.controlling_object_id` (when `controlling_object_type='streaming_source'`).
+
+**Why one `FlinkDeployment` per source, not a shared cluster**: confirmed against Flink's own docs — Application Mode (one dedicated cluster per job) gives "application granularity resource isolation," while Session Mode's shared-cluster cost savings come with an explicit warning that one misbehaving job can bring down every other job sharing its TaskManager. Real production Kubernetes clusters are multi-node with autoscaling, so a JobManager+TaskManager pair per source is trivial overhead there; a local single-node kind cluster's memory ceiling is a dev-environment constraint, not a reason to compromise the architecture (see `Learnings.md`).
 
 ---
 
 ## `schema_registry`
 
-Versioned expected schema of each feed's `clean`-layer output.
+Versioned expected schema of each feed's `clean`-layer output, or a streaming source's event schema. **Polymorphic** (`controlling_object_id`/`controlling_object_type`), same pattern as `ingestion_triggers` below — generalized 2026-07-18 (previously a plain `data_feed_id` FK) to also cover `streaming_source` alongside the original `data_feed`, one source of truth for "what does this thing's data look like" across both batch and streaming rather than two parallel concepts. No FK enforced across the polymorphic pair (a single column can't FK to two different tables, same reasoning as `ingestion_triggers`).
 
 | Column | Type | Constraints |
 |---|---|---|
 | id | uuid | PK, default `gen_random_uuid()` |
-| data_feed_id | uuid | not null, FK → `data_feed(id)` |
+| controlling_object_id | uuid | not null — a `data_feed.id` or a `streaming_source.id`, depending on `controlling_object_type` |
+| controlling_object_type | text | not null, check in `('feed', 'streaming_source')` |
 | version | int | not null |
 | column_definitions | jsonb | not null |
-| primary_key_columns | jsonb | not null, default `[]` — the resolved primary key for this feed, precedence: `data_feed.source_pk` (manual metadata entry) wins if non-empty; else a live-discovered key (Postgres catalog introspection only, see `PostgresConnector.discover_primary_key()`); else empty, meaning no key is known at all. Persisted here (not read from `data_feed.source_pk` directly at runtime) so every consumer reads one resolved source of truth. Currently only consumed by the ODS layer, to decide upsert-by-key vs. insert-only |
+| primary_key_columns | jsonb | not null, default `[]` — the resolved primary key for this feed, precedence: `data_feed.source_pk` (manual metadata entry) wins if non-empty; else a live-discovered key (Postgres catalog introspection only, see `PostgresConnector.discover_primary_key()`); else empty, meaning no key is known at all. Persisted here (not read from `data_feed.source_pk` directly at runtime) so every consumer reads one resolved source of truth. Currently only consumed by the ODS layer, to decide upsert-by-key vs. insert-only. Not meaningful for `controlling_object_type='streaming_source'` (a stream has no primary-key concept the way a batch source does) — left at its default empty array for streaming rows |
 | is_current | boolean | not null, default true |
 | effective_from | timestamptz | not null, default now() |
 | effective_to | timestamptz | nullable |
 | created_at | timestamptz | not null, default now() |
 | created_by | text | nullable |
 
-Constraints: unique `(data_feed_id, version)`; partial unique index on `(data_feed_id) WHERE is_current` — one current version per feed.
+Constraints: unique `(controlling_object_id, controlling_object_type, version)`; partial unique index on `(controlling_object_id, controlling_object_type) WHERE is_current` — one current version per feed/streaming_source.
 
-**Joins/lookups**: `data_feed_id` → `data_feed.id`.
+**Joins/lookups**: `controlling_object_id` → `data_feed.id` (when `controlling_object_type='feed'`) or `streaming_source.id` (when `controlling_object_type='streaming_source'`).
 
-**Ownership**: exclusively the extraction step's concern (`connectors.schema_registry_sync.sync_schema_registry()`, called from each feed's `extraction_<feed>` asset) — discovery and the registry write both complete before `clean_<feed>` ever runs. `clean_<feed>` only ever reads it (`PostgresMetadataResource.get_current_schema()`), never writes it. Never hand-seeded — a from-scratch feed or a from-scratch platform is expected to have zero rows here until that feed's first real extraction run, not an error state to special-case around. (Corrected 2026-07-16 — `scripts/seed_metadata_db.py` used to hand-seed a row per feed, and REST/JSON connector kinds' generated `clean_<feed>` used to perform discovery itself; both fixed, see `Learnings.md`.)
+**Ownership, for a feed (`controlling_object_type='feed'`)**: exclusively the extraction step's concern (`connectors.schema_registry_sync.sync_schema_registry()`, called from each feed's `extraction_<feed>` asset) — discovery and the registry write both complete before `clean_<feed>` ever runs. `clean_<feed>` only ever reads it (`PostgresMetadataResource.get_current_schema()`), never writes it. Never hand-seeded — a from-scratch feed or a from-scratch platform is expected to have zero rows here until that feed's first real extraction run, not an error state to special-case around. (Corrected 2026-07-16 — `scripts/seed_metadata_db.py` used to hand-seed a row per feed, and REST/JSON connector kinds' generated `clean_<feed>` used to perform discovery itself; both fixed, see `Learnings.md`.)
+
+**Ownership, for a streaming source (`controlling_object_type='streaming_source'`)**: a manual, one-time frontend action ("Discover Schema" in `4_Streaming_Sources.py`) — there's no equivalent "first extraction run" to embed discovery in the way batch feeds get it automatically, since a stream has no discrete run at all. Written directly via `PostgresMetadataResource.update_schema_registry()`, not through `sync_schema_registry()` (that function's primary-key-precedence logic is feed-specific and stays that way — see its own docstring).
 
 ---
 

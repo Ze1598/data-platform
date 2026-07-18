@@ -24,7 +24,7 @@ def _current_feeds_with_timestamp_columns(metadata_conn):
         """
         SELECT df.friendly_name, sr.column_definitions
         FROM schema_registry sr
-        JOIN data_feed df ON df.id = sr.data_feed_id
+        JOIN data_feed df ON df.id = sr.controlling_object_id AND sr.controlling_object_type = 'feed'
         WHERE sr.is_current AND df.is_active
         """
     )
