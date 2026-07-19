@@ -11,5 +11,7 @@ st.markdown(
     - **Data Feeds** — individual objects/endpoints to extract from each source system
     - **Lakehouse Models** — fact/dimension configuration for the model layer (SCD type, updates, deletions)
     - **Ingestion Triggers** — how a feed/model's pipeline run actually gets kicked off (a cron schedule, or a sensor watching a feed's landing directory for a new file)
+    - **Streaming Sources** — real-time Kafka → Flink → Iceberg ingestion pipelines (source system/data feed's continuous-stream counterpart)
+    - **Trigger Pipeline** — launch `master_pipeline` on demand, right now, without waiting for its next scheduled window
     """
 )

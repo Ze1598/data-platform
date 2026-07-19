@@ -4,6 +4,10 @@ Things explicitly deferred, not forgotten. Unlike `Roadmap.md` (planned phases) 
 
 ---
 
+### `dagster-webserver`/`dagster-daemon` don't force a rollout restart on `orchestration::start` — only `dagster-code-server` does
+
+Confirmed live (2026-07-19) while fixing the identical bug for `frontend`/`streaming/producer` (see `Learnings.md`): `orchestration/module.just`'s `start` recipe only runs `kubectl rollout restart deployment/dagster-code-server`, not `dagster-webserver`/`dagster-daemon` — both of which run from the exact same rebuilt image. The existing comment's reasoning is specifically about code-server reporting the asset graph's *structure* to the other two, which may genuinely be the only case that matters for correctness (the webserver/daemon might not need their own code reloaded for most changes) — but that's not verified, just the original reasoning as written. Worth confirming deliberately (does a webserver/daemon-only code change ever actually need a restart to take effect, or does everything meaningful route through code-server regardless) before either adding the same restart to both or documenting why it's genuinely unnecessary.
+
 ### Superseded design: single shared dbt project + `tag:<model_schema>` selectors, as a fallback if full domain isolation proves premature
 
 Before landing on genuine per-domain dbt project isolation (separate `dbt_project.yml`/manifest/image per `model_schema` domain — see `Roadmap.md`), a lighter-weight alternative was fully designed and explicitly rejected in favor of real isolation, not because it doesn't work: **one shared dbt project** (today's structure, unchanged), with each domain's `staging`/`model`/`serve` models tagged `tag:<model_schema>` — the exact same mechanism already splitting transformation from serving today — giving independently-triggerable `dbt build` invocations per domain, physical naming-convention differentiation (`<model_schema>_<fct|dim>_<name>`) instead of separate schemas, and Dagster `pool=` to avoid concurrency races between domains. Real, viable, much less infrastructure than full isolation.
@@ -44,21 +48,13 @@ A Postgres `jsonb` column or a nested JSON API response has nowhere obvious to m
 
 Pipeline authoring is 100% code — no visual authoring surface for someone who isn't hand-writing Python asset files and dbt models. And `data_processing_runs` (this platform's own run-tracking) already duplicates Dagster's own run-history/observability layer, so Dagster's UI isn't earning much beyond what's already custom-built. Neither gap is closed by the master pipeline rebuild (`Roadmap.md`'s "Master pipeline orchestration") — that solved *sequencing*, not these two. Not scheduled; revisit deliberately if either becomes a real pain point, not reflexively.
 
-### Walkthrough doc: onboarding a new streaming source — not written
-
-No walkthrough exists yet for the real, hands-on sequence of onboarding a new streaming source, unlike batch feeds (`Walkthrough_Metadata_Ingestion.md`). `streaming/testing/run.py`'s hand-maintained `_MESSAGE_FIXTURES`/discovery automation exists purely to test the platform, not to replace this step for a real user — a genuinely new source still needs a human to do the real onboarding by hand, and there's no document showing what that looks like. Needed: `Walkthrough_New_Streaming_Source.md`, one worked example (a single streaming object is enough) covering the actual user-facing sequence — create the `streaming_source` row via the frontend, get real messages flowing onto its Kafka topic, run "Discover schema," pick `event_timestamp_column`, then write the hand-authored serve-view join against an existing model-layer table (`scripts/generate_streaming_serve_scaffolds.py`'s scaffold is the starting point; the join itself is the user's business logic).
-
 ### Flink's built-in autoscaler (`autoscaler_enabled`) is wired but never exercised
 
 `streaming_source.autoscaler_enabled` and its `job.autoscaler.enabled` line in the generated `FlinkDeployment` (`scripts/generate_streaming_ingestion.py`) exist end-to-end, but nobody has actually turned it on and watched it behave — it's flagged experimental in the Flink Kubernetes Operator's own current docs, same opt-in posture as `data_feed.processing_engine`'s Spark option. Untested, not scheduled.
 
-### Streamlit: "Trigger a Dagster run" feature — not yet built
-
-There's currently no UI path in the frontend to trigger a Dagster run at all — all triggering today happens via `just orchestration::verify-pipeline`/`verify-schedule`/`verify-sensor` or direct GraphQL/CLI calls, never through Streamlit. A real prerequisite for on-demand Dagster triggering (and for the cooperative wake-up mechanism below) to mean anything.
-
 ### Cooperative wake-up mechanism for Dagster from Streamlit
 
-Once the trigger feature above exists: Streamlit's backend explicitly scales `dagster-webserver`/`dagster-code-server` to 1 replica (a real Kubernetes API call from Streamlit's own server-side code), polls for readiness, then submits the trigger — an application-aware "wake the thing I'm about to call" pattern, deliberately chosen to avoid needing KEDA's HTTP Add-on (see below) for this specific case, since Streamlit already knows exactly when it's about to need Dagster.
+`frontend/pages/5_Trigger_Pipeline.py` (built 2026-07-19) submits `master_pipeline` directly through Dagster's GraphQL API, but does **not** wake `orchestration` first if KEDA has scaled it to zero — it fails with a clear, explained error (not a raw stack trace) telling the user to wake it manually (`just orchestration::_wake-orchestration`) or wait for its next scheduled window, confirmed live against both the awake and scaled-to-zero cases. The real fix: Streamlit's backend explicitly scales `dagster-webserver`/`dagster-code-server` to 1 replica (a real Kubernetes API call from Streamlit's own server-side code — needs new RBAC for the frontend's service account), polls for readiness, then submits — an application-aware "wake the thing I'm about to call" pattern, deliberately chosen to avoid needing KEDA's HTTP Add-on (see below) for this specific case, since Streamlit already knows exactly when it's about to need Dagster.
 
 ### Streamlit's own scale-to-zero — blocked on HTTP-triggered-scale-from-zero maturity
 

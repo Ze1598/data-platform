@@ -9,6 +9,7 @@ dependencies = [
     "pandas>=2.2",
     "confluent-kafka>=2.5",
     "connectors",
+    "requests>=2.32",
 ]
 
 [dependency-groups]

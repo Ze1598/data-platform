@@ -1023,6 +1023,7 @@ dependencies = [
     { name = "connectors" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "requests" },
     { name = "sqlalchemy" },
     { name = "streamlit" },
 ]
@@ -1038,6 +1039,7 @@ requires-dist = [
     { name = "connectors", editable = "processing/connectors" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "requests", specifier = ">=2.32" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "streamlit", specifier = ">=1.40" },
 ]

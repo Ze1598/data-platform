@@ -16,6 +16,19 @@ start:
     kubectl apply -f k8s/postgres-credentials-secret.yaml
     kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml
 
+    # A rebuilt image reloaded into kind (kind load docker-image, above)
+    # does NOT itself restart an already-running Deployment pod -- the
+    # Deployment spec's `image: ...:latest` didn't change, so `kubectl
+    # apply` sees no diff and Kubernetes has no reason to recreate the pod.
+    # Confirmed live to matter concretely, not just in theory: a real page
+    # bug fix sat rebuilt-and-loaded-but-unserved for a full session,
+    # `kubectl exec`-ing into the "redeployed" pod showed the OLD file
+    # content still running. Same root cause and same fix as
+    # orchestration/module.just's own `dagster-code-server` restart -- see
+    # that recipe's comment for the fuller explanation. Force it every
+    # `start`, not just when a change is suspected.
+    kubectl rollout restart deployment/frontend -n frontend
+
     echo "Waiting for frontend to roll out..."
     kubectl rollout status deployment/frontend -n frontend --timeout=120s
 

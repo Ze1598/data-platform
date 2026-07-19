@@ -12,6 +12,11 @@ start:
     docker build -f Dockerfile --provenance=false -t data-platform-streaming-producer:latest {{justfile_directory()}}
     kind load docker-image data-platform-streaming-producer:latest --name data-platform
     kubectl apply -f k8s/deployment.yaml
+    # Same staleness bug as frontend/module.just and orchestration/module.just's
+    # dagster-code-server -- a rebuilt :latest image reloaded into kind
+    # does NOT itself restart an already-running Deployment pod, since the
+    # Deployment spec never changes. Force it every `start`.
+    kubectl rollout restart deployment/sales-events-producer -n streaming
     kubectl rollout status deployment/sales-events-producer -n streaming --timeout=60s
 
 kill:
