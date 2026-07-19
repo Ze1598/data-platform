@@ -10,6 +10,8 @@ Commands for running and verifying the Streamlit CRUD app. See [../metadata/Debu
 
 ### Rebuild + reload after a code change, and check pod health
 **Scenario**: same "kind doesn't pull from a registry" reasoning as every other module's image — a code change needs an explicit rebuild+reload before the running pod sees it, and (unlike `orchestration`'s code-server) the frontend Deployment DOES need a rollout restart too, for the same reason: the image tag itself (`data-platform-frontend:latest`) doesn't change, so `kubectl apply` sees no spec diff and won't recreate the pod on its own.
+
+**Update 2026-07-19**: this was documented here but `frontend/module.just`'s `start` recipe never actually included the `kubectl rollout restart` step until now — confirmed live, a real page fix sat rebuilt-and-loaded-but-unserved for a full session, `kubectl exec`-ing into the "redeployed" pod showed old file content still running. `just frontend::start` now genuinely does what this section always said it did (see `Learnings.md`, "`kubectl apply` on an unchanged Deployment spec never restarts a `:latest`-tagged pod").
 ```bash
 just frontend::start   # rebuilds, reloads, applies manifests, and waits for rollout in one step
 # or, if iterating without a full start:

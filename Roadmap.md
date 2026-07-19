@@ -163,19 +163,22 @@ data-platform/
   processing/
     connectors/                    # uv workspace member -- generic, reusable extraction connector framework (Postgres/CSV/JSON-file/REST base classes + schema discovery)
     raw_to_clean/                  # uv workspace member -- generic raw->clean validation logic (schema coercion against schema_registry)
-  frontend/                        # module: Streamlit CRUD
-    app.py, pages/ (source systems, data feeds, lakehouse models), metadata_db.py
+  frontend/                        # module: Streamlit CRUD + on-demand pipeline trigger
+    app.py, metadata_db.py, pages/ (source systems, data feeds, lakehouse models, ingestion triggers,
+      streaming sources, trigger pipeline -- the last one submits master_pipeline directly through
+      Dagster's GraphQL API, see Progress.md's "Streamlit 'Trigger a Dagster run' feature" entry)
+    tests/                         # test_metadata_db.py, test_trigger_pipeline_page.py (streamlit.testing.v1.AppTest -- runs a page's real script headlessly, see Learnings.md)
     Dockerfile                     # uv workspace member (package = false; scoped `uv sync --package frontend`)
-    k8s/                           # Deployment, Service, postgres-credentials Secret (namespace: frontend)
+    k8s/                           # Deployment, Service, postgres-credentials Secret, DAGSTER_WEBSERVER_HOST/PORT (namespace: frontend)
   domain_naming/                   # uv workspace member -- the single canonical slugify_domain() implementation
   scripts/                         # uv workspace member -- build-time codegen (generate_dagster_pipeline.py, generate_domain_projects.py, generate_serve_views.py, generate_model_scaffolds.py, generate_ods_models.py, generate_sources.py, generate_deletion_synthesis_views.py) + seed_metadata_db.py + bootstrap_kind.sh
   data-lake/                       # host-mounted into kind: raw/ (durable per-run parquet snapshots) and landing/ (file-drop sources only, e.g. financial_transactions/police_crimes) actively used; clean/staging/model/iceberg-warehouse/archive/ vestigial or MinIO-backed (Iceberg tables live in MinIO's `lakehouse` bucket, not on this mount)
   tests/integration/               # cross-module integration tests (as opposed to each module's own unit tests)
 ```
 
-## Current priority (as of 2026-07-18)
+## Current priority (as of 2026-07-19)
 
-Phases 1–10, 13, 14, and 15 are all done (see `Progress.md`), and **Phase 11 (streaming) is now built, including its generalization** — metadata-driven onboarding (`streaming_source` table, polymorphic `schema_registry`, codegen for both ingestion and serve scaffolds) the same way a batch feed gets, with two independent streaming sources (`sales_events`, `inventory_events`) proven running concurrently; see `Progress.md`'s "Phase 11 (continued)" section for the full build record. **Phase 12 remains deliberately deprioritized** — explicit decision to prioritize platform solidity over adding new capability surface area (data viz). Nothing has a "next" designation right now — see `Backlog.md` for genuinely open, unscheduled items to pull from.
+Phases 1–10, 13, 14, and 15 are all done (see `Progress.md`), and **Phase 11 (streaming) is now built, including its generalization** — metadata-driven onboarding (`streaming_source` table, polymorphic `schema_registry`, codegen for both ingestion and serve scaffolds) the same way a batch feed gets, with two independent streaming sources (`sales_events`, `inventory_events`) proven running concurrently, an isolated streaming test suite wired into `just smoketest`, a full onboarding walkthrough (`Walkthrough_New_Streaming_Source.md`), and a Streamlit page to trigger `master_pipeline` on demand; see `Progress.md`'s "Phase 11 (continued)" sections (parts 1–4) for the full build record. **Phase 12 remains deliberately deprioritized** — explicit decision to prioritize platform solidity over adding new capability surface area (data viz). Nothing has a "next" designation right now — see `Backlog.md` for genuinely open, unscheduled items to pull from.
 
 ## Phased Build Order (each phase independently runnable/testable)
 
