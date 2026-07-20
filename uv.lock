@@ -679,6 +679,7 @@ dependencies = [
     { name = "dbt-core" },
     { name = "dbt-trino" },
     { name = "domain-naming" },
+    { name = "kubernetes" },
     { name = "numpy" },
     { name = "psycopg", extra = ["binary"] },
     { name = "raw-to-clean" },
@@ -703,6 +704,7 @@ requires-dist = [
     { name = "dbt-core", specifier = ">=1.9" },
     { name = "dbt-trino", specifier = ">=1.9" },
     { name = "domain-naming", editable = "domain_naming" },
+    { name = "kubernetes", specifier = ">=32,<37" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "raw-to-clean", editable = "processing/raw_to_clean" },
@@ -1021,6 +1023,7 @@ source = { virtual = "frontend" }
 dependencies = [
     { name = "confluent-kafka" },
     { name = "connectors" },
+    { name = "kubernetes" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
     { name = "requests" },
@@ -1037,6 +1040,7 @@ dev = [
 requires-dist = [
     { name = "confluent-kafka", specifier = ">=2.5" },
     { name = "connectors", editable = "processing/connectors" },
+    { name = "kubernetes", specifier = ">=32,<37" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "requests", specifier = ">=2.32" },

@@ -2,6 +2,7 @@ import os
 
 import requests
 import streamlit as st
+from dagster_wake import WakeError, wake_orchestration
 from metadata_db import fetch_table, get_engine
 
 st.set_page_config(page_title="Trigger Pipeline", page_icon="▶️", layout="wide")
@@ -133,18 +134,39 @@ else:
     orchestration_value = st.selectbox("Orchestration value", values, help=help_text)
 
     if st.button("Trigger run", type="primary"):
+        # Cooperative wake -- orchestration may currently be scaled to 0 by
+        # KEDA outside a configured schedule window
+        # (orchestration/k8s/keda-scaledobjects.yaml). Always wake first,
+        # unconditionally: cheap/idempotent when already awake (both calls
+        # inside wake_orchestration() no-op quickly), and avoids a
+        # try-then-wake-then-retry round trip. Deliberately never sleeps
+        # from here -- see dagster_wake.py's module docstring for why
+        # (master_pipeline's own run pod needs the webserver reachable for
+        # its whole duration, not just at submission); a Dagster run-status
+        # sensor (wake_sleep_sensor.py) owns unpausing once it's safe.
+        with st.spinner("Waking Dagster orchestration (may be scaled to zero)..."):
+            try:
+                wake_orchestration()
+            except WakeError as e:
+                st.error(f"Timed out waiting for orchestration to become ready: {e}")
+                st.stop()
+            except Exception as e:
+                st.error(f"Could not wake orchestration (RBAC denied, or Kubernetes API unreachable): {e}")
+                st.stop()
+
         with st.spinner(f"Submitting master_pipeline (orchestration_kind={orchestration_kind}, orchestration_value={orchestration_value})..."):
             try:
                 run_id = trigger_master_pipeline(orchestration_kind, orchestration_value)
                 st.success(f"Run submitted: `{run_id}`")
                 st.caption(f"Dagit: http://localhost:3000/runs/{run_id}")
+                st.caption(
+                    "Orchestration stays awake until this run reaches a terminal status, then scales "
+                    "back to zero automatically (dagster-daemon's own sensor)."
+                )
             except requests.exceptions.ConnectionError:
                 st.error(
-                    f"Could not reach the Dagster webserver at `{GRAPHQL_URL}`. It may currently be "
-                    "scaled to zero (KEDA -- see Learnings.md, 'Kubernetes scaling options compared'). "
-                    "There is no cooperative wake-up from this page yet (Backlog.md) -- wake it manually "
-                    "(`just orchestration::_wake-orchestration`) or wait for its next scheduled window, "
-                    "then try again."
+                    f"Could not reach the Dagster webserver at `{GRAPHQL_URL}` even after waking "
+                    "orchestration -- check `kubectl logs -n orchestration deployment/dagster-webserver`."
                 )
             except (requests.exceptions.RequestException, TriggerError) as e:
                 st.error(f"Trigger failed: {e}")

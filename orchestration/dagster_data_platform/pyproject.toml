@@ -18,6 +18,7 @@ dependencies = [
     "domain-naming",
     "requests>=2.32",
     "numpy>=1.26",
+    "kubernetes>=32,<37",
 ]
 
 [tool.uv.sources]

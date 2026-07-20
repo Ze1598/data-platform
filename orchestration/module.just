@@ -46,7 +46,7 @@ start:
         --from-file=workspace.yaml=dagster_home/workspace.yaml \
         -n orchestration --dry-run=client -o yaml | kubectl apply -f -
 
-    kubectl apply -f k8s/postgres-credentials-secret.yaml -f k8s/rbac.yaml
+    kubectl apply -f k8s/postgres-credentials-secret.yaml -f k8s/rbac.yaml -f k8s/rbac-frontend-wake.yaml
     kubectl apply -f k8s/code-server-deployment.yaml -f k8s/code-server-service.yaml
     kubectl apply -f k8s/webserver-deployment.yaml -f k8s/webserver-service.yaml
     kubectl apply -f k8s/daemon-deployment.yaml
@@ -170,8 +170,21 @@ install-keda:
 _wake-orchestration:
     #!/usr/bin/env bash
     set -euo pipefail
+    # data-platform.internal/last-woken-at stamped alongside the pause
+    # annotation -- wake_sleep_sensor.py's grace period keys off this to
+    # stop a stale sleep-sensor tick (e.g. an OLDER master_pipeline run's
+    # terminal-status event, or the gap between this recipe's own
+    # sequential master_pipeline invocations in verify-pipeline) from
+    # unpausing before whichever new run this wake is for actually exists
+    # in Dagster's run storage. Found live, 2026-07-20: without this,
+    # verify-pipeline itself hit the identical race
+    # frontend/dagster_wake.py was originally fixed for -- webserver
+    # killed mid-poll, right as verify-pipeline moved from one
+    # master_pipeline invocation to the next. Every wake path needs this
+    # stamp, not just Streamlit's -- see wake_sleep_sensor.py.
+    woken_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     kubectl annotate scaledobject dagster-webserver-scaler dagster-code-server-scaler -n orchestration \
-        autoscaling.keda.sh/paused-replicas=1 --overwrite
+        autoscaling.keda.sh/paused-replicas=1 "data-platform.internal/last-woken-at=${woken_at}" --overwrite
     kubectl rollout status deployment/dagster-webserver -n orchestration --timeout=120s
     kubectl rollout status deployment/dagster-code-server -n orchestration --timeout=120s
 
@@ -204,7 +217,7 @@ kill:
     kubectl delete -f k8s/daemon-deployment.yaml \
         -f k8s/webserver-service.yaml -f k8s/webserver-deployment.yaml \
         -f k8s/code-server-service.yaml -f k8s/code-server-deployment.yaml \
-        -f k8s/rbac.yaml -f k8s/postgres-credentials-secret.yaml \
+        -f k8s/rbac.yaml -f k8s/rbac-frontend-wake.yaml -f k8s/postgres-credentials-secret.yaml \
         --ignore-not-found
     kubectl delete configmap dagster-instance dagster-instance-incluster -n orchestration --ignore-not-found
 

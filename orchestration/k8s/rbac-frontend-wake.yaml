@@ -1,0 +1,49 @@
+# Grants the frontend Deployment's ServiceAccount (namespace: frontend,
+# see frontend/k8s/serviceaccount.yaml) permission to cooperatively wake
+# dagster-webserver/dagster-code-server off a KEDA scale-to-zero state
+# before Streamlit submits a run (Backlog.md "Cooperative wake-up
+# mechanism for Dagster from Streamlit"). A RoleBinding's subject can live
+# in a different namespace than the Role/RoleBinding themselves -- this
+# Role must live here (orchestration), since RBAC authorizes against the
+# namespace being acted upon, not the caller's own namespace.
+#
+# resourceNames-scoped to exactly the two ScaledObjects/Deployments this
+# needs, tighter than the sibling `dagster-run-launcher` Role in rbac.yaml
+# (which doesn't use resourceNames) -- deliberate, since this grants a
+# different, lower-trust namespace's ServiceAccount access, not
+# orchestration's own workloads acting on themselves.
+#
+# No `patch` on deployments: only the ScaledObject's
+# `autoscaling.keda.sh/paused-replicas` annotation actually controls
+# replica count once KEDA's HPA owns a Deployment (a direct Deployment
+# patch gets silently reverted within ~15s -- see
+# orchestration/module.just's _wake-orchestration comment) -- frontend
+# only needs `get` on deployments to poll readiness.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frontend-wake-orchestration
+  namespace: orchestration
+rules:
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    resourceNames: ["dagster-webserver-scaler", "dagster-code-server-scaler"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["dagster-webserver", "dagster-code-server"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frontend-wake-orchestration
+  namespace: orchestration
+subjects:
+  - kind: ServiceAccount
+    name: frontend
+    namespace: frontend
+roleRef:
+  kind: Role
+  name: frontend-wake-orchestration
+  apiGroup: rbac.authorization.k8s.io

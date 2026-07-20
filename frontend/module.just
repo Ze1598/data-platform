@@ -13,7 +13,7 @@ start:
     docker build -f Dockerfile -t data-platform-frontend:latest {{justfile_directory()}}
     kind load docker-image data-platform-frontend:latest --name data-platform
 
-    kubectl apply -f k8s/postgres-credentials-secret.yaml
+    kubectl apply -f k8s/postgres-credentials-secret.yaml -f k8s/serviceaccount.yaml
     kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml
 
     # A rebuilt image reloaded into kind (kind load docker-image, above)
@@ -37,7 +37,7 @@ start:
     echo "frontend up (logs: kubectl logs -n frontend deployment/frontend)"
 
 kill:
-    kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/postgres-credentials-secret.yaml --ignore-not-found
+    kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/postgres-credentials-secret.yaml -f k8s/serviceaccount.yaml --ignore-not-found
 
 # Tests against the live Postgres (not mocks) -- needs the cluster up.
 test:

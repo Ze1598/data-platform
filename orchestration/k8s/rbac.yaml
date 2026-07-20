@@ -31,6 +31,17 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  # For wake_sleep_sensor.py -- removes the KEDA pause annotation once
+  # master_pipeline reaches a terminal status and no other master_pipeline
+  # run is still in flight (Backlog.md "Cooperative wake-up mechanism for
+  # Dagster from Streamlit"). Same two ScaledObjects the frontend-side
+  # Role in rbac-frontend-wake.yaml can `patch` to pause; this is the
+  # daemon's own matching grant to unpause, since it already runs as this
+  # namespace's `default` ServiceAccount.
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    resourceNames: ["dagster-webserver-scaler", "dagster-code-server-scaler"]
+    verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -10,6 +10,7 @@ dependencies = [
     "confluent-kafka>=2.5",
     "connectors",
     "requests>=2.32",
+    "kubernetes>=32,<37",
 ]
 
 [dependency-groups]
