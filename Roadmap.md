@@ -152,14 +152,15 @@ data-platform/
       dagster_launch.py            # shared launch-and-wait helper (submit via GraphQL, poll to terminal status, raise on failure)
       raw_storage.py               # durable raw-parquet read/write helpers (the raw->clean storage handoff)
       pipeline_steps.py             # the extraction/transformation/serving vocabulary
+      wake_sleep_sensor.py         # daemon-side sleep half of the cooperative wake-up mechanism (see frontend/dagster_wake.py) -- run-status sensors that remove the KEDA pause annotation once master_pipeline is terminal and no other invocation is in flight, gated by a wake-timestamp grace period (see Learnings.md, "A KEDA-paused wake needs a matching guard on the automatic sleep")
       trigger_master_pipeline.py, trigger_schedule_run.py, verify_sensor_trigger.py   # host-side scripts backing the verify-pipeline/verify-schedule/verify-sensor recipes
       assets/                      # hand-written extraction_customers/extraction_sales/financial_assets.py (sensor), dbt_assets.py (domain-scoped @dbt_assets factories)
       connectors/                  # per-feed bespoke connector subclasses (e.g. REST pagination/flattening) -- distinct from processing/connectors/'s generic base classes
       resources/                   # postgres_metadata_resource.py, iceberg_resource.py
-      tests/                       # test_schedules.py, test_sensors.py, test_pipeline_steps.py, etc.
+      tests/                       # test_schedules.py, test_sensors.py, test_pipeline_steps.py, test_wake_sleep_sensor.py, etc.
     dagster_home/                  # dagster.yaml (local/run-pod config) + dagster-incluster.yaml (webserver/daemon config, load_incluster_config: true) + workspace.yaml (points at dagster-code-server)
     Dockerfile                     # uv-based; optional DOMAIN build arg selects a narrower per-domain image
-    k8s/                           # dagster-webserver/dagster-daemon/dagster-code-server Deployments+Services, RBAC, postgres-credentials Secret, keda-scaledobjects.yaml (webserver+code-server scale-to-zero, daemon excluded -- see Learnings.md's "Kubernetes scaling options compared") (namespace: orchestration)
+    k8s/                           # dagster-webserver/dagster-daemon/dagster-code-server Deployments+Services, RBAC (dagster-run-launcher role, extended with a keda.sh/scaledobjects grant for wake_sleep_sensor.py's own unpause; rbac-frontend-wake.yaml separately grants frontend's ServiceAccount cross-namespace pause/poll rights), postgres-credentials Secret, keda-scaledobjects.yaml (webserver+code-server scale-to-zero, daemon excluded -- see Learnings.md's "Kubernetes scaling options compared") (namespace: orchestration)
   processing/
     connectors/                    # uv workspace member -- generic, reusable extraction connector framework (Postgres/CSV/JSON-file/REST base classes + schema discovery)
     raw_to_clean/                  # uv workspace member -- generic raw->clean validation logic (schema coercion against schema_registry)
@@ -167,9 +168,10 @@ data-platform/
     app.py, metadata_db.py, pages/ (source systems, data feeds, lakehouse models, ingestion triggers,
       streaming sources, trigger pipeline -- the last one submits master_pipeline directly through
       Dagster's GraphQL API, see Progress.md's "Streamlit 'Trigger a Dagster run' feature" entry)
-    tests/                         # test_metadata_db.py, test_trigger_pipeline_page.py (streamlit.testing.v1.AppTest -- runs a page's real script headlessly, see Learnings.md)
+    dagster_wake.py                # cooperative wake-up: wakes orchestration off a KEDA scale-to-zero state via the Kubernetes API before pages/5_Trigger_Pipeline.py submits a run -- never sleeps itself, see wake_sleep_sensor.py above and Learnings.md
+    tests/                         # test_metadata_db.py, test_trigger_pipeline_page.py (streamlit.testing.v1.AppTest -- runs a page's real script headlessly, see Learnings.md), test_dagster_wake.py
     Dockerfile                     # uv workspace member (package = false; scoped `uv sync --package frontend`)
-    k8s/                           # Deployment, Service, postgres-credentials Secret, DAGSTER_WEBSERVER_HOST/PORT (namespace: frontend)
+    k8s/                           # Deployment (serviceAccountName: frontend), Service, ServiceAccount, postgres-credentials Secret, DAGSTER_WEBSERVER_HOST/PORT (namespace: frontend)
   domain_naming/                   # uv workspace member -- the single canonical slugify_domain() implementation
   scripts/                         # uv workspace member -- build-time codegen (generate_dagster_pipeline.py, generate_domain_projects.py, generate_serve_views.py, generate_model_scaffolds.py, generate_ods_models.py, generate_sources.py, generate_deletion_synthesis_views.py) + seed_metadata_db.py + bootstrap_kind.sh
   data-lake/                       # host-mounted into kind: raw/ (durable per-run parquet snapshots) and landing/ (file-drop sources only, e.g. financial_transactions/police_crimes) actively used; clean/staging/model/iceberg-warehouse/archive/ vestigial or MinIO-backed (Iceberg tables live in MinIO's `lakehouse` bucket, not on this mount)
