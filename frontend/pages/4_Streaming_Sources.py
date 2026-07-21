@@ -123,6 +123,12 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "own current docs -- opt-in only.",
         key=f"{key_prefix}_autoscaler_enabled",
     )
+    schema_discovery_enabled = st.checkbox(
+        "Schema discovery enabled", value=defaults["schema_discovery_enabled"],
+        help="When off, the 'Discover schema' action and the streaming smoketest harness both refuse to "
+        "run discovery for this source -- turn off once its schema is deemed stable.",
+        key=f"{key_prefix}_schema_discovery_enabled",
+    )
     is_active = st.checkbox("Active", value=defaults["is_active"], key=f"{key_prefix}_is_active")
     submitted = st.button(submit_label, key=f"{key_prefix}_submit")
     return submitted, {
@@ -136,6 +142,7 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "taskmanager_cpu": taskmanager_cpu,
         "parallelism": parallelism,
         "autoscaler_enabled": autoscaler_enabled,
+        "schema_discovery_enabled": schema_discovery_enabled,
         "is_active": is_active,
     }
 
@@ -184,6 +191,7 @@ def build_values(form_values: dict) -> dict | None:
         "taskmanager_cpu": taskmanager_cpu,
         "parallelism": parallelism,
         "autoscaler_enabled": form_values["autoscaler_enabled"],
+        "schema_discovery_enabled": form_values["schema_discovery_enabled"],
         "is_active": form_values["is_active"],
     }
 
@@ -208,6 +216,7 @@ if mode == "Add new":
             "taskmanager_cpu": "",
             "parallelism": "",
             "autoscaler_enabled": False,
+            "schema_discovery_enabled": True,
             "is_active": True,
         },
         "Create",
@@ -249,6 +258,7 @@ elif mode == "Edit existing":
                 "taskmanager_cpu": safe_str(row["taskmanager_cpu"]),
                 "parallelism": safe_str(row["parallelism"]),
                 "autoscaler_enabled": bool(row["autoscaler_enabled"]),
+                "schema_discovery_enabled": bool(row["schema_discovery_enabled"]),
                 "is_active": bool(row["is_active"]),
             },
             "Save changes",
@@ -281,63 +291,69 @@ elif mode == "Discover schema":
         else:
             st.info("No schema discovered yet for this source.")
 
-        sample_size = st.number_input("Sample messages to consume", min_value=1, max_value=1000, value=20)
-        st.caption(
-            f"Connects to topic '{row['topic_name']}' and consumes up to {int(sample_size)} sample "
-            "messages to infer column types. The topic must already have real messages flowing -- "
-            "there's no live stream to sample from before one exists."
-        )
-
-        if st.button("Discover schema now", type="primary"):
-            import json
-
-            import polars as pl
-            from confluent_kafka import Consumer
-            from connectors.inference import infer_column_definitions
-
-            KAFKA_BOOTSTRAP_SERVERS = "kafka.streaming.svc.cluster.local:9092"
-            consumer = Consumer(
-                {
-                    "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
-                    "group.id": f"schema-discovery-{row['id']}",
-                    "auto.offset.reset": "earliest",
-                }
+        if not row["schema_discovery_enabled"]:
+            st.info(
+                f"Schema discovery is disabled for '{selected_name}' -- its schema is deemed stable. "
+                "Re-enable it under 'Edit existing' to run discovery again."
             )
-            consumer.subscribe([row["topic_name"]])
-            messages = []
-            try:
-                with st.spinner(f"Consuming sample messages from '{row['topic_name']}'..."):
-                    for _ in range(int(sample_size) * 5):  # bounded polling attempts, not just message count
-                        if len(messages) >= sample_size:
-                            break
-                        msg = consumer.poll(timeout=2.0)
-                        if msg is None or msg.error():
-                            continue
-                        try:
-                            messages.append(json.loads(msg.value()))
-                        except json.JSONDecodeError:
-                            continue
-            finally:
-                consumer.close()
+        else:
+            sample_size = st.number_input("Sample messages to consume", min_value=1, max_value=1000, value=20)
+            st.caption(
+                f"Connects to topic '{row['topic_name']}' and consumes up to {int(sample_size)} sample "
+                "messages to infer column types. The topic must already have real messages flowing -- "
+                "there's no live stream to sample from before one exists."
+            )
 
-            if not messages:
-                st.error(
-                    f"No messages consumed from topic '{row['topic_name']}' -- discovery requires the "
-                    "topic to already have real data flowing. Confirm a producer is writing to it."
+            if st.button("Discover schema now", type="primary"):
+                import json
+
+                import polars as pl
+                from confluent_kafka import Consumer
+                from connectors.inference import infer_column_definitions
+
+                KAFKA_BOOTSTRAP_SERVERS = "kafka.streaming.svc.cluster.local:9092"
+                consumer = Consumer(
+                    {
+                        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+                        "group.id": f"schema-discovery-{row['id']}",
+                        "auto.offset.reset": "earliest",
+                    }
                 )
-            else:
-                sample_df = pl.DataFrame(messages)
-                column_definitions = infer_column_definitions(sample_df)
-                write_schema_registry_version(
-                    engine,
-                    controlling_object_id=row["id"],
-                    controlling_object_type="streaming_source",
-                    column_definitions=column_definitions,
-                    primary_key_columns=[],
-                    created_by="4_Streaming_Sources_discover_schema",
-                )
-                st.success(f"Discovered {len(column_definitions)} column(s) from {len(messages)} sample message(s).")
-                st.rerun()
+                consumer.subscribe([row["topic_name"]])
+                messages = []
+                try:
+                    with st.spinner(f"Consuming sample messages from '{row['topic_name']}'..."):
+                        for _ in range(int(sample_size) * 5):  # bounded polling attempts, not just message count
+                            if len(messages) >= sample_size:
+                                break
+                            msg = consumer.poll(timeout=2.0)
+                            if msg is None or msg.error():
+                                continue
+                            try:
+                                messages.append(json.loads(msg.value()))
+                            except json.JSONDecodeError:
+                                continue
+                finally:
+                    consumer.close()
+
+                if not messages:
+                    st.error(
+                        f"No messages consumed from topic '{row['topic_name']}' -- discovery requires the "
+                        "topic to already have real data flowing. Confirm a producer is writing to it."
+                    )
+                else:
+                    sample_df = pl.DataFrame(messages)
+                    column_definitions = infer_column_definitions(sample_df)
+                    write_schema_registry_version(
+                        engine,
+                        controlling_object_id=row["id"],
+                        controlling_object_type="streaming_source",
+                        column_definitions=column_definitions,
+                        primary_key_columns=[],
+                        created_by="4_Streaming_Sources_discover_schema",
+                    )
+                    st.success(f"Discovered {len(column_definitions)} column(s) from {len(messages)} sample message(s).")
+                    st.rerun()
 
 else:  # Delete existing
     if df.empty:

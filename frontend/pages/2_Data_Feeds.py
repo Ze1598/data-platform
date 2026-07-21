@@ -156,6 +156,12 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         )
     else:
         batch_ods_name = None
+    schema_discovery_enabled = st.checkbox(
+        "Schema discovery enabled", value=defaults["schema_discovery_enabled"],
+        help="When off, extraction skips schema discovery entirely and reuses schema_registry's current "
+        "contract as-is -- turn off once this feed's schema is deemed stable.",
+        key=f"{key_prefix}_schema_discovery_enabled",
+    )
     is_active = st.checkbox("Active", value=defaults["is_active"], key=f"{key_prefix}_is_active")
     submitted = st.button(submit_label, key=f"{key_prefix}_submit")
     return submitted, {
@@ -173,6 +179,7 @@ def render_form(defaults: dict, submit_label: str, key_prefix: str):
         "pipeline_step_labels": pipeline_step_labels,
         "ods_enabled": ods_enabled,
         "batch_ods_name": batch_ods_name,
+        "schema_discovery_enabled": schema_discovery_enabled,
         "is_active": is_active,
     }
 
@@ -258,6 +265,7 @@ def build_values(form_values: dict, editing_id: str | None = None) -> dict | Non
         "pipeline_steps": ",".join(str(pipeline_step_id_by_label[label]) for label in form_values["pipeline_step_labels"]),
         "ods_enabled": form_values["ods_enabled"],
         "batch_ods_name": form_values["batch_ods_name"] if form_values["ods_enabled"] else None,
+        "schema_discovery_enabled": form_values["schema_discovery_enabled"],
         "is_active": form_values["is_active"],
     }
 
@@ -285,6 +293,7 @@ if mode == "Add new":
             "pipeline_step_labels": ["extraction", "transformation", "serving"],
             "ods_enabled": False,
             "batch_ods_name": None,
+            "schema_discovery_enabled": True,
             "is_active": True,
         },
         "Create",
@@ -327,6 +336,7 @@ elif mode == "Edit existing":
                 "pipeline_step_labels": _pipeline_step_ids_to_labels(row["pipeline_steps"]),
                 "ods_enabled": bool(row["ods_enabled"]),
                 "batch_ods_name": safe_str(row["batch_ods_name"]),
+                "schema_discovery_enabled": bool(row["schema_discovery_enabled"]),
                 "is_active": bool(row["is_active"]),
             },
             "Save changes",

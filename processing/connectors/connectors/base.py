@@ -25,8 +25,10 @@ class TabularConnector(ABC):
     def discover_schema(self, df: pl.DataFrame) -> list[dict[str, Any]]:
         """Returns a fresh schema_registry-shaped column_definitions list
         for `df`. Default: generic sample-inference. Override for a
-        source with an authoritative catalog to query instead (e.g. a
-        single real Postgres table's information_schema)."""
+        source with an authoritative catalog to query instead --
+        PostgresConnector does this for the single-real-table case (see
+        connectors/postgres.py), falling back to this default only for a
+        custom multi-table query."""
         return infer_column_definitions(df)
 
 

@@ -77,6 +77,12 @@ create table data_feed (
     -- column names identifying a row in the source; extraction-only, not the
     -- same concept as a model-layer business key
     source_pk                 jsonb not null default '[]'::jsonb,
+    -- when false, extraction skips discover_schema()/discover_primary_key()
+    -- entirely and reuses schema_registry's current row as-is -- no
+    -- catalog/sample query cost paid, no drift comparison. Meant to be
+    -- turned off once a feed's schema is deemed stable; true by default
+    -- (today's existing always-discover behavior).
+    schema_discovery_enabled  boolean not null default true,
     -- which engine runs this feed's raw->clean transform: 'polars' by
     -- default (runs inline in the Dagster op, no extra cluster
     -- infrastructure), 'spark' opt-in for feeds whose volume actually
@@ -176,6 +182,11 @@ create table streaming_source (
     -- operator's own current docs, same posture as data_feed.
     -- processing_engine's Polars-default/Spark-opt-in split.
     autoscaler_enabled       boolean not null default false,
+    -- when false, the frontend's "Discover Schema" action and the
+    -- streaming smoketest harness (streaming/testing/run.py) both refuse
+    -- to run discovery for this source -- same intent/semantics as
+    -- data_feed.schema_discovery_enabled. True by default.
+    schema_discovery_enabled boolean not null default true,
     is_active                boolean not null default true
 );
 

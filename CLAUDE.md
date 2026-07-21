@@ -9,6 +9,8 @@ exactly, not as general guidance to weigh against other considerations.
 
 **No usage of soft language** which includes adjectives and adverbs to soften problems or make something sound genuine. Be objective and get to the point of what you're describing.
 
+**Ask questions until you don't need to make assumptions** because assumptions will generate silent problems. The goal at all times is to understand the vision from the user.
+
 **The moment you find ANY issue — a bug, a design inconsistency, unexpected
 behavior, anything — STOP THE WORK IMMEDIATELY and surface it for the user
 to decide.** Do not: decide it's "out of scope" and route around it; keep

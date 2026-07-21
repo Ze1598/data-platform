@@ -74,7 +74,14 @@ kill:
     set -euo pipefail
     shopt -s nullglob
     crs=(generated/*.yaml)
+    # --ignore-not-found only covers "no object with this name" -- it does
+    # NOT cover "this CRD kind isn't registered at all" (a cluster where
+    # the Flink Kubernetes Operator was never installed), which is a
+    # harder kubectl error and would otherwise abort this whole recipe
+    # under set -e before reaching the helm uninstall below. || true, same
+    # guard that line already has via its own --ignore-not-found flag for
+    # the identical "operator never installed" case.
     if [ ${#crs[@]} -gt 0 ]; then
-        kubectl delete -f generated/ --ignore-not-found
+        kubectl delete -f generated/ --ignore-not-found || true
     fi
     helm uninstall flink-kubernetes-operator -n streaming --ignore-not-found

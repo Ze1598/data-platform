@@ -809,6 +809,16 @@ A plain `ClusterIP` Service is only reachable from inside the cluster. To keep a
 
 **Caveat**: the grace period (60s) is sized against a normal wake-then-submit round trip (typically single-digit seconds), not tuned to the common case — generous on purpose. Any *new* caller of the wake mechanism must also stamp this timestamp annotation, or it inherits the same blind spot; the sensor has no way to distinguish "a wake with no timestamp" from "no wake happened at all."
 
+### `kubectl delete -f --ignore-not-found` doesn't cover a CRD that was never installed
+
+**Symptom**: `orchestration::kill` and `streaming/flink::kill` (both run under `set -euo pipefail`) aborted with `error: Recipe kill failed with exit code 1` on the very first `just smoketest` run against a genuinely fresh cluster (Docker itself wasn't even running yet) — `kubectl delete -f k8s/keda-scaledobjects.yaml --ignore-not-found` (orchestration) and `kubectl delete -f generated/ --ignore-not-found` (flink, against a generated `FlinkDeployment` manifest) both printed `no matches for kind "ScaledObject"`/`"FlinkDeployment"` ... `ensure CRDs are installed first`, and the script died right there — before ever reaching the `helm uninstall ... || true` line immediately below it in both recipes.
+
+**Cause**: `--ignore-not-found` only suppresses "no object with this name exists" — it does *not* suppress "this API kind isn't registered at all," a different, harder kubectl error that happens when the CRD providing that kind (installed by `helm install keda`/`helm install flink-kubernetes-operator`, a separate step from `kill`) was never installed in this cluster. Both recipes already anticipated the *same* "operator/CRD never installed" scenario for their `helm uninstall` line (`|| true` / helm's own `--ignore-not-found` flag) but missed the identical case one line above it for the `kubectl delete -f <manifest-referencing-the-CRD-kind>` line.
+
+**Resolution**: added `|| true` to both `kubectl delete -f ... --ignore-not-found` lines, matching the guard already present on the very next line in each recipe. Verified live against the exact failure condition (a freshly created `kind` cluster, before KEDA or the Flink Operator were ever installed): the top-level `just kill` now runs the full module chain to completion (`EXIT_CODE:0`) instead of aborting on the first CRD-based module it reaches.
+
+**Caveat/generalizable lesson**: this only affects a `kill` recipe that `kubectl delete -f`s a manifest referencing a CRD-provided kind (KEDA's `ScaledObject`, Flink Operator's `FlinkDeployment`) — every other module's `kill` recipe in this repo only references built-in kinds (Deployment/Service/Secret/StatefulSet/PVC/ConfigMap/Job), which are always registered regardless of what's installed, so `--ignore-not-found` alone is sufficient there. Checked all of them (2026-07-21) — exactly these two were affected, not a repo-wide pattern. Any *new* module that introduces its own CRD-based custom resource needs the same `|| true` on its `kill` recipe's delete-by-manifest line, or it inherits this exact gap.
+
 ---
 
 ## Postgres / SQLAlchemy

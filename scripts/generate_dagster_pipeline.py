@@ -253,6 +253,16 @@ def _render_tabular_assets(feed: dict) -> str:
     # discovery method, rather than calling one that's always a no-op.
     discovered_pk_line = "        discovered_pk = connector.discover_primary_key()\n" if kind == "postgres" else ""
     discovered_pk_arg = "discovered_pk" if kind == "postgres" else "None"
+    # Postgres's discover_schema()/discover_primary_key() are pg_catalog
+    # queries (see connectors/postgres.py) -- they don't need any rows to
+    # answer, so they run whenever discovery isn't disabled, regardless of
+    # this run's row count. Every other tabular kind is still sample-based
+    # and genuinely needs rows to infer from.
+    discovery_condition = (
+        'data_feed["schema_discovery_enabled"]'
+        if kind == "postgres"
+        else 'data_feed["schema_discovery_enabled"] and not df.is_empty()'
+    )
     return f'''
 @asset(pool=f"feed:{friendly_name}", group_name="{friendly_name}")
 def extraction_{friendly_name}(
@@ -275,7 +285,7 @@ def extraction_{friendly_name}(
     last_watermark = data_feed.get("last_watermark_value")
     if not df.is_empty() and watermark_column and last_watermark is not None:
         df = df.filter(pl.col(watermark_column) > last_watermark)
-    if not df.is_empty():
+    if {discovery_condition}:
         discovered = connector.discover_schema(df)
 {discovered_pk_line}        postgres_metadata.sync_schema_registry(
             data_feed_id=str(data_feed["id"]),
@@ -405,23 +415,27 @@ def extraction_{friendly_name}(
     ) as log:
         if not df.is_empty():
             flat = connector.flatten(df)
-            discovered = connector.discover_schema(flat)
-            sync_result = postgres_metadata.sync_schema_registry(
-                data_feed_id=str(data_feed["id"]),
-                discovered_column_definitions=discovered,
-                metadata_source_pk=data_feed["source_pk"],
-                discovered_primary_key_columns=None,
-                created_by="extraction_{friendly_name}",
-            )
-            flat = reconcile_schema(flat, sync_result.column_definitions)
-            validate_schema(flat, sync_result.column_definitions)
+            if data_feed["schema_discovery_enabled"]:
+                discovered = connector.discover_schema(flat)
+                sync_result = postgres_metadata.sync_schema_registry(
+                    data_feed_id=str(data_feed["id"]),
+                    discovered_column_definitions=discovered,
+                    metadata_source_pk=data_feed["source_pk"],
+                    discovered_primary_key_columns=None,
+                    created_by="extraction_{friendly_name}",
+                )
+                column_definitions = sync_result.column_definitions
+            else:
+                column_definitions = postgres_metadata.get_current_schema(str(data_feed["id"]))
+            flat = reconcile_schema(flat, column_definitions)
+            validate_schema(flat, column_definitions)
             catalog = iceberg_catalog.get_catalog()
             write_clean_snapshot(
                 catalog,
                 namespace="clean",
                 table_name="{friendly_name}",
                 df=flat,
-                column_definitions=sync_result.column_definitions,
+                column_definitions=column_definitions,
             )
             rows_inserted = flat.height
         log.set_counts(

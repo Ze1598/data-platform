@@ -60,13 +60,16 @@ def extraction_customers(
     # Schema discovery/registry-write is extraction's job, complete before
     # clean_customers ever runs -- clean_customers only reads
     # schema_registry (get_current_schema()), it never writes to it.
-    postgres_metadata.sync_schema_registry(
-        data_feed_id=str(data_feed["id"]),
-        discovered_column_definitions=infer_column_definitions(df),
-        metadata_source_pk=data_feed["source_pk"],
-        discovered_primary_key_columns=None,
-        created_by="extraction_customers",
-    )
+    # Skipped entirely when the feed has discovery disabled (schema
+    # deemed stable) -- schema_registry keeps whatever it already has.
+    if data_feed["schema_discovery_enabled"]:
+        postgres_metadata.sync_schema_registry(
+            data_feed_id=str(data_feed["id"]),
+            discovered_column_definitions=infer_column_definitions(df),
+            metadata_source_pk=data_feed["source_pk"],
+            discovered_primary_key_columns=None,
+            created_by="extraction_customers",
+        )
     return Output(df, metadata={"row_count": df.height})
 
 

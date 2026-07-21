@@ -36,10 +36,6 @@ Would stay opt-in only if built — a deliberate throughput trade for feeds that
 
 A metadata-driven, codegen-to-dbt UX alternative to hand-writing SQL directly: define columns, types, constraints, and partitions for a model table through the CRUD frontend instead of authoring the `.sql` file by hand. Would be an optional on-ramp, not a requirement — users could still author dbt/Python by hand regardless.
 
-### Catalog-based schema discovery for Postgres — not built
-
-Schema discovery (`infer_column_definitions()`) is sample-based for every connector kind today, including Postgres — true catalog-based discovery (`information_schema`/`pg_catalog`) for a single-table Postgres source is scoped but not built.
-
 ### `schema_registry`'s type vocabulary is flat/scalar-only — jsonb/nested columns unmapped
 
 A Postgres `jsonb` column or a nested JSON API response has nowhere obvious to map to in `schema_registry`'s current type vocabulary. Real options: flatten, stringify, or extend the vocabulary — an open design decision, not yet made.

@@ -1,8 +1,8 @@
 from connectors import compute_schema_sync
 
 _DISCOVERED = [
-    {"name": "id", "data_type": "long", "nullable": True, "ordinal": 0, "description": None},
-    {"name": "name", "data_type": "string", "nullable": True, "ordinal": 1, "description": None},
+    {"name": "id", "data_type": "long", "nullable": True, "ordinal": 0},
+    {"name": "name", "data_type": "string", "nullable": True, "ordinal": 1},
 ]
 
 
@@ -32,7 +32,7 @@ def test_new_column_appended_and_marked_changed():
 def test_type_change_updates_in_place_and_marks_changed():
     current = _DISCOVERED
     discovered = [
-        {"name": "id", "data_type": "string", "nullable": True, "ordinal": 0, "description": None},
+        {"name": "id", "data_type": "string", "nullable": True, "ordinal": 0},
         _DISCOVERED[1],
     ]
     result = compute_schema_sync(discovered, current, [], [])
@@ -75,3 +75,43 @@ def test_current_primary_key_none_treated_as_empty():
     # as a change.
     result = compute_schema_sync(_DISCOVERED, _DISCOVERED, ["id"], None)
     assert result.changed is True
+
+
+def test_new_column_discovered_null_defaults_to_string():
+    # A brand-new column whose data is entirely null this run
+    # (data_type=None sentinel from infer_column_definitions) has no prior
+    # recorded type to fall back on -- defaults to "string".
+    current = [_DISCOVERED[0]]
+    discovered = [_DISCOVERED[0], {"name": "name", "data_type": None, "nullable": True, "ordinal": 1}]
+    result = compute_schema_sync(discovered, current, [], [])
+    assert result.changed is True
+    name_col = next(c for c in result.column_definitions if c["name"] == "name")
+    assert name_col["data_type"] == "string"
+
+
+def test_existing_column_discovered_null_keeps_recorded_type():
+    # This run's data doesn't answer the question for an existing column
+    # (all null) -- the last real recorded type wins, not overwritten with
+    # a default, and this alone doesn't mark the sync as changed.
+    current = _DISCOVERED
+    discovered = [_DISCOVERED[0], {"name": "name", "data_type": None, "nullable": False, "ordinal": 1}]
+    result = compute_schema_sync(discovered, current, [], [])
+    name_col = next(c for c in result.column_definitions if c["name"] == "name")
+    assert name_col["data_type"] == "string"
+    assert result.changed is False
+
+
+def test_nullable_flips_false_to_true_and_marks_changed():
+    current = [{"name": "id", "data_type": "long", "nullable": False, "ordinal": 0}]
+    discovered = [{"name": "id", "data_type": "long", "nullable": True, "ordinal": 0}]
+    result = compute_schema_sync(discovered, current, [], [])
+    assert result.changed is True
+    assert result.column_definitions[0]["nullable"] is True
+
+
+def test_nullable_does_not_flip_true_to_false():
+    current = [{"name": "id", "data_type": "long", "nullable": True, "ordinal": 0}]
+    discovered = [{"name": "id", "data_type": "long", "nullable": False, "ordinal": 0}]
+    result = compute_schema_sync(discovered, current, [], [])
+    assert result.changed is False
+    assert result.column_definitions[0]["nullable"] is True

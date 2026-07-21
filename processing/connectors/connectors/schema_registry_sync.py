@@ -44,12 +44,22 @@ def compute_schema_sync(
 
     - No current registry entry (`current_column_definitions is None`):
       first-time bootstrap -- the discovered schema becomes current
-      as-is.
+      as-is. A brand-new column discovered with data_type=None (this
+      run's data was entirely null for it -- see connectors.inference)
+      defaults to "string" here, for maximum compatibility, since there's
+      no prior recorded type to fall back on instead.
     - A registry entry exists: a genuinely new column, or an existing
       column with a different data_type than registered, is a legitimate
       upstream schema change -- merged into the current list (new columns
       appended at the next ordinal, changed types updated in place) and
-      `changed=True`. A column in the current registry but absent from
+      `changed=True`. An existing column discovered with data_type=None
+      (all-null this run) is left with its currently recorded type
+      untouched instead -- this run's data simply doesn't answer the
+      question, so the last real answer wins rather than being
+      overwritten. `nullable` only ever flips false->true, never the
+      reverse: a null observed this run is real evidence the column can
+      be null, but a run without one doesn't disprove a nullability
+      already on record. A column in the current registry but absent from
       this run's *discovery* is left untouched here -- a feed's schema
       registry only ever grows/updates via discovery, it never shrinks;
       a column disappearing from actual data is
@@ -84,13 +94,21 @@ def compute_schema_sync(
     for name, discovered_col in discovered_by_name.items():
         current_col = current_by_name.get(name)
         if current_col is None:
-            merged.append({**discovered_col, "ordinal": next_ordinal})
+            new_col = dict(discovered_col)
+            if new_col["data_type"] is None:
+                new_col["data_type"] = "string"
+            merged.append({**new_col, "ordinal": next_ordinal})
             next_ordinal += 1
             changed = True
-        elif current_col["data_type"] != discovered_col["data_type"]:
+        else:
             for c in merged:
-                if c["name"] == name:
+                if c["name"] != name:
+                    continue
+                if discovered_col["data_type"] is not None and c["data_type"] != discovered_col["data_type"]:
                     c["data_type"] = discovered_col["data_type"]
-            changed = True
+                    changed = True
+                if discovered_col["nullable"] and not c["nullable"]:
+                    c["nullable"] = True
+                    changed = True
 
     return SchemaSyncResult(column_definitions=merged, primary_key_columns=resolved_primary_key_columns, changed=changed)

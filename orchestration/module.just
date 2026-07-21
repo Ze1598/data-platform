@@ -212,7 +212,13 @@ _sleep-orchestration:
 kill:
     #!/usr/bin/env bash
     set -euo pipefail
-    kubectl delete -f k8s/keda-scaledobjects.yaml --ignore-not-found
+    # --ignore-not-found only covers "no object with this name" -- it does
+    # NOT cover "this CRD kind isn't registered at all" (a cluster where
+    # KEDA was never installed), which is a harder kubectl error and would
+    # otherwise abort this whole recipe under set -e before reaching
+    # anything below. || true, same guard the very next line already has
+    # for the identical "KEDA never installed" case.
+    kubectl delete -f k8s/keda-scaledobjects.yaml --ignore-not-found || true
     helm uninstall keda -n keda || true
     kubectl delete -f k8s/daemon-deployment.yaml \
         -f k8s/webserver-service.yaml -f k8s/webserver-deployment.yaml \

@@ -234,7 +234,7 @@ def _undiscovered_sources(cur) -> list[dict]:
             on sr.controlling_object_id = ss.id
            and sr.controlling_object_type = 'streaming_source'
            and sr.is_current
-        where ss.is_active = true and sr.id is null
+        where ss.is_active = true and ss.schema_discovery_enabled = true and sr.id is null
         order by ss.friendly_name
         """
     )
