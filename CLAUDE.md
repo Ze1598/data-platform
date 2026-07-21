@@ -111,12 +111,11 @@ correct home for phase-by-phase chronological narrative.
 
 ## Where the rest lives
 
-This file has the hard, durable rules. Project-specific context that
-changes over time (current phase status, open bugs, what's blocking what)
-lives in `Roadmap.md` (design + phase status), `Backlog.md` (deferred items
-+ current priority), `Progress.md` (verified build/test history), and
-`Learnings.md` (technical gotchas). An auto-memory system also persists
-across sessions for this project
-(`~/.claude/projects/-Users-josecosta-Documents-projects-data-platform/memory/`)
-— it's loaded automatically, don't duplicate its content here; this file is
-for the rules significant enough to warrant the strongest possible framing.
+This file has the hard, durable rules. Architecture and design live in
+`README.md` — the permanent reference, meant to outlive this project's
+build-out. Project-specific context that changes over time (current phase
+status, open bugs, what's blocking what) lives in `Roadmap.md` (phase
+status only for completed work, draft design for pending work), `Backlog.md` (deferred items + current
+priority), `Progress.md` (verified build/test history), and `Learnings.md`
+(human readable technical gotchas for humans coming across this repository) — these four are working documents for the build-out,
+not meant to outlive it. 
