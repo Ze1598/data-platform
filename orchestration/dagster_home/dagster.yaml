@@ -60,6 +60,22 @@ run_launcher:
     # "default" is fine: run pods here only call Postgres/Trino, not the
     # k8s API.
     service_account_name: default
+    # Kill a launched run's Job/Pod the moment it finishes, instead of
+    # leaving it around for dagster_k8s's own default 24h
+    # ttl_seconds_after_finished (DEFAULT_JOB_SPEC_CONFIG in the installed
+    # dagster_k8s/job.py) -- confirmed live this project's own run pods
+    # were still sitting around >22h later, well within that default
+    # window, not stuck: the TTL was real, just too long for how often
+    # this project rebuilds/reruns in a single session. 0 is the
+    # documented Kubernetes value for "eligible for cleanup immediately,"
+    # not a disabled/no-op sentinel. Trade-off: `kubectl logs` on a
+    # completed run's pod stops being possible almost immediately after
+    # it finishes -- Dagster's own Postgres-backed run/event storage
+    # (what data_processing_runs and the webserver UI both already read)
+    # is unaffected, this only removes the raw pod log stream.
+    run_k8s_config:
+      job_spec_config:
+        ttl_seconds_after_finished: 0
     # Phase 9: financial_transactions' landing asset reads CSV files
     # scripts/generate_financial_reports.py drops into
     # data-lake/landing/financial_transactions/ on the host. The kind node
