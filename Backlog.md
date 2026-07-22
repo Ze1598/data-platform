@@ -4,10 +4,6 @@ Things explicitly deferred, not forgotten. Unlike `Roadmap.md` (planned phases) 
 
 ---
 
-### `dagster-webserver`/`dagster-daemon` don't force a rollout restart on `orchestration::start` — only `dagster-code-server` does
-
-Confirmed live (2026-07-19) while fixing the identical bug for `frontend`/`streaming/producer` (see `Learnings.md`): `orchestration/module.just`'s `start` recipe only runs `kubectl rollout restart deployment/dagster-code-server`, not `dagster-webserver`/`dagster-daemon` — both of which run from the exact same rebuilt image. The existing comment's reasoning is specifically about code-server reporting the asset graph's *structure* to the other two, which may genuinely be the only case that matters for correctness (the webserver/daemon might not need their own code reloaded for most changes) — but that's not verified, just the original reasoning as written. Worth confirming deliberately (does a webserver/daemon-only code change ever actually need a restart to take effect, or does everything meaningful route through code-server regardless) before either adding the same restart to both or documenting why it's genuinely unnecessary.
-
 ### Superseded design: single shared dbt project + `tag:<model_schema>` selectors, as a fallback if full domain isolation proves premature
 
 Before landing on genuine per-domain dbt project isolation (separate `dbt_project.yml`/manifest/image per `model_schema` domain — see `README.md`'s Repo Structure `dbt/` line), a lighter-weight alternative was fully designed and explicitly rejected in favor of real isolation, not because it doesn't work: **one shared dbt project** (today's structure, unchanged), with each domain's `staging`/`model`/`serve` models tagged `tag:<model_schema>` — the exact same mechanism already splitting transformation from serving today — giving independently-triggerable `dbt build` invocations per domain, physical naming-convention differentiation (`<model_schema>_<fct|dim>_<name>`) instead of separate schemas, and Dagster `pool=` to avoid concurrency races between domains. Real, viable, much less infrastructure than full isolation.
