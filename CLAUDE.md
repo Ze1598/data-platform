@@ -22,10 +22,9 @@ no severity threshold below which continuing on your own is fine, and an
 earlier "proceed"/"go ahead" for the broader task does not cover a new
 finding.
 
-**After 2 failed attempts at fixing the same bug, stop and ask — do not try
-a 3rd hypothesis on your own.** Count explicitly: attempt 1 fails, try
-attempt 2; attempt 2 fails, STOP and report both failed hypotheses, ask what
-to do next.
+Every single piece of new code development must be validated at runtime. Doesnt' matter if it's a brand new feature, a code change from the backlog, technical debt items, or bug fixes - nothing is considered complete until it gets tested in runtime with a representative test dataset and/or runtime scenario.
+
+Test cases and test scenarios must be agreed upon before a new piece of development. This includes brand new features, code changes from the backlog, technical debt items, and bug fixes.
 
 **Never touch git state, in any way, for any reason — not even a dry run.**
 No `git add` (not even `-n`), no `git commit`, no `git push`, no `git
