@@ -156,6 +156,44 @@ def fetch_current_schema(engine: Engine, controlling_object_id: str, controlling
     return df.iloc[0]["column_definitions"]
 
 
+def fetch_lakehouse_model_columns(engine: Engine, model_id: str) -> pd.DataFrame:
+    """Current column definitions for one lakehouse_models row, ordered for
+    display/editing. Frontend-side read counterpart to
+    replace_lakehouse_model_columns() below -- used by
+    6_Model_Table_Columns.py to seed its editor grid."""
+    return pd.read_sql(
+        text(
+            "SELECT column_name, source_feed_id, data_type, is_nullable, is_business_key, is_tracked, ordinal_position "
+            "FROM lakehouse_model_columns WHERE model_id = :model_id ORDER BY ordinal_position"
+        ),
+        engine,
+        params={"model_id": model_id},
+    )
+
+
+def replace_lakehouse_model_columns(engine: Engine, model_id: str, columns: list[dict]) -> None:
+    """Idempotent full replace of a model's column definitions -- deletes
+    every existing lakehouse_model_columns row for this model_id, then
+    inserts the given set fresh. Simpler and safer than a partial diff:
+    the frontend's editor grid always submits the complete, currently
+    intended column list on save, not an incremental patch (see
+    6_Model_Table_Columns.py)."""
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM lakehouse_model_columns WHERE model_id = :model_id"), {"model_id": model_id})
+        for col in columns:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO lakehouse_model_columns
+                        (model_id, source_feed_id, column_name, data_type, is_nullable, is_business_key, is_tracked, ordinal_position)
+                    VALUES
+                        (:model_id, :source_feed_id, :column_name, :data_type, :is_nullable, :is_business_key, :is_tracked, :ordinal_position)
+                    """
+                ),
+                {"model_id": model_id, **col},
+            )
+
+
 def safe_str(value) -> str:
     """NaN/None-safe string coercion for prefilling form fields from a DataFrame row."""
     return "" if pd.isna(value) else str(value)

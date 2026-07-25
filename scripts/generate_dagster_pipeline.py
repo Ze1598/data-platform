@@ -658,7 +658,7 @@ from dagster_data_platform.assets.dbt_assets import (
     _build_transformation_assets_for_domain,
     domain_group_name,
 )
-from dagster_data_platform.dagster_launch import launch_and_wait
+from dagster_data_platform.dagster_launch import launch_and_wait, launch_many_and_wait
 from dagster_data_platform.pipeline_steps import parse_selected_steps
 from dagster_data_platform.raw_storage import raw_snapshot_path, read_raw_snapshot, write_raw_snapshot
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
@@ -836,11 +836,17 @@ def run_master_pipeline(
     # enforced -- see Backlog.md); ods_domain is None for an
     # extraction-only batch (no feed in it is ODS-enabled), which is valid.
     if kind == "batch_group":
-        feeds = postgres_metadata.get_batch_group_feeds(value)
+        feed_tiers = postgres_metadata.get_batch_group_feeds_by_tier(value)
+        feeds = [feed for _, tier_feeds in feed_tiers for feed in tier_feeds]
         ods_domain = postgres_metadata.get_batch_group_ods_domain(value)
         domains = [ods_domain] if ods_domain else []
     elif kind == "model_schema":
         domain, feeds = postgres_metadata.get_domain_feeds_for_model_schema(value)
+        # model_schema runs stay single-tier/sequential -- hierarchy tiering
+        # is a batch_group-only mechanism (Roadmap.md "Hierarchy-tiered,
+        # dependency-driven master_pipeline execution" scopes it to
+        # orchestration_kind='batch_group' runs only).
+        feed_tiers = [(0, feeds)]
         domains = [domain]
     else:
         raise Failure(f"Unknown orchestration_kind {{kind!r}} -- expected 'batch_group' or 'model_schema'")
@@ -870,18 +876,30 @@ def run_master_pipeline(
 
     # Extraction: per-feed gating happens HERE, once, rather than inside
     # each asset -- a feed with "extraction" deselected in its own
-    # pipeline_steps simply never gets its job launched this run. A child
-    # job failure raises dagster.Failure (see dagster_launch.launch_and_wait),
-    # which propagates straight out of this op and fails the master
-    # pipeline itself, stopping here -- fail-fast, not best-effort across
-    # the remaining feeds (Roadmap.md: "propagates the failure to the
-    # master parent pipeline so it stops there").
-    for feed in feeds:
-        data_feed = postgres_metadata.get_data_feed(feed)
-        if "extraction" not in parse_selected_steps(data_feed["pipeline_steps"]):
-            context.log.info(f"Skipping extraction for feed {{feed!r}} -- not selected in pipeline_steps")
-            continue
-        launch_and_wait(EXTRACTION_JOBS[feed].name, tags={{"master_dagster_run_id": master_dagster_run_id}})
+    # pipeline_steps simply never gets its job launched this run. Tiered by
+    # batch_feed_hierarchy (feed_tiers above, ascending -- see
+    # PostgresMetadataResource.get_batch_group_feeds_by_tier): every feed in
+    # a tier launches together via launch_many_and_wait (concurrent pods),
+    # and the next tier only starts once every feed in this one has reached
+    # a terminal status. A tier failure raises dagster.Failure (see
+    # dagster_launch.launch_many_and_wait), which propagates straight out of
+    # this op and fails the master pipeline itself, stopping here --
+    # fail-fast across tiers, but a tier's own siblings are never cancelled
+    # by one another's failure, only blocked from starting the next tier
+    # (Roadmap.md "Hierarchy-tiered, dependency-driven master_pipeline
+    # execution"). model_schema runs resolve to the single synthetic tier
+    # set above, so this loop runs exactly once for them -- same sequential
+    # behavior as before.
+    for _, tier_feeds in feed_tiers:
+        selected_jobs = []
+        for feed in tier_feeds:
+            data_feed = postgres_metadata.get_data_feed(feed)
+            if "extraction" not in parse_selected_steps(data_feed["pipeline_steps"]):
+                context.log.info(f"Skipping extraction for feed {{feed!r}} -- not selected in pipeline_steps")
+                continue
+            selected_jobs.append(EXTRACTION_JOBS[feed].name)
+        if selected_jobs:
+            launch_many_and_wait(selected_jobs, tags={{"master_dagster_run_id": master_dagster_run_id}})
 
     # Modeling/serving always launch for every resolved domain -- per-feed
     # cherry-picking for these two steps stays inside the domain's own dbt

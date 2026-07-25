@@ -115,7 +115,7 @@ orchestration_kind = st.radio("Orchestration kind", ["batch_group", "model_schem
 if orchestration_kind == "batch_group":
     # batch_group itself is a uuid (data_feed.batch_group) -- the
     # human-readable value, and the one PostgresMetadataResource.
-    # get_batch_group_feeds() actually matches against
+    # get_batch_group_feeds_by_tier() actually matches against
     # (`WHERE batch_group_friendly_name = %s`), is the separate
     # batch_group_friendly_name text column. Confirmed live: submitting
     # the uuid as orchestration_value resolves zero feeds and fails with

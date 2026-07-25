@@ -14,8 +14,8 @@ where both bugs lived):
    column -- crashed on page load.
 2. The `batch_group` dropdown was populated from `data_feed.batch_group`
    (a uuid) instead of `data_feed.batch_group_friendly_name` (the text
-   `PostgresMetadataResource.get_batch_group_feeds()` actually matches
-   against) -- didn't crash, submitted successfully (`LaunchRunSuccess`),
+   `PostgresMetadataResource.get_batch_group_feeds_by_tier()` actually
+   matches against) -- didn't crash, submitted successfully (`LaunchRunSuccess`),
    but the launched run always failed inside Dagster with "No active feeds
    resolved". A naive "click the button, assert no exception, accept
    st.success as proof it worked" test would have missed this entirely --

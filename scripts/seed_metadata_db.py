@@ -59,6 +59,7 @@ def seed_data_feed(
     processing_engine: str,
     watermark_column: str | None = None,
     batch_group_friendly_name: str | None = None,
+    batch_feed_hierarchy: int = 0,
     extraction_config: dict | None = None,
     pipeline_steps: str = "0,1,2",
     ods_enabled: bool = False,
@@ -75,18 +76,22 @@ def seed_data_feed(
     # (data_feed.ods_enabled default false, batch_ods_name nullable), so
     # every existing feed's behavior is unchanged unless explicitly opted
     # in (see Roadmap.md "ODS layer" / "multi-project dbt split").
+    # batch_feed_hierarchy defaults to 0 (the DDL's own default) -- meaningless
+    # for a singleton batch, real once a batch group actually spans multiple
+    # tiers (see run_master_pipeline's tiered extraction, Roadmap.md
+    # "Hierarchy-tiered, dependency-driven master_pipeline execution").
     cur.execute(
         """
         INSERT INTO data_feed (
             source_system_id, friendly_name, source_object_name, extraction_type,
             source_pk, processing_engine, watermark_column,
-            batch_group, batch_group_friendly_name, extraction_config, pipeline_steps,
+            batch_group, batch_group_friendly_name, batch_feed_hierarchy, extraction_config, pipeline_steps,
             ods_enabled, batch_ods_name
         )
         VALUES (
             (SELECT id FROM source_system WHERE code = %s),
             %s, %s, %s, %s, %s, %s,
-            gen_random_uuid(), %s, %s, %s,
+            gen_random_uuid(), %s, %s, %s, %s,
             %s, %s
         )
         ON CONFLICT (friendly_name) DO NOTHING
@@ -94,7 +99,7 @@ def seed_data_feed(
         (
             source_system_code, friendly_name, source_object_name, extraction_type,
             psycopg.types.json.Json(source_pk), processing_engine, watermark_column,
-            batch_group_friendly_name,
+            batch_group_friendly_name, batch_feed_hierarchy,
             psycopg.types.json.Json(extraction_config) if extraction_config is not None else None,
             pipeline_steps,
             ods_enabled, batch_ods_name,
@@ -165,6 +170,42 @@ def seed_lakehouse_model(
             "pipeline_steps": pipeline_steps,
         },
     )
+
+
+def seed_lakehouse_model_columns(cur, *, model_friendly_name: str, columns: list[dict]) -> None:
+    """Idempotently seeds lakehouse_model_columns rows for one model --
+    the same data frontend/pages/6_Model_Table_Columns.py's editor grid
+    submits, here as a reproducible seed for a model that predates any
+    real user filling in that page. Each column dict: column_name,
+    source_feed_friendly_name, data_type, is_nullable, is_business_key,
+    is_tracked. `ordinal_position` is the list's own order, not passed
+    explicitly -- same convention as the frontend page (entry order in
+    the editor grid)."""
+    for position, col in enumerate(columns):
+        cur.execute(
+            """
+            INSERT INTO lakehouse_model_columns (
+                model_id, source_feed_id, column_name, data_type,
+                is_nullable, is_business_key, is_tracked, ordinal_position
+            )
+            VALUES (
+                (SELECT id FROM lakehouse_models WHERE friendly_name = %(model_friendly_name)s),
+                (SELECT id FROM data_feed WHERE friendly_name = %(source_feed_friendly_name)s),
+                %(column_name)s, %(data_type)s, %(is_nullable)s, %(is_business_key)s, %(is_tracked)s, %(ordinal_position)s
+            )
+            ON CONFLICT (model_id, column_name) DO NOTHING
+            """,
+            {
+                "model_friendly_name": model_friendly_name,
+                "source_feed_friendly_name": col["source_feed_friendly_name"],
+                "column_name": col["column_name"],
+                "data_type": col["data_type"],
+                "is_nullable": col["is_nullable"],
+                "is_business_key": col["is_business_key"],
+                "is_tracked": col["is_tracked"],
+                "ordinal_position": position,
+            },
+        )
 
 
 def seed_ingestion_trigger(
@@ -254,6 +295,21 @@ def main() -> None:
             connector_kind="rest",
             base_location="https://data.police.uk/api",
         )
+        # iot_telemetry_landing backs the iot_telemetry batch group below --
+        # synthetic IoT device telemetry, dropped as JSON files into
+        # data-lake/landing/<feed>/ rather than a real external system.
+        # Exists to prove batch_feed_hierarchy tiered extraction against a
+        # real multi-feed batch (Backlog.md's "batch_group/batch_feed_hierarchy
+        # are metadata-only" item, Roadmap.md "Hierarchy-tiered,
+        # dependency-driven master_pipeline execution").
+        seed_source_system(
+            cur,
+            code="iot_telemetry_landing",
+            name="IoT Telemetry Landing",
+            description="Synthetic IoT device telemetry, dropped as JSON files into data-lake/landing/<feed>/ -- not a real external system, exists to test tiered batch extraction",
+            system_type="file_drop",
+            connector_kind="json_file",
+        )
         # metadata_runs queries this platform's own data_processing_runs
         # table, a real Postgres source -- see Walkthrough_Metadata_Ingestion.md
         # for the full reproducible-from-a-fresh-cluster setup.
@@ -337,6 +393,83 @@ def main() -> None:
         # discovery (connectors.schema_registry_sync.sync_schema_registry())
         # populates it for every feed, uniformly, from each feed's first
         # real run.
+
+        # iot_telemetry batch group: a real multi-feed, multi-tier batch
+        # (unlike every other feed above, still its own singleton batch) --
+        # 2 feeds at tier 1, 3 at tier 2, 1 at tier 3, all sharing
+        # batch_group_friendly_name="iot_telemetry". No ODS domain for any
+        # of these (ods_enabled left at its default false) since this batch
+        # group exists to prove feed-tier parallel extraction, not
+        # model-tiering (out of scope for this test, see Roadmap.md).
+        # pipeline_steps="0" (extraction only) for every feed here EXCEPT
+        # device_heartbeats, which gained a real lakehouse_models consumer
+        # (dim_iot_device, seeded below) once this became the live test for
+        # the lakehouse_model_columns frontend/codegen feature -- "0,1,2"
+        # there so its tag's dbt nodes aren't excluded from the domain's
+        # transformation/serving build (dbt_assets.py's per-feed
+        # cherry-picking would otherwise skip the whole build as a no-op:
+        # confirmed live, a first attempt with "0" here produced a
+        # trivially-successful 41ms dbt step that built nothing). Every
+        # other feed keeps pipeline_steps="0" -- extraction only, no model
+        # consumer. extraction_type="full"/no watermark_column: each run
+        # just reads whatever JSON files are currently in landing, no
+        # incremental filtering needed for this test.
+        seed_data_feed(
+            cur,
+            source_system_code="iot_telemetry_landing",
+            friendly_name="device_heartbeats",
+            source_object_name="device_heartbeats",
+            extraction_type="full",
+            source_pk=["device_id", "ts"],
+            processing_engine="polars",
+            batch_group_friendly_name="iot_telemetry",
+            batch_feed_hierarchy=1,
+            pipeline_steps="0,1,2",
+        )
+        for friendly_name, source_pk in [
+            ("device_errors", ["device_id", "ts"]),
+        ]:
+            seed_data_feed(
+                cur,
+                source_system_code="iot_telemetry_landing",
+                friendly_name=friendly_name,
+                source_object_name=friendly_name,
+                extraction_type="full",
+                source_pk=source_pk,
+                processing_engine="polars",
+                batch_group_friendly_name="iot_telemetry",
+                batch_feed_hierarchy=1,
+                pipeline_steps="0",
+            )
+        for friendly_name, source_pk in [
+            ("session_events", ["session_id", "ts"]),
+            ("location_pings", ["device_id", "ts"]),
+            ("network_usage", ["device_id", "ts"]),
+        ]:
+            seed_data_feed(
+                cur,
+                source_system_code="iot_telemetry_landing",
+                friendly_name=friendly_name,
+                source_object_name=friendly_name,
+                extraction_type="full",
+                source_pk=source_pk,
+                processing_engine="polars",
+                batch_group_friendly_name="iot_telemetry",
+                batch_feed_hierarchy=2,
+                pipeline_steps="0",
+            )
+        seed_data_feed(
+            cur,
+            source_system_code="iot_telemetry_landing",
+            friendly_name="device_health_snapshots",
+            source_object_name="device_health_snapshots",
+            extraction_type="full",
+            source_pk=["device_id", "ts"],
+            processing_engine="polars",
+            batch_group_friendly_name="iot_telemetry",
+            batch_feed_hierarchy=3,
+            pipeline_steps="0",
+        )
 
         # Model layer (Phase 7): dim_customer stands alone (no real FK from
         # sales to customers in this dataset -- see Learnings.md); dim_branch
@@ -431,6 +564,59 @@ def main() -> None:
             scd_type=1,
             deletes_enabled=False,
             updates_enabled=True,
+        )
+
+        # iot_telemetry domain -- a live test of the frontend's column-
+        # definition page (frontend/pages/6_Model_Table_Columns.py) and
+        # generate_model_scaffolds.py's dedicated-staging codegen (Backlog.md's
+        # "Frontend page for defining model tables"), kept seeded rather than
+        # a one-off manual test so every nuke-and-rebuild continues to prove
+        # it, same reasoning as inventory_events below. Single-feed
+        # (device_heartbeats, from the iot_telemetry batch group) -- proves
+        # the primary, single-feed path; the multi-feed CTE-per-feed/TODO-
+        # combine path is implemented but not exercised by this seed, since
+        # no real model spans 2+ feeds today.
+        seed_lakehouse_model(
+            cur,
+            friendly_name="dim_iot_device",
+            table_name="iot_telemetry_dim_device",
+            model_schema="iot_telemetry",
+            table_type="dimension",
+            depends_on_feed_friendly_names=["device_heartbeats"],
+            owning_feed_friendly_name="device_heartbeats",
+            business_key_columns=[],
+            tracked_columns=[],
+            scd_type=1,
+            deletes_enabled=False,
+        )
+        seed_lakehouse_model_columns(
+            cur,
+            model_friendly_name="dim_iot_device",
+            columns=[
+                {
+                    "column_name": "device_id", "source_feed_friendly_name": "device_heartbeats",
+                    "data_type": "string", "is_nullable": False, "is_business_key": True, "is_tracked": False,
+                },
+                {
+                    "column_name": "battery_level", "source_feed_friendly_name": "device_heartbeats",
+                    "data_type": "long", "is_nullable": False, "is_business_key": False, "is_tracked": True,
+                },
+                {
+                    "column_name": "signal_strength", "source_feed_friendly_name": "device_heartbeats",
+                    "data_type": "long", "is_nullable": False, "is_business_key": False, "is_tracked": True,
+                },
+                {
+                    "column_name": "firmware_version", "source_feed_friendly_name": "device_heartbeats",
+                    "data_type": "string", "is_nullable": False, "is_business_key": False, "is_tracked": True,
+                },
+                {
+                    # Deliberately neither business key nor tracked -- proves
+                    # the third state (a passthrough column excluded from
+                    # both _key_hash and _attr_hash).
+                    "column_name": "ts", "source_feed_friendly_name": "device_heartbeats",
+                    "data_type": "timestamp", "is_nullable": False, "is_business_key": False, "is_tracked": False,
+                },
+            ],
         )
 
         # police_crimes' cron schedule; fct_daily_financial_activity is a

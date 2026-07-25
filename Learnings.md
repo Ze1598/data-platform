@@ -8,7 +8,7 @@ If you landed here from a search engine: welcome. Every entry below was reproduc
 
 ## New chat session started
 
-Continue work on the data platform — see README.md/Roadmap.md/Progress.md/Backlog.md/Learnings.md/CLAUDE.md for context, and .claude/plans/ for pending work from previous sessions if one exists. If you find anything unexpected while working, stop and raise it before proceeding.
+Start by reading Claude.md which enforces your ways of working in this session. Afteward, read README.md, Roadmap.md, Progress.md and Backlog.md to understand what this project is, its progress to date, and what work is left to do. At the end, read Learnings.md to understand particular technical constraints faced in this project and how they were addressed. If you find any contradictory information or ambiguity in the documetation you just read, raise it to me to be corrected immediately.
 
 ## Apache Polaris (Iceberg REST catalog)
 
@@ -871,7 +871,7 @@ A related, sharper edge worth remembering if a dependent widget's *options* can 
 
 ### A Dagster `LaunchRunSuccess` mutation result proves the submission was *accepted*, not that the run itself succeeds
 
-**Symptom**: `frontend/pages/5_Trigger_Pipeline.py`'s `batch_group` picker populated its dropdown from `data_feed.batch_group` — a `uuid` column — instead of the separate `data_feed.batch_group_friendly_name` text column. Submitting a `batch_group` trigger returned `LaunchRunSuccess` with a real `runId` every time — no error, no exception, the exact response a correct submission would give — but every launched run then failed *inside* Dagster with `Failure: No active feeds resolved for orchestration_kind='batch_group' orchestration_value='<uuid>'`, because `PostgresMetadataResource.get_batch_group_feeds()` matches `WHERE batch_group_friendly_name = %s`, and a uuid string matches no row.
+**Symptom**: `frontend/pages/5_Trigger_Pipeline.py`'s `batch_group` picker populated its dropdown from `data_feed.batch_group` — a `uuid` column — instead of the separate `data_feed.batch_group_friendly_name` text column. Submitting a `batch_group` trigger returned `LaunchRunSuccess` with a real `runId` every time — no error, no exception, the exact response a correct submission would give — but every launched run then failed *inside* Dagster with `Failure: No active feeds resolved for orchestration_kind='batch_group' orchestration_value='<uuid>'`, because `PostgresMetadataResource.get_batch_group_feeds_by_tier()` matches `WHERE batch_group_friendly_name = %s`, and a uuid string matches no row.
 
 **Cause, and why it went undetected for a while**: the GraphQL mutation and the pipeline run it launches are two genuinely separate things, checked at two different times — `launchPipelineExecution`'s `LaunchRunSuccess` only means Dagster *accepted the submission*, before `run_master_pipeline`'s own op body ever executes. A test (or a manual check) that stops at "the button click didn't raise, and a success message appeared" — or, worse, a `SELECT ... ORDER BY job_started_timestamp DESC LIMIT N` sanity check run shortly after a *different*, unrelated real pipeline run (a full `just smoketest` in this case) — can look like confirmation while actually observing a completely different run's leftover rows, not the one just triggered.
 

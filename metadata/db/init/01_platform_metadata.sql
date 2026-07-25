@@ -340,6 +340,54 @@ create table lakehouse_models (
 );
 
 -- ---------------------------------------------------------------------------
+-- lakehouse_model_columns (per-model column definitions, entered via the
+-- frontend's "Model Table Columns" page -- a metadata-driven, codegen-to-dbt
+-- UX alternative to hand-writing a model's SQL column list. Drives
+-- generate_model_scaffolds.py's dedicated per-model staging generation
+-- (stg_<table_name>, one per lakehouse_models row, distinct from the
+-- per-feed stg_<feed> staging models that predate this table) and the
+-- model layer's own base CTE column list -- see Backlog.md's "Frontend
+-- page for defining model tables" and generate_model_scaffolds.py's module
+-- docstring for the full design.
+-- ---------------------------------------------------------------------------
+create table lakehouse_model_columns (
+    id                uuid primary key default gen_random_uuid(),
+    model_id          uuid not null references lakehouse_models(id),
+    -- which of the model's depends_on_feeds this column is sourced from --
+    -- enforced at the application layer (the frontend page), same as
+    -- depends_on_feeds/owning_feed_id's own membership rules, not a real
+    -- FK-into-a-comma-list constraint.
+    source_feed_id    uuid not null references data_feed(id),
+    column_name       text not null,
+    -- deliberately the same small, Iceberg-shaped vocabulary
+    -- raw_to_clean/schema_registry already uses (schema_validation.py's
+    -- TYPE_MAP) rather than a full SQL/Trino type list -- one vocabulary
+    -- for "what type is this column" everywhere in the platform, not two.
+    data_type         text not null check (data_type in ('string', 'long', 'double', 'boolean', 'timestamp')),
+    is_nullable       boolean not null default true,
+    -- true = this column is part of the model's business key (the staging
+    -- layer's _key_hash, and the model layer's own business_key_columns
+    -- equivalent) -- mutually exclusive with is_tracked, see the check
+    -- constraint below: a business key column is never also
+    -- change-tracked, its role is identity, not attribute comparison.
+    is_business_key   boolean not null default false,
+    -- true = included in the staging layer's _attr_hash (change
+    -- detection). Only meaningful when is_business_key is false -- a
+    -- column can be neither (excluded from both the key and the hash
+    -- entirely, e.g. a passthrough column that shouldn't trigger a
+    -- Type 2 new-version/Type 1 update on its own).
+    is_tracked        boolean not null default true,
+    -- stable column order for the generated SQL -- entry order in the
+    -- frontend's editor grid, not alphabetical or insertion-order-by-accident.
+    ordinal_position  int not null,
+    created_at        timestamptz not null default now(),
+    unique (model_id, column_name),
+    check (not (is_business_key and is_tracked))
+);
+
+create index idx_lakehouse_model_columns_model on lakehouse_model_columns (model_id, ordinal_position);
+
+-- ---------------------------------------------------------------------------
 -- ingestion_triggers (metadata for how a feed/model's master_pipeline run
 -- actually gets kicked off -- a cron schedule, or a storage/sensor trigger
 -- watching a feed's own landing directory for a new file. A build-time

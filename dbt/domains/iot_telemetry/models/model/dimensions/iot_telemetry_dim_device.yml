@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: iot_telemetry_dim_device
+    columns:
+      - name: _key_hash
+        tests: [not_null, unique]
+      - name: _attr_hash
+        tests: [not_null]
+      - name: is_deleted
+        tests: [not_null]
+      - name: device_id
+        tests: [not_null]
+      - name: battery_level
+        tests: [not_null]
+      - name: signal_strength
+        tests: [not_null]
+      - name: firmware_version
+        tests: [not_null]

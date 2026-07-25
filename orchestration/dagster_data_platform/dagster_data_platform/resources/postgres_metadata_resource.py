@@ -196,24 +196,37 @@ class PostgresMetadataResource(ConfigurableResource):
                 return None
             return slugify_domain(rows[0][0])
 
-    def get_batch_group_feeds(self, batch_group_friendly_name: str) -> list[str]:
-        """Every active feed sharing this batch_group -- backs
-        pipeline_generated.py's resolve_run_plan_for_batch_group()
-        ("trigger by batch group"): feed jobs only, no domain job implied.
-        batch_group and model_schema stay two structurally separate axes
-        (see data_processing_runs.tracking_group_type's existing design) --
-        a batch's feeds may span multiple domains, so there is no single
+    def get_batch_group_feeds_by_tier(self, batch_group_friendly_name: str) -> list[tuple[int, list[str]]]:
+        """Every active feed sharing this batch_group, grouped by
+        `batch_feed_hierarchy` and returned as (tier, feeds) pairs ordered
+        ascending by tier -- backs run_master_pipeline's tiered extraction
+        (Roadmap.md "Hierarchy-tiered, dependency-driven master_pipeline
+        execution"): tier N's feeds extract in parallel (launch_many_and_wait),
+        tier N+1 only starts once every tier-N feed reaches a terminal
+        status. Tiers are discovered dynamically from whatever distinct
+        `batch_feed_hierarchy` values are actually present for this batch
+        group -- no fixed tier count, spacing, or starting value is
+        assumed (a batch group with every feed at the same hierarchy value
+        is valid and yields a single tier, all feeds in parallel). feed
+        jobs only, no domain job implied -- batch_group and model_schema
+        stay two structurally separate axes (see
+        data_processing_runs.tracking_group_type's existing design), a
+        batch's feeds may span multiple domains, so there is no single
         domain job to launch here."""
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT friendly_name FROM data_feed
+                SELECT batch_feed_hierarchy, friendly_name FROM data_feed
                 WHERE batch_group_friendly_name = %s AND is_active = true
-                ORDER BY friendly_name
+                ORDER BY batch_feed_hierarchy, friendly_name
                 """,
                 (batch_group_friendly_name,),
             )
-            return [r[0] for r in cur.fetchall()]
+            rows = cur.fetchall()
+        tiers: dict[int, list[str]] = {}
+        for tier, feed in rows:
+            tiers.setdefault(tier, []).append(feed)
+        return sorted(tiers.items())
 
     def update_watermark(self, *, data_feed_id: str, watermark_value: str, run_id: str) -> None:
         """Advances data_feed.last_watermark_value (Phase 9, Roadmap.md

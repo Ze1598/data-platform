@@ -4,6 +4,12 @@ Things explicitly deferred, not forgotten. Unlike `Roadmap.md` (planned phases) 
 
 ---
 
+### Cooperative wake-up's 60s grace period doesn't cover the host-CLI trigger path — repeated `ConnectionResetError`/`TransportConnectionFailed` during long runs
+
+`wake_sleep_sensor.py`'s `_WAKE_GRACE_PERIOD_SECONDS = 60` (see "Cooperative wake-up mechanism", `Progress.md`, 2026-07-20) was built and verified against Streamlit's `5_Trigger_Pipeline.py` path, where wake and the GraphQL submission happen back-to-back inside one request handler — the 60s window comfortably covers that gap. It does not cover the **host-CLI path** (`just orchestration _wake-orchestration` run as one step, then a separate `python -m dagster_data_platform.trigger_master_pipeline` subprocess run afterward as a second step, `dagster_launch.launch_and_wait` polling for up to 1800s) — there's real, variable latency between the wake call actually landing and the new run existing in Dagster's run storage for `RunsFilter`/`_recently_woken()` to see, and once that 60s window elapses, a sleep-sensor tick from a **prior, unrelated run's** terminal-status event can rescale `dagster-webserver`/`dagster-code-server` to 0 while a genuinely in-flight run's own GraphQL poll is mid-flight — observed live, repeatedly, as `ConnectionResetError('Connection reset by peer')` / `TransportConnectionFailed` from `submit_job_execution`/`get_run_status`, indistinguishable at the client from a real network fault unless cross-checked against Dagster's own run storage.
+
+**Not diagnosed to a specific line of code yet** — this entry records the recurring symptom and its most likely mechanism (grace period too short for this trigger path), not a confirmed root cause; only actually fixed by the original 2026-07-20 work for the Streamlit path specifically. A real fix needs investigation into why the host-CLI path specifically is exposed (verify-pipeline/verify-schedule/verify-sensor's own retry-wrapped invocations may already work around this without ever explaining why) and something more robust than a fixed timeout guessed to be "long enough" — e.g. the sleep sensor checking for genuinely no in-flight run via a mechanism that doesn't degrade with elapsed time at all, rather than a grace period that's a race by construction. Repeatedly hitting this and just retrying (the workaround used throughout this session) treats the symptom, not the cause, every time.
+
 ### Superseded design: single shared dbt project + `tag:<model_schema>` selectors, as a fallback if full domain isolation proves premature
 
 Before landing on genuine per-domain dbt project isolation (separate `dbt_project.yml`/manifest/image per `model_schema` domain — see `README.md`'s Repo Structure `dbt/` line), a lighter-weight alternative was fully designed and explicitly rejected in favor of real isolation, not because it doesn't work: **one shared dbt project** (today's structure, unchanged), with each domain's `staging`/`model`/`serve` models tagged `tag:<model_schema>` — the exact same mechanism already splitting transformation from serving today — giving independently-triggerable `dbt build` invocations per domain, physical naming-convention differentiation (`<model_schema>_<fct|dim>_<name>`) instead of separate schemas, and Dagster `pool=` to avoid concurrency races between domains. Real, viable, much less infrastructure than full isolation.
@@ -11,10 +17,6 @@ Before landing on genuine per-domain dbt project isolation (separate `dbt_projec
 **Rejected because**: it doesn't solve `dbt parse`'s full-project compile cost (paid by every domain's build regardless of `--select` scope) or deployment blast radius (one shared manifest/image means every domain's build/deploy is coupled). Given this platform is explicitly meant to validate feasibility at real enterprise scale, those were judged worth solving now rather than deferring.
 
 Noted here in case genuine per-domain project isolation turns out to be more than is needed and this lighter mechanism becomes the better fit after all — a complete, ready-to-build fallback, not abandoned reasoning.
-
-### `batch_group`/`batch_feed_hierarchy` are metadata-only
-
-Every `data_feed` has a batch (enforced not-null), but nothing in Dagster groups or orders execution by batch/hierarchy yet — it's pure data with no behavioral consumer. Whether this becomes real (e.g. a batch-scoped job/schedule, parallel-within-tier execution) depends on whether a real multi-feed batch ever gets configured; today every feed is still its own singleton batch.
 
 ### `customers`/`sales` are still synthetic in-memory stub generators
 
@@ -28,13 +30,24 @@ Verified feasible against the actual installed library (PyIceberg 0.11.1, read f
 
 Would stay opt-in only if built — a deliberate throughput trade for feeds that genuinely need Python-expressible logic, not a peer-performance alternative to dbt. Staging → model would always stay dbt regardless of which engine built staging.
 
-### Frontend page for defining model tables — proposed, not built
+### Frontend page for defining model tables — first build rejected as not fit for purpose, needs a full rebuild
 
-A metadata-driven, codegen-to-dbt UX alternative to hand-writing SQL directly: define columns, types, constraints, and partitions for a model table through the CRUD frontend instead of authoring the `.sql` file by hand. Would be an optional on-ramp, not a requirement — users could still author dbt/Python by hand regardless.
+A first version of this page (`frontend/pages/6_Model_Table_Columns.py`) was built and live-verified, but rejected by the user as not fit for purpose. Exact requirements for the rebuild, verbatim, not paraphrased:
 
-### `schema_registry`'s type vocabulary is flat/scalar-only — jsonb/nested columns unmapped
+Rebuild the entire Model Table Columns page in the streamlit app. The page is aimed at both creating new tables for model tables defined in the lakehouse_models table, AND editing existing table. This page must allow the user to define the table structures and the following details for each column:
+-Column name
+-Column data Type (based on plain text data type options that need to be translated into corresponding valid data types in dbt: string, integer, decimal, boolean, timestamp)
+-Column nullability (true means null, false means not null)
+-Column is business key (true or false, this feeds into the calculation of the key hash)
+-Column is tracked (true or false, this feeds into the calculation of the non-key hash, not applicable if Column is business key = true)
 
-A Postgres `jsonb` column or a nested JSON API response has nowhere obvious to map to in `schema_registry`'s current type vocabulary. Real options: flatten, stringify, or extend the vocabulary — an open design decision, not yet made.
+Upon saving the table definition, this is what generates the placeholder staging dbt script plus the table definition in the model schema, not saving the model entry in the Lakehouse models table. This is because this page only generates the placeholder script if the script does not yet exist, and likewise for the model table existence - it must not touch the code and/or table definition if they already exist because changing it risks losing existing business logic and/or corrupt model data. This calculation of code and table templates happens when the user clicks the save button only. By all means you are free to rethink the entire visual design of this page to avoid a crappy user experience.
+
+Moreover, this page should start with a filter for the model_schema, followed by a second filter that allows selection of tables for the selected model_schema.
+
+### `schema_registry`'s type vocabulary is flat/scalar-only — no unified policy for jsonb/nested columns
+
+`TYPE_MAP` in `processing/raw_to_clean/raw_to_clean/schema_validation.py` is 5 scalar types only (`string`/`long`/`double`/`boolean`/`timestamp`) — no jsonb/struct/array type exists in the vocabulary itself. But the two concrete cases that hit this today already have working, in-production resolutions, applied ad hoc per source rather than as a chosen platform-wide policy: Postgres `jsonb` columns are stringified (`processing/connectors/connectors/postgres.py`'s `_POSTGRES_TYPE_MAP`), and `police_crimes`'s nested API response is flattened before registry mapping (`orchestration/dagster_data_platform/dagster_data_platform/connectors/police_crimes_connector.py`'s `flatten()`, via the `JsonConnector` base). Open question is no longer "what do we do about this" — both answers already exist in code — it's whether to formalize one/both as the standard pattern for future sources, or keep resolving it case-by-case.
 
 ### Dagster's authoring/observability fit — two gaps, not resolved by the master pipeline rebuild
 

@@ -92,7 +92,7 @@ def fetch_candidate_rows(cur) -> list[dict]:
     cur.execute(
         """
         select
-            lm.friendly_name, lm.table_name, lm.model_schema, lm.table_type,
+            lm.id as model_id, lm.friendly_name, lm.table_name, lm.model_schema, lm.table_type,
             lm.business_key_columns, lm.tracked_columns, lm.scd_type,
             lm.deletes_enabled, lm.depends_on_feeds,
             df.friendly_name as owning_feed
@@ -104,6 +104,159 @@ def fetch_candidate_rows(cur) -> list[dict]:
     )
     columns = [desc.name for desc in cur.description]
     return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def fetch_model_columns(cur) -> dict:
+    """lakehouse_model_columns rows, grouped by model_id and ordered by
+    ordinal_position -- the frontend's column-definition editor
+    (frontend/pages/6_Model_Table_Columns.py). A model with no rows here
+    is absent from the returned dict entirely and keeps the original
+    business_key_columns/tracked_columns-scaffolded flow untouched."""
+    cur.execute(
+        """
+        select
+            lmc.model_id, lmc.column_name, lmc.data_type, lmc.is_nullable,
+            lmc.is_business_key, lmc.is_tracked, df.friendly_name as source_feed
+        from lakehouse_model_columns lmc
+        join data_feed df on df.id = lmc.source_feed_id
+        order by lmc.model_id, lmc.ordinal_position
+        """
+    )
+    columns = [desc.name for desc in cur.description]
+    by_model: dict = {}
+    for row in cur.fetchall():
+        r = dict(zip(columns, row))
+        by_model.setdefault(str(r["model_id"]), []).append(r)
+    return by_model
+
+
+# Same 5-type vocabulary lakehouse_model_columns.data_type is constrained
+# to (schema_validation.py's TYPE_MAP) -- these are the casts every
+# hand-written staging model already uses for the same 5 values
+# (stg_customers.sql/stg_sales.sql), reused verbatim rather than invented.
+_SQL_TYPE_BY_DATA_TYPE = {
+    "string": "varchar",
+    "long": "bigint",
+    "double": "double",
+    "boolean": "boolean",
+    "timestamp": "timestamp(6) with time zone",
+}
+
+
+def _cast_expr(column_name: str, data_type: str) -> str:
+    """A plain `cast(col as timestamp(6) with time zone)` fails in Trino
+    against an ISO8601 string with a literal 'T'/'Z' (`INVALID_CAST_ARGUMENT:
+    Value cannot be cast to timestamp: ...T...Z`, confirmed live) -- every
+    connector-driven feed's `clean` layer stores a schema_registry
+    `timestamp` column as varchar regardless of connector kind (confirmed
+    via `describe iceberg.clean.<feed>`), so this is universal, not specific
+    to one feed. stg_financial_transactions.sql already established the
+    correct pattern for this exact case (`from_iso8601_timestamp(...) at
+    time zone 'UTC'`) -- reused here rather than inventing a second one."""
+    if data_type == "timestamp":
+        return f"cast(from_iso8601_timestamp({column_name}) at time zone 'UTC' as timestamp(6) with time zone) as {column_name}"
+    return f"cast({column_name} as {_SQL_TYPE_BY_DATA_TYPE[data_type]}) as {column_name}"
+
+
+def staging_target_path(row: dict) -> Path:
+    """dbt/domains/<domain>/models/staging/stg_<table_name>.sql -- a
+    DEDICATED per-model staging file, distinct from the pre-existing
+    per-feed stg_<feed>.sql staging models (which stay shared/hand-written
+    and are never touched by this script). Only generated for a model with
+    lakehouse_model_columns rows -- see generate()."""
+    domain = slugify_domain(row["model_schema"])
+    return DOMAINS_DIR / domain / "models" / "staging" / f"stg_{row['table_name']}.sql"
+
+
+def _render_dedicated_staging(*, table_name: str, owning_feed: str, columns: list[dict]) -> str:
+    """Renders a dedicated per-model staging file, driven by
+    lakehouse_model_columns instead of hand-picked columns -- same
+    cast/_key_hash/_attr_hash/incremental/classify_changes pattern every
+    hand-written staging model already uses (stg_customers.sql/
+    stg_sales.sql), just parameterized. tags/config alias use `owning_feed`
+    (not every distinct source feed) -- same reasoning lakehouse_models.
+    owning_feed_id already exists for at the model layer: exactly one
+    feed's tag, never more, is what avoids the "two feed tags" @dbt_assets
+    ownership-conflict bug class (see Learnings.md).
+
+    A model spanning more than one distinct source feed gets one CTE per
+    feed (each casting only that feed's own declared columns), but the
+    final select combining them is left as a hand-written TODO -- no
+    metadata describes how two feeds' rows relate (same reasoning
+    generate_model_scaffolds.py's model-layer FK-join boilerplate is
+    already left out for, see _render_type1_model's own TODO comment)."""
+    feeds = sorted({c["source_feed"] for c in columns})
+    key_cols = [c["column_name"] for c in columns if c["is_business_key"]]
+    tracked_cols = [c["column_name"] for c in columns if c["is_tracked"]]
+    key_hash_args = _py_list_literal(key_cols)
+    attr_hash_args = _py_list_literal(tracked_cols)
+
+    def _cte_for_feed(feed: str) -> str:
+        feed_cols = [c for c in columns if c["source_feed"] == feed]
+        cols_block = ",\n".join(f"        {_cast_expr(c['column_name'], c['data_type'])}" for c in feed_cols)
+        return f"""{feed}_raw as (
+
+    select
+{cols_block}
+    from {{{{ source('clean', '{feed}') }}}}
+
+)"""
+
+    ctes = ",\n\n".join(_cte_for_feed(f) for f in feeds)
+
+    if len(feeds) == 1:
+        combine_comment = ""
+    else:
+        combine_comment = (
+            f"\n    -- TODO: combine the CTEs above ({', '.join(f + '_raw' for f in feeds)}) -- no metadata\n"
+            "    -- describes how these feeds' rows relate (join key/condition, or a union if\n"
+            "    -- they're the same shape from different sources). Replace this placeholder\n"
+            "    -- select with the real business logic.\n"
+        )
+
+    return f"""{{{{
+  config(
+    unique_key='_key_hash',
+    alias='{table_name}',
+    tags=['{owning_feed}']
+  )
+}}}}
+
+{{#
+    Generated scaffold (scripts/generate_model_scaffolds.py), driven by
+    lakehouse_model_columns (frontend/pages/6_Model_Table_Columns.py) --
+    dedicated staging for {table_name}, distinct from any per-feed
+    stg_<feed>.sql. Casts and the key/tracked column split come from that
+    table.
+#}}
+
+{{% set updates_enabled = var('updates_enabled_by_model', {{}}).get(model.name, true) %}}
+
+with {ctes},
+{combine_comment}
+source_raw as (
+
+    select
+        *,
+        {{{{ row_hash({key_hash_args}) }}}} as _key_hash,
+        {{{{ row_hash({attr_hash_args}) }}}} as _attr_hash
+    from {feeds[0]}_raw
+
+)
+
+{{% if is_incremental() %}}
+
+, source as (
+    {{{{ classify_changes('source_raw', updates_enabled) }}}}
+)
+
+{{% endif %}}
+
+select
+    *,
+    {{{{ dbt.current_timestamp() }}}} as _loaded_at
+from {{{{ 'source' if is_incremental() else 'source_raw' }}}}
+"""
 
 
 def target_path(row: dict) -> tuple[Path, bool]:
@@ -271,7 +424,7 @@ select * from hashed
 """
 
 
-def _render_schema_yml_companion(table_name: str, is_type2: bool) -> str:
+def _render_schema_yml_companion(table_name: str, is_type2: bool, not_null_columns: list[str] | None = None) -> str:
     # Fixed shape confirmed against the real, hand-maintained schema.yml
     # this pattern originated from: Type 1 dimension/fact -> _key_hash is
     # unique (one row per business key); Type 2 snapshot -> _key_hash is
@@ -279,6 +432,15 @@ def _render_schema_yml_companion(table_name: str, is_type2: bool) -> str:
     # the unique one instead. Lives under `models:` vs `snapshots:`
     # respectively -- dbt discovers property files by content, not by the
     # literal filename `schema.yml`.
+    #
+    # not_null_columns is only populated for a model with
+    # lakehouse_model_columns rows (is_nullable=false there) -- the
+    # original business_key_columns/tracked_columns text-field flow has no
+    # per-column nullability concept to test against, so this list is
+    # empty/None for every model that hasn't opted into column definitions.
+    extra_column_tests = "".join(
+        f"      - name: {c}\n        tests: [not_null]\n" for c in (not_null_columns or [])
+    )
     if is_type2:
         return f"""version: 2
 
@@ -293,7 +455,7 @@ snapshots:
         tests: [not_null]
       - name: is_deleted
         tests: [not_null]
-"""
+{extra_column_tests}"""
     return f"""version: 2
 
 models:
@@ -305,37 +467,89 @@ models:
         tests: [not_null]
       - name: is_deleted
         tests: [not_null]
-"""
+{extra_column_tests}"""
 
 
-def generate(rows: list[dict]) -> tuple[list[Path], list[Path]]:
+def generate(rows: list[dict], model_columns: dict) -> tuple[list[Path], list[Path]]:
     written, skipped = [], []
     for row in rows:
+        cols = model_columns.get(str(row["model_id"]), [])
+        owning_feed = row["owning_feed"]
+        not_null_columns: list[str] = []
+
+        # Dedicated per-model staging generation is independent of whether
+        # the model/snapshot file itself already exists below -- a model
+        # can get column definitions added well after its .sql was hand-
+        # written, and this backfills the staging file without touching
+        # that already-existing (possibly hand-edited) model file.
+        if cols and row["deletes_enabled"]:
+            # deletes_enabled's is_deleted column comes from the
+            # deletion-synthesis intermediate (int_<table_name>_with_deletes,
+            # generate_deletion_synthesis_views.py), which itself still
+            # wraps the OLD per-feed stg_<owning_feed> -- not this new
+            # dedicated staging. Known gap, not silently worked around:
+            # print a warning and fall back to today's behavior entirely
+            # rather than generate an unused dedicated staging file.
+            print(
+                f"  NOTE: {row['table_name']!r} has lakehouse_model_columns rows but "
+                f"deletes_enabled=true -- dedicated staging generation is skipped for this "
+                f"model (deletion-synthesis still wraps stg_{owning_feed}), falling back to "
+                f"the original business_key_columns/tracked_columns flow."
+            )
+            business_key_columns = row["business_key_columns"]
+            tracked_columns = row["tracked_columns"]
+            source_ref = f"int_{row['table_name']}_with_deletes"
+        elif cols:
+            business_key_columns = [c["column_name"] for c in cols if c["is_business_key"]]
+            tracked_columns = [c["column_name"] for c in cols if c["is_tracked"]]
+            # Restricted to columns that actually appear in the MODEL layer
+            # (business_key_columns + tracked_columns, selected into the
+            # base CTE below) -- a column that's neither (e.g. a
+            # passthrough kept in staging only) has no column of that name
+            # in the model table at all, so a not_null test on it there
+            # would fail with COLUMN_NOT_FOUND, not a real test failure.
+            not_null_columns = [
+                c["column_name"] for c in cols
+                if not c["is_nullable"] and (c["is_business_key"] or c["is_tracked"])
+            ]
+            source_ref = f"stg_{row['table_name']}"
+
+            staging_path = staging_target_path(row)
+            if staging_path.exists():
+                skipped.append(staging_path)
+            else:
+                staging_path.parent.mkdir(parents=True, exist_ok=True)
+                staging_path.write_text(
+                    _render_dedicated_staging(table_name=row["table_name"], owning_feed=owning_feed, columns=cols)
+                )
+                written.append(staging_path)
+        else:
+            business_key_columns = row["business_key_columns"]
+            tracked_columns = row["tracked_columns"]
+            if row["deletes_enabled"]:
+                # deletes_enabled's source is the deletion-synthesis
+                # intermediate (int_<table_name>_with_deletes.sql, generated
+                # separately by generate_deletion_synthesis_views.py into this
+                # same domain -- not touched here), keyed by THIS row's own
+                # table_name -- domains are separate dbt projects with no
+                # cross-project ref(), so each lakehouse_models row gets its
+                # own copy rather than sharing one per feed.
+                source_ref = f"int_{row['table_name']}_with_deletes"
+            else:
+                source_ref = f"stg_{owning_feed}"
+
         path, is_type2 = target_path(row)
         if path.exists():
             skipped.append(path)
             continue
-
-        owning_feed = row["owning_feed"]
-        if row["deletes_enabled"]:
-            # deletes_enabled's source is the deletion-synthesis
-            # intermediate (int_<table_name>_with_deletes.sql, generated
-            # separately by generate_deletion_synthesis_views.py into this
-            # same domain -- not touched here), keyed by THIS row's own
-            # table_name -- domains are separate dbt projects with no
-            # cross-project ref(), so each lakehouse_models row gets its
-            # own copy rather than sharing one per feed.
-            source_ref = f"int_{row['table_name']}_with_deletes"
-        else:
-            source_ref = f"stg_{owning_feed}"
 
         render = _render_type2_snapshot if is_type2 else _render_type1_model
         content = render(
             friendly_name=row["friendly_name"],
             table_name=row["table_name"],
             owning_feed=owning_feed,
-            business_key_columns=row["business_key_columns"],
-            tracked_columns=row["tracked_columns"],
+            business_key_columns=business_key_columns,
+            tracked_columns=tracked_columns,
             deletes_enabled=row["deletes_enabled"],
             source_ref=source_ref,
         )
@@ -344,7 +558,7 @@ def generate(rows: list[dict]) -> tuple[list[Path], list[Path]]:
         written.append(path)
 
         yml_path = path.with_suffix(".yml")
-        yml_path.write_text(_render_schema_yml_companion(row["table_name"], is_type2))
+        yml_path.write_text(_render_schema_yml_companion(row["table_name"], is_type2, not_null_columns))
         written.append(yml_path)
 
     return written, skipped
@@ -353,10 +567,11 @@ def generate(rows: list[dict]) -> tuple[list[Path], list[Path]]:
 def main() -> None:
     with psycopg.connect(**CONN_KWARGS) as conn, conn.cursor() as cur:
         rows = fetch_candidate_rows(cur)
+        model_columns = fetch_model_columns(cur)
 
-    written, skipped = generate(rows)
+    written, skipped = generate(rows, model_columns)
     print(
-        f"Scaffolded {len(written)} new file(s) (model/snapshot + companion .yml); "
+        f"Scaffolded {len(written)} new file(s) (staging/model/snapshot + companion .yml); "
         f"left {len(skipped)} existing target(s) untouched, out of {len(rows)} active "
         f"lakehouse_models row(s)."
     )

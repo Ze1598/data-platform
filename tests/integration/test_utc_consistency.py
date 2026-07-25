@@ -50,6 +50,33 @@ def test_clean_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
     assert not failures, "\n".join(failures)
 
 
+def _staging_table_names_for_feed(metadata_cur, friendly_name: str) -> list[str]:
+    """Every staging table this feed's clean-layer data can physically land
+    in. Historically exactly one, aliased by the feed's own friendly_name
+    (every hand-written stg_<feed>.sql, e.g. stg_customers.sql/
+    stg_sales.sql -- still true for any feed with no lakehouse_model_columns
+    rows). A feed with lakehouse_model_columns rows
+    (frontend/pages/6_Model_Table_Columns.py) also gets one DEDICATED
+    stg_<table_name> per model sourcing from it, aliased by that model's
+    table_name -- NOT the feed's own name (see
+    scripts/generate_model_scaffolds.py's dedicated-staging codegen). A
+    feed can have both at once (a pre-existing hand-written staging model
+    plus a newly-added dedicated one for a different model), so this
+    returns every structurally-possible name; the caller checks whichever
+    ones actually exist."""
+    metadata_cur.execute(
+        """
+        SELECT DISTINCT lm.table_name
+        FROM lakehouse_model_columns lmc
+        JOIN data_feed df ON df.id = lmc.source_feed_id
+        JOIN lakehouse_models lm ON lm.id = lmc.model_id
+        WHERE df.friendly_name = %s
+        """,
+        (friendly_name,),
+    )
+    return [friendly_name] + [row[0] for row in metadata_cur.fetchall()]
+
+
 def test_staging_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
     """Covers the second half of the actual bug: even after clean.customers
     was fixed, a pre-existing staging.customers table stayed naive, because
@@ -61,27 +88,34 @@ def test_staging_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
     assert feeds, "expected at least one feed with a timestamp column in schema_registry — did seeding run?"
 
     failures = []
+    metadata_cur = metadata_conn.cursor()
     for friendly_name, timestamp_columns in feeds:
-        # Every staging model's alias equals its feed's friendly_name today
-        # (see dbt/domains/<domain>/models/staging/stg_*.sql's `alias=`
-        # config) -- no staging_table_name metadata column to read anymore.
-        columns = describe_columns(trino_conn, "staging", friendly_name)
-        assert columns, f"iceberg.staging.{friendly_name} does not exist — has stg_{friendly_name} ever run?"
-        # schema_registry reflects clean's full discovered schema, which
-        # can be wider than what a hand-written staging model actually
-        # selects (e.g. a feed extracted via a generic `SELECT *` -- see
-        # metadata/DataModel.md, data_feed.extraction_config) -- curating
-        # columns down in staging is normal, intended dbt modeling, not a
-        # gap, so only check timestamp columns staging actually carries
-        # through, plus the technical _loaded_at column every staging
-        # model stamps (see dbt/domains/<domain>/models/staging/stg_*.sql).
-        for col in [*timestamp_columns, "_loaded_at"]:
-            if col not in columns:
+        staging_table_names = _staging_table_names_for_feed(metadata_cur, friendly_name)
+        found_any = False
+        for table_name in staging_table_names:
+            columns = describe_columns(trino_conn, "staging", table_name)
+            if not columns:
                 continue
-            trino_type = columns[col]
-            if "with time zone" not in trino_type:
-                failures.append(
-                    f"staging.{friendly_name}.{col}: expected 'timestamp(...) with time zone', got {trino_type!r}"
-                )
+            found_any = True
+            # schema_registry reflects clean's full discovered schema, which
+            # can be wider than what a staging model actually selects (e.g.
+            # a feed extracted via a generic `SELECT *` -- see
+            # metadata/DataModel.md, data_feed.extraction_config) --
+            # curating columns down in staging is normal, intended dbt
+            # modeling, not a gap, so only check timestamp columns staging
+            # actually carries through, plus the technical _loaded_at
+            # column every staging model stamps.
+            for col in [*timestamp_columns, "_loaded_at"]:
+                if col not in columns:
+                    continue
+                trino_type = columns[col]
+                if "with time zone" not in trino_type:
+                    failures.append(
+                        f"staging.{table_name}.{col}: expected 'timestamp(...) with time zone', got {trino_type!r}"
+                    )
+        assert found_any, (
+            f"none of feed {friendly_name!r}'s plausible staging tables exist yet "
+            f"({', '.join(staging_table_names)}) — has its staging model ever run?"
+        )
 
     assert not failures, "\n".join(failures)

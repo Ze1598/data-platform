@@ -89,3 +89,54 @@ def launch_and_wait(
         raise Failure(f"Child job {job_name!r} (run {run_id}) finished with status {status.value}")
 
     return run_id
+
+
+def launch_many_and_wait(
+    job_names: list[str],
+    tags: dict[str, str],
+    *,
+    run_config: dict | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+) -> list[str]:
+    """Submits every job in `job_names` up front (so they run concurrently
+    as separate K8sRunLauncher pods), then polls all of them until every
+    one reaches a terminal status -- unlike launch_and_wait, one job
+    failing does not stop polling the others: every job gets to reach its
+    own terminal status before this function decides whether to raise, so
+    a batch_group tier's already-running siblings are never cancelled by
+    one sibling's failure (Roadmap.md "Hierarchy-tiered, dependency-driven
+    master_pipeline execution" -- "a failure in tier N blocks tier N+1...
+    but doesn't cancel already-running tier-N siblings"). Raises
+    dagster.Failure listing every job that didn't succeed if any didn't;
+    returns every run_id (job_names order) on full success."""
+    client = _graphql_client()
+    run_ids = [client.submit_job_execution(job_name, tags=tags, run_config=run_config or {}) for job_name in job_names]
+
+    deadline = time.monotonic() + timeout_seconds
+    statuses = {run_id: client.get_run_status(run_id) for run_id in run_ids}
+    while any(s not in _TERMINAL_STATUSES for s in statuses.values()):
+        if time.monotonic() > deadline:
+            pending = [
+                f"{job_name!r} (run {run_id}, last status {statuses[run_id].value})"
+                for job_name, run_id in zip(job_names, run_ids)
+                if statuses[run_id] not in _TERMINAL_STATUSES
+            ]
+            raise Failure(
+                f"{len(pending)} job(s) did not reach a terminal status within "
+                f"{timeout_seconds}s: {'; '.join(pending)}"
+            )
+        time.sleep(poll_interval_seconds)
+        for run_id in run_ids:
+            if statuses[run_id] not in _TERMINAL_STATUSES:
+                statuses[run_id] = client.get_run_status(run_id)
+
+    failed = [
+        f"{job_name!r} (run {run_id}, status {statuses[run_id].value})"
+        for job_name, run_id in zip(job_names, run_ids)
+        if statuses[run_id] != DagsterRunStatus.SUCCESS
+    ]
+    if failed:
+        raise Failure(f"{len(failed)} job(s) did not succeed: {'; '.join(failed)}")
+
+    return run_ids
