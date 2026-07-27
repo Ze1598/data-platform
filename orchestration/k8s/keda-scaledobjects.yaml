@@ -13,12 +13,13 @@
 # nothing ever wakes it on a real trigger. See Learnings.md, "Kubernetes
 # scaling options compared".
 #
-# Real, stated limitation: with no cooperative-wake mechanism yet (see
-# Backlog.md -- Streamlit has no "trigger a Dagster run" feature at all
-# today), a manual trigger attempted while these are at 0 replicas will
-# fail/hang until the next scheduled window. Not a regression (there's no
-# way to manually trigger from Streamlit today either), but a real
-# boundary of what this covers.
+# A manual trigger attempted while these are at 0 replicas does not fail/hang:
+# frontend/pages/6_Trigger_Pipeline.py (frontend/dagster_wake.py) wakes both
+# ScaledObjects itself via the `autoscaling.keda.sh/paused-replicas`
+# annotation before submitting, and a Dagster run-status sensor
+# (wake_sleep_sensor.py) puts them back to sleep once master_pipeline
+# reaches a terminal status. See Progress.md, "Cooperative wake-up
+# mechanism for Dagster from Streamlit" (2026-07-20).
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:

@@ -1,4 +1,4 @@
-"""Exercises frontend/pages/5_Trigger_Pipeline.py through Streamlit's own
+"""Exercises frontend/pages/6_Trigger_Pipeline.py through Streamlit's own
 headless script-running harness (AppTest) -- not a hand-copied snippet of
 its backend logic, and not just "no exception raised."
 
@@ -52,7 +52,7 @@ from streamlit.testing.v1 import AppTest
 
 from metadata_db import get_engine
 
-_PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "5_Trigger_Pipeline.py"
+_PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "6_Trigger_Pipeline.py"
 _RUN_ID_RE = re.compile(r"Run submitted: `([0-9a-f-]{36})`")
 
 _NAMESPACE = "orchestration"

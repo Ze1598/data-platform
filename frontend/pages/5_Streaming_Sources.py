@@ -350,7 +350,7 @@ elif mode == "Discover schema":
                         controlling_object_type="streaming_source",
                         column_definitions=column_definitions,
                         primary_key_columns=[],
-                        created_by="4_Streaming_Sources_discover_schema",
+                        created_by="5_Streaming_Sources_discover_schema",
                     )
                     st.success(f"Discovered {len(column_definitions)} column(s) from {len(messages)} sample message(s).")
                     st.rerun()

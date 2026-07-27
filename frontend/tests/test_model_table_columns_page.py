@@ -1,4 +1,4 @@
-"""Exercises frontend/pages/6_Model_Table_Columns.py through Streamlit's own
+"""Exercises frontend/pages/7_Model_Table_Columns.py through Streamlit's own
 headless script-running harness (AppTest) -- same philosophy as
 test_trigger_pipeline_page.py: not a hand-copied snippet of its backend
 logic, and not just "no exception raised."
@@ -26,7 +26,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-_PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "6_Model_Table_Columns.py"
+_PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "7_Model_Table_Columns.py"
 
 
 def _run():

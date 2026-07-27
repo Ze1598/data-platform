@@ -109,7 +109,7 @@ def fetch_candidate_rows(cur) -> list[dict]:
 def fetch_model_columns(cur) -> dict:
     """lakehouse_model_columns rows, grouped by model_id and ordered by
     ordinal_position -- the frontend's column-definition editor
-    (frontend/pages/6_Model_Table_Columns.py). A model with no rows here
+    (frontend/pages/7_Model_Table_Columns.py). A model with no rows here
     is absent from the returned dict entirely and keeps the original
     business_key_columns/tracked_columns-scaffolded flow untouched."""
     cur.execute(
@@ -224,7 +224,7 @@ def _render_dedicated_staging(*, table_name: str, owning_feed: str, columns: lis
 
 {{#
     Generated scaffold (scripts/generate_model_scaffolds.py), driven by
-    lakehouse_model_columns (frontend/pages/6_Model_Table_Columns.py) --
+    lakehouse_model_columns (frontend/pages/7_Model_Table_Columns.py) --
     dedicated staging for {table_name}, distinct from any per-feed
     stg_<feed>.sql. Casts and the key/tracked column split come from that
     table.

@@ -174,7 +174,7 @@ def seed_lakehouse_model(
 
 def seed_lakehouse_model_columns(cur, *, model_friendly_name: str, columns: list[dict]) -> None:
     """Idempotently seeds lakehouse_model_columns rows for one model --
-    the same data frontend/pages/6_Model_Table_Columns.py's editor grid
+    the same data frontend/pages/7_Model_Table_Columns.py's editor grid
     submits, here as a reproducible seed for a model that predates any
     real user filling in that page. Each column dict: column_name,
     source_feed_friendly_name, data_type, is_nullable, is_business_key,
@@ -249,7 +249,7 @@ def seed_streaming_source(
     # metadata row (seeded here, same as data_feed/lakehouse_models rows
     # above), but its schema_registry entry is never hand-seeded, same
     # "discovery bootstraps it, no hand-written baseline needed" rule as
-    # a data_feed's schema_registry entry -- see 4_Streaming_Sources.py's
+    # a data_feed's schema_registry entry -- see 5_Streaming_Sources.py's
     # "Discover Schema" action. event_timestamp_column is likewise left
     # null here, set by hand via the frontend once discovery has run.
     cur.execute(
@@ -567,7 +567,7 @@ def main() -> None:
         )
 
         # iot_telemetry domain -- a live test of the frontend's column-
-        # definition page (frontend/pages/6_Model_Table_Columns.py) and
+        # definition page (frontend/pages/7_Model_Table_Columns.py) and
         # generate_model_scaffolds.py's dedicated-staging codegen (Backlog.md's
         # "Frontend page for defining model tables"), kept seeded rather than
         # a one-off manual test so every nuke-and-rebuild continues to prove

@@ -13,5 +13,6 @@ st.markdown(
     - **Ingestion Triggers** — how a feed/model's pipeline run actually gets kicked off (a cron schedule, or a sensor watching a feed's landing directory for a new file)
     - **Streaming Sources** — real-time Kafka → Flink → Iceberg ingestion pipelines (source system/data feed's continuous-stream counterpart)
     - **Trigger Pipeline** — launch `master_pipeline` on demand, right now, without waiting for its next scheduled window
+    - **Model Table Columns** — per-column definitions (name, data type, nullability, business key, tracked) for a lakehouse model, feeding `generate_model_scaffolds.py`'s dedicated-staging codegen
     """
 )

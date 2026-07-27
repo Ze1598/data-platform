@@ -1,7 +1,7 @@
 """Cooperative wake-up for `orchestration` (dagster-webserver +
 dagster-code-server) when KEDA has scaled it to 0 outside a configured
 schedule window (orchestration/k8s/keda-scaledobjects.yaml). Used by
-pages/5_Trigger_Pipeline.py before submitting a run through Dagster's
+pages/6_Trigger_Pipeline.py before submitting a run through Dagster's
 GraphQL API -- see Backlog.md, "Cooperative wake-up mechanism for Dagster
 from Streamlit".
 

@@ -90,7 +90,7 @@ def write_schema_registry_version(
     update_schema_registry() (same two-statement transaction: flip the
     existing is_current row false, then insert the new one, required by
     uq_schema_registry_current's partial unique index). Used by
-    4_Streaming_Sources.py's "Discover Schema" action -- a streaming_source
+    5_Streaming_Sources.py's "Discover Schema" action -- a streaming_source
     has no equivalent to sync_schema_registry()'s per-run diff-then-write
     (discovery here is a deliberate, manual, one-time action, not an
     automated per-run check), so this always writes a new version rather
@@ -160,7 +160,7 @@ def fetch_lakehouse_model_columns(engine: Engine, model_id: str) -> pd.DataFrame
     """Current column definitions for one lakehouse_models row, ordered for
     display/editing. Frontend-side read counterpart to
     replace_lakehouse_model_columns() below -- used by
-    6_Model_Table_Columns.py to seed its editor grid."""
+    7_Model_Table_Columns.py to seed its editor grid."""
     return pd.read_sql(
         text(
             "SELECT column_name, source_feed_id, data_type, is_nullable, is_business_key, is_tracked, ordinal_position "
@@ -177,7 +177,7 @@ def replace_lakehouse_model_columns(engine: Engine, model_id: str, columns: list
     inserts the given set fresh. Simpler and safer than a partial diff:
     the frontend's editor grid always submits the complete, currently
     intended column list on save, not an incremental patch (see
-    6_Model_Table_Columns.py)."""
+    7_Model_Table_Columns.py)."""
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM lakehouse_model_columns WHERE model_id = :model_id"), {"model_id": model_id})
         for col in columns:

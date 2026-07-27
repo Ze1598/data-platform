@@ -56,7 +56,7 @@ def _staging_table_names_for_feed(metadata_cur, friendly_name: str) -> list[str]
     (every hand-written stg_<feed>.sql, e.g. stg_customers.sql/
     stg_sales.sql -- still true for any feed with no lakehouse_model_columns
     rows). A feed with lakehouse_model_columns rows
-    (frontend/pages/6_Model_Table_Columns.py) also gets one DEDICATED
+    (frontend/pages/7_Model_Table_Columns.py) also gets one DEDICATED
     stg_<table_name> per model sourcing from it, aliased by that model's
     table_name -- NOT the feed's own name (see
     scripts/generate_model_scaffolds.py's dedicated-staging codegen). A

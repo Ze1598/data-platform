@@ -59,7 +59,7 @@ One row per source object/table/endpoint to extract — a database table, an API
 
 ## `streaming_source`
 
-One row per real-time Kafka→Flink→Iceberg ingestion pipeline (Roadmap Phase 11 generalization, 2026-07-18). A new, standalone top-level concept — **not** a `data_feed` row and **not** FK'd to `source_system`: `source_system.connector_kind`'s vocabulary (`postgres`/`csv`/`json_file`/`rest`) is pull-based/batch-shaped and doesn't fit a continuous push source, and `data_feed`'s `extraction_type`/`watermark_column`/`last_watermark_value` all assume a discrete, bounded run, which streaming isn't. User-authored via the frontend CRUD (`frontend/pages/4_Streaming_Sources.py`), same as `data_feed`.
+One row per real-time Kafka→Flink→Iceberg ingestion pipeline (Roadmap Phase 11 generalization, 2026-07-18). A new, standalone top-level concept — **not** a `data_feed` row and **not** FK'd to `source_system`: `source_system.connector_kind`'s vocabulary (`postgres`/`csv`/`json_file`/`rest`) is pull-based/batch-shaped and doesn't fit a continuous push source, and `data_feed`'s `extraction_type`/`watermark_column`/`last_watermark_value` all assume a discrete, bounded run, which streaming isn't. User-authored via the frontend CRUD (`frontend/pages/5_Streaming_Sources.py`), same as `data_feed`.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -107,7 +107,7 @@ Constraints: unique `(controlling_object_id, controlling_object_type, version)`;
 
 **Ownership, for a feed (`controlling_object_type='feed'`)**: exclusively the extraction step's concern (`connectors.schema_registry_sync.sync_schema_registry()`, called from each feed's `extraction_<feed>` asset) — discovery and the registry write both complete before `clean_<feed>` ever runs. `clean_<feed>` only ever reads it (`PostgresMetadataResource.get_current_schema()`), never writes it. Never hand-seeded — a from-scratch feed or a from-scratch platform is expected to have zero rows here until that feed's first real extraction run, not an error state to special-case around. (Corrected 2026-07-16 — `scripts/seed_metadata_db.py` used to hand-seed a row per feed, and REST/JSON connector kinds' generated `clean_<feed>` used to perform discovery itself; both fixed, see `Learnings.md`.)
 
-**Ownership, for a streaming source (`controlling_object_type='streaming_source'`)**: a manual, one-time frontend action ("Discover Schema" in `4_Streaming_Sources.py`) — there's no equivalent "first extraction run" to embed discovery in the way batch feeds get it automatically, since a stream has no discrete run at all. Written directly via `PostgresMetadataResource.update_schema_registry()`, not through `sync_schema_registry()` (that function's primary-key-precedence logic is feed-specific and stays that way — see its own docstring).
+**Ownership, for a streaming source (`controlling_object_type='streaming_source'`)**: a manual, one-time frontend action ("Discover Schema" in `5_Streaming_Sources.py`) — there's no equivalent "first extraction run" to embed discovery in the way batch feeds get it automatically, since a stream has no discrete run at all. Written directly via `PostgresMetadataResource.update_schema_registry()`, not through `sync_schema_registry()` (that function's primary-key-precedence logic is feed-specific and stays that way — see its own docstring).
 
 ---
 
@@ -162,7 +162,7 @@ Staging tables have no `lakehouse_models` row of their own, but their merge beha
 
 ## `lakehouse_model_columns`
 
-One row per column of a `lakehouse_models` row that has opted into the frontend's metadata-driven column-definition UX (`frontend/pages/6_Model_Table_Columns.py`) instead of hand-writing its staging/model SQL column list. A model with zero rows here is untouched by this mechanism — it keeps the original, fully hand-written `business_key_columns`/`tracked_columns`-scaffolded flow (`scripts/generate_model_scaffolds.py`'s pre-existing behavior).
+One row per column of a `lakehouse_models` row that has opted into the frontend's metadata-driven column-definition UX (`frontend/pages/7_Model_Table_Columns.py`) instead of hand-writing its staging/model SQL column list. A model with zero rows here is untouched by this mechanism — it keeps the original, fully hand-written `business_key_columns`/`tracked_columns`-scaffolded flow (`scripts/generate_model_scaffolds.py`'s pre-existing behavior).
 
 | Column | Type | Constraints |
 |---|---|---|

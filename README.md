@@ -154,7 +154,7 @@ Each module gets at most one container image it owns (custom-built where the mod
 | `dbt/domains/<domain>/` | One compile-isolated dbt project per business domain — staging/model/serve SQL, plus macros copied in from `dbt/_shared/`. This is where most day-to-day modeling work happens. Each domain also gets its own Docker image, built/rebuilt independently of every other domain's. |
 | `query-engine/` | Trino (compute) and Apache Polaris (Iceberg REST catalog) — config and Kubernetes manifests, no custom application code. |
 | `streaming/` | Real-time ingestion: Kafka (KRaft, single broker) → Flink (Kubernetes Operator, one `FlinkDeployment` per active `streaming_source` row) → the same Iceberg warehouse everything else uses. Metadata-driven onboarding like a batch feed (`streaming_source` table + codegen), plus `streaming/testing/` — isolated, in-cluster tests proving each source end-to-end without needing the batch pipeline to have run first. |
-| `frontend/` | Streamlit CRUD app for all metadata tables (source systems, feeds, lakehouse models, schedules, streaming sources), plus an on-demand `master_pipeline` trigger (via Dagster's GraphQL API, with cooperative wake-up) — a real in-cluster Deployment, `frontend/k8s/`. |
+| `frontend/` | Streamlit CRUD app for all metadata tables (source systems, feeds, lakehouse models, ingestion triggers, streaming sources, per-model column definitions), plus an on-demand `master_pipeline` trigger (via Dagster's GraphQL API, with cooperative wake-up) — a real in-cluster Deployment, `frontend/k8s/`. |
 | `platform/` | Cluster-wide concerns not owned by any one module: the local kind cluster definition and Kubernetes namespaces. |
 | `tests/` | Cross-module integration tests (as opposed to each module's own unit tests, which live inside that module). |
 
@@ -289,8 +289,8 @@ data-platform/
   - `connectors/` — `uv` workspace member: generic, reusable extraction connector framework (Postgres/CSV/JSON-file/REST base classes + schema discovery).
   - `raw_to_clean/` — `uv` workspace member: generic raw→clean validation logic (schema coercion against `schema_registry`).
 - **`frontend/`** — module: Streamlit CRUD + on-demand pipeline trigger.
-  - `app.py`, `metadata_db.py`, `pages/` — source systems, data feeds, lakehouse models, ingestion triggers, streaming sources, trigger pipeline; the last one submits `master_pipeline` directly through Dagster's GraphQL API, with cooperative wake-up.
-  - `dagster_wake.py` — cooperative wake-up: wakes orchestration off a KEDA scale-to-zero state via the Kubernetes API before `pages/5_Trigger_Pipeline.py` submits a run — never sleeps itself, see `wake_sleep_sensor.py` above and `Learnings.md`.
+  - `app.py`, `metadata_db.py`, `pages/` — source systems, data feeds, lakehouse models, ingestion triggers, streaming sources, trigger pipeline, per-model column definitions (`7_Model_Table_Columns.py` — see Backlog.md, this page's rebuild is not yet complete); `6_Trigger_Pipeline.py` submits `master_pipeline` directly through Dagster's GraphQL API, with cooperative wake-up.
+  - `dagster_wake.py` — cooperative wake-up: wakes orchestration off a KEDA scale-to-zero state via the Kubernetes API before `pages/6_Trigger_Pipeline.py` submits a run — never sleeps itself, see `wake_sleep_sensor.py` above and `Learnings.md`.
   - `tests/` — `test_metadata_db.py`, `test_trigger_pipeline_page.py` (`streamlit.testing.v1.AppTest` — runs a page's real script headlessly, see `Learnings.md`), `test_dagster_wake.py`.
   - `Dockerfile` — `uv` workspace member (`package = false`; scoped `uv sync --package frontend`).
   - `k8s/` — Deployment (`serviceAccountName: frontend`), Service, ServiceAccount, `postgres-credentials` Secret, `DAGSTER_WEBSERVER_HOST`/`PORT` (namespace: `frontend`).
