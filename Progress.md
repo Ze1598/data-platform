@@ -4,7 +4,7 @@ Tracks implementation of [Roadmap.md](Roadmap.md)'s phased build order, phase by
 
 **Status legend**: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked
 
-**Current phase**: Phases 1–10 complete; Phase 13 is fully built and verified (see Phase 13 below) — extraction/validation, master pipeline/cherry-picking, dbt boilerplate reduction, and the ODS layer (resolving per-model transformation gating a different way than originally scoped) are all done. Phase 15 (multi-project dbt split) is substantially built and live-verified. **Phase 14 (the master pipeline redesign) is now fully built and live-verified end to end (2026-07-16)** — see Phase 14's own section below for the complete build record. **Priority as of 2026-07-16**: metadata-driven per-domain Docker images, Streamlit's own in-cluster Deployment (deferred to a later phase), sensor-triggered-path test coverage, then working through `Backlog.md`. Phases 11 (streaming) and 12 (data viz) remain deliberately deprioritized — see `Roadmap.md`'s "Current priority" note.
+**Current phase**: All numbered phases (1–11, 13–15) are complete and live-verified — see each phase's own section below for its build/verification record. Current work is whatever's open in `Backlog.md`; that file is the single source for open items and priority, not duplicated here.
 
 ---
 
