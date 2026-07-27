@@ -14,5 +14,6 @@ st.markdown(
     - **Streaming Sources** — real-time Kafka → Flink → Iceberg ingestion pipelines (source system/data feed's continuous-stream counterpart)
     - **Trigger Pipeline** — launch `master_pipeline` on demand, right now, without waiting for its next scheduled window
     - **Model Table Columns** — per-column definitions (name, data type, nullability, business key, tracked) for a lakehouse model, feeding `generate_model_scaffolds.py`'s dedicated-staging codegen
+    - **Debug: Model Query** — ad hoc `SELECT * LIMIT 500` against any table in the model schema, for quick inspection
     """
 )

@@ -11,6 +11,7 @@ dependencies = [
     "connectors",
     "requests>=2.32",
     "kubernetes>=32,<37",
+    "trino>=0.330",
 ]
 
 [dependency-groups]

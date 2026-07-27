@@ -1029,6 +1029,7 @@ dependencies = [
     { name = "requests" },
     { name = "sqlalchemy" },
     { name = "streamlit" },
+    { name = "trino" },
 ]
 
 [package.dev-dependencies]
@@ -1046,6 +1047,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.32" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "streamlit", specifier = ">=1.40" },
+    { name = "trino", specifier = ">=0.330" },
 ]
 
 [package.metadata.requires-dev]
