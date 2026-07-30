@@ -41,6 +41,19 @@ investing real effort down a specific implementation path. Purely read-only
 actions that answer a question directly from already-known context don't
 need this gate.
 
+**Default to `just` recipes for actual execution — running code, tests,
+features, or infrastructure — never a raw individual command.** This
+applies to every agent, not just this session; writing/editing code files
+themselves is unaffected, this is about running things. Ad hoc/raw
+commands are fine specifically for debugging — that's exactly what each
+module's `DebugReference.md` documents, the manual command equivalent of
+what its `just` recipes do. But when a codebase or test-suite change
+means a recipe's behavior needs to change too, create or edit the
+relevant `module.just`/root `Justfile` recipe to match — don't leave it
+stale and keep working around it with raw commands going forward. Verify
+a recipe name still exists (`just --list`) before using it — this tooling
+gets restructured over time.
+
 **A diagnostic question vs. a design/intent question are different.** "Why
 is this failing" is discoverable in code/logs/state — investigate it
 independently. "What should this system do here" is not discoverable — it's
@@ -98,6 +111,113 @@ command; `just start`/`kill [module]` and `just test [module|feed-tag]` give
 scoped control. Verify a recipe name still exists (`just --list`) before
 using it — this tooling gets restructured over time.
 
+## Multi-agent development workflow
+
+Five roles, most work through delegation rather than one agent doing
+everything end to end — built specifically to stop the same agent writing
+code and grading its own work, and to keep exploration/verification off
+the main session's context.
+
+**Opt-in, not default.** Architect (this session) judges whether a
+request is substantial enough to route through the full pipeline, or
+small enough to handle directly as before (a doc fix, a config tweak, a
+one-file change). Don't invoke the pipeline for trivial work — that's
+pure overhead.
+
+**Roles and hand-off order**: Architect (orchestrator, provisions scoped
+infra) → Planning → Developer(s) (parallel when Planning identifies
+genuinely independent subtasks) → Integration → QA → Planning (aggregates
+results, updates docs) → Architect (fresh-spawned instance, final gate) →
+Architect (orchestrator, tears down infra) → user.
+
+**Infrastructure lifecycle is exclusively Architect's, in either mode —
+never Planning/Developer/Integration/QA.** Before spawning Planning,
+Architect scopes and provisions whatever modules the task actually needs
+(`just start <module>`, not a blanket full-stack `just start` every time
+— matches this project's existing preference for granular, cost-conscious
+infra) so Developer/Integration/QA never have to worry about whether
+infra is available. If something turns out to be missing mid-pipeline,
+the agent that hit the gap reports it up through Planning; Architect —
+never the agent that found the gap — is the one who brings it up. Infra
+stays up across any fix-round the final-gate review triggers; Architect
+tears it down (`just kill <module>`) only once the task is genuinely,
+fully done, right before reporting to the user — the same "kill
+everything once a phase's work is done" convention this repo already has,
+just centralized to one role instead of whoever happened to spin
+something up.
+
+- **Architect** — two distinct modes under one name, deliberately. As
+  *orchestrator*, it's this session: talks to the user, judges
+  pipeline-vs-direct, owns `README.md`, spawns Planning, and decides what
+  to do with the final-gate findings (route back to Planning for fixes,
+  or report done). As *final gate*, it's a fresh spawn of
+  `.claude/agents/architect.md` — given only the diff and the original
+  requirement, no memory of how the work was built, specifically so the
+  review isn't done by the same actor that already oversaw the whole
+  pipeline. This is a *static* review (does the diff follow this repo's
+  conventions, does it match what was actually asked) — complementary to
+  QA's *dynamic* (runtime) validation, not a duplicate of it.
+- **Planning** (`.claude/agents/planning.md`) — tech-lead hub. Breaks a
+  requirement into tasks, spawns Developer/Integration/QA directly, and
+  applies approved edits to `Roadmap.md`/`Backlog.md`/`Progress/*.md`
+  itself once it approves a proposal from one of them. Drafts
+  `Learnings.md` entries but never finalizes them without Architect's
+  sign-off — that file is written for humans, not agents.
+- **Developer** (`.claude/agents/developer.md`) — writes code and its own
+  unit tests, co-located with the module it touches (no relocation of the
+  existing per-module `tests/` layout).
+- **Integration** (`.claude/agents/integration.md`) — writes integration
+  tests once Developer's unit tests pass, in the right tier: a Dagster
+  pipeline exercised end-to-end without mocking individual steps (the
+  pipeline chain itself *is* the integration test) belongs inside the
+  orchestration module's own tests; anything genuinely cross-module or
+  platform-wide belongs in `tests/integration/`, the existing top-level
+  suite.
+- **QA** (`.claude/agents/qa.md`) — feature-level validation: a Gherkin
+  `.feature` file under `features/` (a human-readable plan only — no
+  code, no test runner lives in that folder) plus the real pytest that
+  satisfies it, written in `tests/integration/` and referencing the
+  `.feature` file it satisfies. Builds mock datasets, runs everything
+  against the live platform, reports bugs to Planning rather than editing
+  others' code. "Covers 90%+ of the functionality plus edge cases" is a
+  qualitative judgment call QA and Planning make together, not a
+  coverage-tool threshold.
+
+**This changes nothing about the absolute rules above.** Every role
+inherits them unchanged — git stays 100% user-owned regardless of which
+agent is active, any new finding still stops the work and surfaces to the
+user, and infra/tests still only get exercised within the scope of the
+task actually authorized, never speculatively.
+
+**Documentation responsibility matrix** — which agents must update which
+docs at the end of their own task, not just who's allowed to:
+
+| Document | Owners |
+|---|---|
+| `README.md` | Architect |
+| `Learnings.md` | Architect, Planning, Integration |
+| `Backlog.md` | Architect, Planning |
+| `Roadmap.md` | Architect, Planning |
+| `Progress/*.md` | Planning |
+| `DebugReference.md` (one per module — `frontend/`, `platform/`, `query-engine/`, `streaming/`, `orchestration/`, `metadata/`, `tests/integration/`, and any future module that gets one) | Developer, QA, Integration |
+
+- **Architect** on `Backlog.md`/`Roadmap.md` applies to work it handles
+  directly, outside the full pipeline — when a task is pipeline-routed,
+  Planning is the one applying these edits, per its tech-lead role above.
+- **Learnings.md**: both Planning and Integration can draft an entry
+  directly (Integration is the agent most likely to hit a real
+  infra/environment gotcha worth documenting) — either way, Architect
+  signs off before an entry is final. That file is written for humans,
+  not agents; its structure is still governed by "Documentation
+  conventions" above regardless of who drafts.
+- **`DebugReference.md`**: whichever of Developer/QA/Integration is
+  working in a module updates that module's `DebugReference.md` if its
+  task changes the module's recipes or manual-command equivalents enough
+  to make the existing doc stale.
+- **`CLAUDE.md`** is deliberately absent from this matrix. No agent,
+  including Architect, ever writes to it — every agent can propose
+  wording in conversation, only you apply it.
+
 ## Documentation conventions
 
 **`Learnings.md` is a problem-indexed reference, not a session log.** Every
@@ -107,16 +227,37 @@ exists. Organize by system/component (e.g. "Dagster + Kubernetes", "dbt
 modeling patterns"), never by build phase, session, or chronological order.
 Exclude phase numbers, "this session" language, prompt-sequence narrative,
 and pure "verified: ..." testing-log paragraphs that don't teach something
-reusable — that content belongs in `Progress.md` instead, which is the
+reusable — that content belongs in `Progress/` instead, which is the
 correct home for phase-by-phase chronological narrative.
+
+**`Progress.md` is a lean index, not the build log itself.** The actual
+build/verification history lives under `Progress/` — one file per numbered
+phase (`Progress/<NN>-<slug>.md`) or per dated post-numbered-phase entry
+(`Progress/<YYYY-MM-DD>-<slug>.md`). `Progress.md` holds only a one-line
+status + link per phase/entry. Read a linked file only when its content is
+actually relevant to the task at hand (working in that phase's area,
+checking whether something was already tried) — do not read the whole set
+as part of routine session startup, and do not write new build/verification
+narrative into the root file. When a phase or dated entry is added, add
+both the detail file and its one-line index entry together.
+
+**`Roadmap.md` holds current state and future work only — never
+completed-phase history.** Once a phase is done, its entry is removed from
+Roadmap.md entirely (not marked done in place) — the phase-by-phase
+completed record lives in `Progress.md`'s index instead. Roadmap.md answers
+"what's the state now and what's still open," not "what happened, phase by
+phase."
 
 ## Where the rest lives
 
 This file has the hard, durable rules. Architecture and design live in
 `README.md` — the permanent reference, meant to outlive this project's
 build-out. Project-specific context that changes over time (current phase
-status, open bugs, what's blocking what) lives in `Roadmap.md` (phase
-status only for completed work, draft design for pending work), `Backlog.md` (deferred items + current
-priority), `Progress.md` (verified build/test history), and `Learnings.md`
-(human readable technical gotchas for humans coming across this repository) — these four are working documents for the build-out,
-not meant to outlive it. 
+status, open bugs, what's blocking what) lives in `Roadmap.md` (current
+state + future-work design only, no completed-phase history — see
+"Documentation conventions"), `Backlog.md` (deferred items + current
+priority), `Progress.md` (a lean index into `Progress/`, the actual
+phase-by-phase build/verification history — see "Documentation
+conventions"), and `Learnings.md` (human readable technical gotchas for
+humans coming across this repository) — these four are working documents
+for the build-out, not meant to outlive it. 
