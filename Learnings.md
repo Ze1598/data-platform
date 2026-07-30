@@ -8,7 +8,7 @@ If you landed here from a search engine: welcome. Every entry below was reproduc
 
 ## New chat session started
 
-Start by reading Claude.md which enforces your ways of working in this session. Afteward, read README.md, Roadmap.md, Progress.md and Backlog.md to understand what this project is, its progress to date, and what work is left to do. At the end, read Learnings.md to understand particular technical constraints faced in this project and how they were addressed. If you find any contradictory information or ambiguity in the documetation you just read, raise it to me to be corrected immediately.
+Start by reading Claude.md which enforces your ways of working in this session. Afterward, read README.md, Roadmap.md, and Backlog.md to understand what this project is, its progress to date, and what work is left to do. If you find any contradictory information or ambiguity in the documetation you just read, raise it to me to be corrected immediately.
 
 ## Apache Polaris (Iceberg REST catalog)
 

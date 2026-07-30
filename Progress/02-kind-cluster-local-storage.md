@@ -1,0 +1,13 @@
+# Phase 2 — kind cluster + local storage
+
+- [x] Single-node kind cluster config (`platform/kind/kind-cluster.yaml`) with `extraMounts` → `./data-lake`
+- [x] Namespaces created: `metadata`, `orchestration`, `processing`, `query-engine`, `frontend`
+- [x] Postgres moved into-cluster (StatefulSet, `metadata` namespace)
+- [x] **Verify**: a debug pod writes a file under `/data-lake/raw/...`, visible on host filesystem — confirmed via `kubectl run` writing through a `hostPath` mount, then read back directly from `./data-lake/raw/` on the host
+
+Notes / deviations:
+- `platform/kind/kind-cluster.yaml` also adds `extraPortMappings` (host `5432` → node `30432`) paired with a `NodePort` Postgres Service (not in the original Roadmap wording) — this keeps `localhost:5432` working unchanged for host-side tools (the Phase 1 Streamlit app, a local `psql` client) even though Postgres now runs in-cluster. Re-ran the full Phase 1 CRUD verification against the in-cluster Postgres with zero app changes required — confirms this decision worked.
+- Roadmap's `platform/storage/` (PV/PVC + StorageClass) was **not** built as literal PV/PVC objects. A PersistentVolumeClaim binds 1:1 to one PV, but the data-lake needs to be readable/writable by many pods across many namespaces (Trino, Spark, Polaris, Dagster ops in later phases) — PVCs are also namespace-scoped, so they can't be shared across namespaces anyway. Used a direct `hostPath` volume (`/data-lake`, backed by the kind node's `extraMounts`) in each pod spec instead, which is the standard pattern for this exact scenario in local/kind clusters. Postgres's own data directory *is* a real single-consumer PVC, via `volumeClaimTemplates` on the StatefulSet (kind's built-in `standard` / local-path-provisioner StorageClass, no custom StorageClass needed).
+- `scripts/bootstrap_kind.sh` generates the `postgres-init-scripts` ConfigMap from `metadata/db/init/` via `kubectl create configmap --from-file --dry-run=client -o yaml | kubectl apply -f -` rather than hand-duplicating the SQL into a static manifest, so `01_platform_metadata.sql` has one source of truth.
+- Postgres credentials are a plaintext `Secret` (`metadata/k8s/secret.yaml`), matching `.env.example` — fine for a single-user local learning cluster, explicitly not how this would be done against a real cluster (noted in a comment in the file).
+- The Phase 1 docker-compose Postgres was stopped (`docker compose down`) to free host port 5432 for the kind NodePort mapping. `docker-compose.yml` is left in place as a still-valid non-k8s quick-start path, but the in-cluster Postgres is now the source of truth going forward.

@@ -1,5 +1,7 @@
 .venv/
-.claude/
+.claude/*
+# Ignore everything for claude except the agents
+!.claude/agents/
 __pycache__/
 *.py[cod]
 .env
