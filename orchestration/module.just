@@ -46,7 +46,7 @@ start:
         --from-file=workspace.yaml=dagster_home/workspace.yaml \
         -n orchestration --dry-run=client -o yaml | kubectl apply -f -
 
-    kubectl apply -f k8s/postgres-credentials-secret.yaml -f k8s/rbac.yaml -f k8s/rbac-frontend-wake.yaml
+    kubectl apply -f k8s/postgres-credentials-secret.yaml -f k8s/rbac.yaml
     kubectl apply -f k8s/code-server-deployment.yaml -f k8s/code-server-service.yaml
     kubectl apply -f k8s/webserver-deployment.yaml -f k8s/webserver-service.yaml
     kubectl apply -f k8s/daemon-deployment.yaml
@@ -125,82 +125,6 @@ start:
     fi
     echo "Dagster up in-cluster (webserver: localhost:3000, or 'kubectl logs -n orchestration deployment/dagster-webserver' / 'deployment/dagster-daemon' / 'deployment/dagster-code-server')."
 
-    # Applied LAST, deliberately -- after every health check above already
-    # confirmed webserver/daemon/code-server came up healthy at their
-    # normal replicas:1. KEDA will start driving webserver/code-server to 0
-    # outside the configured cron windows shortly after this applies (its
-    # own polling interval, ~30s default) -- fine, since it only happens
-    # once `start` has already proven the deployment healthy, not during
-    # the bring-up sequence itself.
-    just orchestration::install-keda
-    kubectl apply -f k8s/keda-scaledobjects.yaml
-
-# KEDA (core only, no HTTP Add-on -- see Learnings.md's "Kubernetes scaling
-# options compared" for why) -- installed from this module since it's the
-# first (and so far only) consumer, mirrors streaming/flink/module.just's
-# own precedent of installing the Flink Kubernetes Operator from the
-# module that needs it. `helm upgrade --install` is idempotent, so a
-# future second KEDA consumer wouldn't need to reinstall it.
-install-keda:
-    helm repo add kedacore https://kedacore.github.io/charts
-    helm repo update kedacore
-    helm upgrade --install keda kedacore/keda -n keda
-    kubectl rollout status deployment/keda-operator -n keda --timeout=120s
-
-# Cooperative wake -- webserver/code-server may be scaled to 0 by KEDA's
-# Cron scaler outside the configured schedule windows (see
-# k8s/keda-scaledobjects.yaml). Every recipe below that talks to Dagster
-# needs them at replicas:1 first; this is the same "scale up, wait for
-# ready, then proceed" pattern Backlog.md's planned Streamlit trigger
-# feature will eventually need too, applied here to this project's own
-# verification tooling first. Safe to call when already at replicas:1 --
-# the annotate and rollout status calls both no-op quickly.
-#
-# NOT a plain `kubectl scale`: once a ScaledObject targets a Deployment,
-# KEDA installs an HPA that owns that Deployment's replica count and
-# continuously reconciles it back to the trigger's computed value -- 0
-# outside the configured Cron windows. Confirmed live: a manual `kubectl
-# scale --replicas=1` got reverted to 0 by KEDA within ~15s, before the
-# GraphQL client could even connect, surfacing as a bare connection-reset
-# error that looked like a readiness-probe race but wasn't one. The
-# `autoscaling.keda.sh/paused-replicas` annotation is KEDA's own supported
-# override for exactly this: setting it forces the target to that replica
-# count and makes KEDA stop reconciling it until the annotation is
-# removed (see _sleep-orchestration). See Learnings.md.
-_wake-orchestration:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # data-platform.internal/last-woken-at stamped alongside the pause
-    # annotation -- wake_sleep_sensor.py's grace period keys off this to
-    # stop a stale sleep-sensor tick (e.g. an OLDER master_pipeline run's
-    # terminal-status event, or the gap between this recipe's own
-    # sequential master_pipeline invocations in verify-pipeline) from
-    # unpausing before whichever new run this wake is for actually exists
-    # in Dagster's run storage. Found live, 2026-07-20: without this,
-    # verify-pipeline itself hit the identical race
-    # frontend/dagster_wake.py was originally fixed for -- webserver
-    # killed mid-poll, right as verify-pipeline moved from one
-    # master_pipeline invocation to the next. Every wake path needs this
-    # stamp, not just Streamlit's -- see wake_sleep_sensor.py.
-    woken_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    kubectl annotate scaledobject dagster-webserver-scaler dagster-code-server-scaler -n orchestration \
-        autoscaling.keda.sh/paused-replicas=1 "data-platform.internal/last-woken-at=${woken_at}" --overwrite
-    kubectl rollout status deployment/dagster-webserver -n orchestration --timeout=120s
-    kubectl rollout status deployment/dagster-code-server -n orchestration --timeout=120s
-
-# Hands replica control back to KEDA once ad hoc work is done -- removing
-# the pause annotation resumes normal Cron-trigger reconciliation, which
-# scales back to 0 on its own (respecting cooldownPeriod) since this is
-# called outside the configured windows. Mirrors this project's existing
-# "kill every process/container spun up for a phase's work once it's done"
-# convention (see CLAUDE.md), applied to a KEDA-paused replica count
-# instead of a local process.
-_sleep-orchestration:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    kubectl annotate scaledobject dagster-webserver-scaler dagster-code-server-scaler -n orchestration \
-        autoscaling.keda.sh/paused-replicas- --overwrite 2>/dev/null || true
-
 # Tears down every in-cluster Dagster piece start brought up -- mirrors
 # start exactly (same manifest list), same "full teardown" convention as
 # every other k8s-hosted module's kill recipe (see metadata::kill,
@@ -212,18 +136,10 @@ _sleep-orchestration:
 kill:
     #!/usr/bin/env bash
     set -euo pipefail
-    # --ignore-not-found only covers "no object with this name" -- it does
-    # NOT cover "this CRD kind isn't registered at all" (a cluster where
-    # KEDA was never installed), which is a harder kubectl error and would
-    # otherwise abort this whole recipe under set -e before reaching
-    # anything below. || true, same guard the very next line already has
-    # for the identical "KEDA never installed" case.
-    kubectl delete -f k8s/keda-scaledobjects.yaml --ignore-not-found || true
-    helm uninstall keda -n keda || true
     kubectl delete -f k8s/daemon-deployment.yaml \
         -f k8s/webserver-service.yaml -f k8s/webserver-deployment.yaml \
         -f k8s/code-server-service.yaml -f k8s/code-server-deployment.yaml \
-        -f k8s/rbac.yaml -f k8s/rbac-frontend-wake.yaml -f k8s/postgres-credentials-secret.yaml \
+        -f k8s/rbac.yaml -f k8s/postgres-credentials-secret.yaml \
         --ignore-not-found
     kubectl delete configmap dagster-instance dagster-instance-incluster -n orchestration --ignore-not-found
 
@@ -429,8 +345,6 @@ verify-pipeline:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
-    just orchestration::_wake-orchestration
-    trap 'just orchestration::_sleep-orchestration' EXIT
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
 
@@ -530,8 +444,6 @@ verify-schedule:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
-    just orchestration::_wake-orchestration
-    trap 'just orchestration::_sleep-orchestration' EXIT
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
     cd dagster_data_platform
@@ -576,8 +488,6 @@ verify-sensor:
     #!/usr/bin/env bash
     set -euo pipefail
     just _ensure-venv-visible
-    just orchestration::_wake-orchestration
-    trap 'just orchestration::_sleep-orchestration' EXIT
     export DAGSTER_HOME="{{justfile_directory()}}/orchestration/dagster_home"
     export PATH="{{justfile_directory()}}/.venv/bin:$PATH"
     cd dagster_data_platform

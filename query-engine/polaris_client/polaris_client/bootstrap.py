@@ -67,8 +67,16 @@ def main() -> None:
             # and recreate the catalog.
             client.create_s3_catalog(
                 CATALOG_NAME,
-                default_base_location="s3://lakehouse",
-                allowed_locations=["s3://lakehouse/*"],
+                # Polaris 1.7.0 validates default_base_location against
+                # allowed_locations at catalog-creation time -- confirmed
+                # live this check didn't exist (or wasn't enforced) against
+                # 1.6.x, since this exact call previously succeeded
+                # unchanged. A bare bucket root isn't treated as contained
+                # by a `bucket/*` glob even with a trailing slash (also
+                # confirmed live) -- listing the base location itself
+                # alongside the wildcard satisfies the check.
+                default_base_location="s3://lakehouse/",
+                allowed_locations=["s3://lakehouse/", "s3://lakehouse/*"],
                 role_arn="arn:aws:iam::000000000000:role/minio-polaris-role",
                 path_style_access=True,
                 sts_unavailable=True,

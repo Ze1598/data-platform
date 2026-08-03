@@ -17,7 +17,6 @@ spec:
       labels:
         app: frontend
     spec:
-      serviceAccountName: frontend
       containers:
         - name: frontend
           image: data-platform-frontend:latest

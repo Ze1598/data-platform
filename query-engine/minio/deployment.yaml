@@ -21,7 +21,12 @@ spec:
     spec:
       containers:
         - name: minio
-          image: minio/minio:latest
+          # Pinned (2026-08-03) -- see Learnings.md's "Dagster control plane
+          # scaling on Kubernetes" entry's sibling finding: an unpinned
+          # apache/polaris:latest silently broke catalog bootstrap, so
+          # every off-the-shelf image in this project was pinned to its
+          # then-current, confirmed-working version at the same time.
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
           args: ["server", "/data", "--console-address", ":9001"]
           ports:
             - containerPort: 9000

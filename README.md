@@ -2,7 +2,7 @@
 
 A metadata-driven lakehouse platform: Dagster orchestrates extraction and dbt/Trino transformations over Apache Iceberg tables, all running on Kubernetes — Dagster's own webserver/daemon, the Streamlit CRUD frontend, Postgres, Trino/Polaris/MinIO, and every pipeline run all run as real in-cluster workloads, not local processes. The goal is that onboarding a new source or table is mostly a matter of configuring metadata and writing business logic — not writing platform code.
 
-This README is the full architecture and design reference — durable facts about what the system is and why it's built this way. `Roadmap.md` tracks phase status and what's not yet built, `Progress.md` is the chronological build/verification record, `Backlog.md` is deferred items, and `Learnings.md` is problem-indexed technical gotchas — those four are working documents for this project's build-out and not meant to outlive it; this file is.
+This README is the full architecture and design reference — durable facts about what the system is and why it's built this way. `Roadmap.md` tracks phase status and what's not yet built, `Progress/` is a folder of distinct, grep-able chronological build/verification logs (one per phase or dated entry, no separate index), `Backlog.md` is deferred items, and `Learnings.md` is problem-indexed technical gotchas — those four are working documents for this project's build-out and not meant to outlive it; this file is.
 
 This is an enterprise data platform, built locally to validate the feasibility of its components — dbt-driven transformations over Apache Iceberg tables, orchestrated by Dagster, running on Kubernetes — before committing them to a real deployment target. It's architecturally realistic, not a toy, while keeping initial cost/complexity down by running entirely locally (a kind cluster, local filesystem storage) with a deliberate design so the storage layer can later be repointed at real Azure Storage (ADLS Gen2) via config change, not a rewrite.
 
@@ -121,13 +121,11 @@ Every batch or model run goes through the same three steps — extraction, trans
 
 **`master_pipeline`** is the single entry point every trigger path (schedule, sensor, or a manual launch) goes through, parameterized by `orchestration_kind` (`"batch_group"`/`"model_schema"`) and `orchestration_value` — everything else (which feeds/domains, which steps) is derived live from Postgres inside its own op, not baked into the trigger. It launches three independent child job types, each its own top-level Dagster run with its own pod directly from `K8sRunLauncher` — never a pod spawning a child pod: `EXTRACTION_JOBS[feed]` (`raw`+`clean`, bundled since raw exists only to feed clean), `MODELING_JOBS[domain]` (`staging`+`model`), `SERVING_JOBS[domain]` (`serve`). `data_processing_runs` is keyed by the master's own `master_dagster_run_id`, with each child job threading its own separate `dagster_run_id` back into its own column. Dagster's webserver/daemon/code-server and the Streamlit frontend all run as real in-cluster `Deployment`s (`orchestration/k8s/`, `frontend/k8s/`), reachable via NodePort the same way Postgres/Trino/Polaris/MinIO already are — each domain also gets its own Docker image, built from the same discover-domains-from-Postgres flow `generate_domain_projects.py` uses.
 
-**Cooperative wake-up from KEDA scale-to-zero**: `orchestration`'s webserver/code-server can be scaled to 0 outside configured schedule windows (see "Kubernetes Hosting Model" below). A manual trigger (Streamlit's "Trigger Pipeline" page, `frontend/dagster_wake.py`) wakes them itself via the Kubernetes API before submitting, rather than failing — but never sleeps them back down itself, since `master_pipeline`'s own run pod calls back into the webserver's GraphQL API for its entire duration, not just at submission. Sleep is owned instead by a Dagster run-status sensor (`wake_sleep_sensor.py`) that only unpauses once the triggering run reaches a terminal status *and* a wake-timestamp grace period has elapsed — the grace period exists because a stale sensor tick for an unrelated older run can otherwise fire in the gap between a fresh wake and the new run actually existing in Dagster's run storage, killing the just-woken pod. Every caller of the wake mechanism (Streamlit's Python client and the project's own `_wake-orchestration` shell tooling) stamps the same grace-period timestamp annotation.
-
 ## Kubernetes Hosting Model
 
-One kind cluster for the whole platform — not split across multiple clusters. Modules are separated by **namespace** (`metadata`, `orchestration`, `processing`, `query-engine`, `frontend`, `streaming`, `keda`), and within a namespace, workloads split by lifecycle, not by module:
+One kind cluster for the whole platform — not split across multiple clusters. Modules are separated by **namespace** (`metadata`, `orchestration`, `processing`, `query-engine`, `frontend`, `streaming`), and within a namespace, workloads split by lifecycle, not by module:
 
-- **Long-running services** (Postgres, Apache Polaris, Trino, Dagster webserver+daemon, Streamlit, Kafka, the Flink Kubernetes Operator) — `Deployment`/`StatefulSet` + `Service`, always up (subject to KEDA scale-to-zero for `orchestration`'s webserver/code-server — see "Kubernetes scaling options compared" in `Learnings.md`).
+- **Long-running services** (Postgres, Apache Polaris, Trino, Dagster webserver+daemon+code-server, Streamlit, Kafka, the Flink Kubernetes Operator) — `Deployment`/`StatefulSet` + `Service`, always up, `replicas: 1` — see `Learnings.md`'s "Dagster control plane scaling on Kubernetes" for why `orchestration`'s webserver/code-server are always-on rather than scaled to zero.
 - **On-demand compute** (a dbt run, a `FlinkDeployment`'s own job pods, an isolated streaming test) — `Job`/`FlinkDeployment` CR, launched per run (by Dagster's `K8sRunLauncher`, `flink::start`, or `streaming-testing::test`), runs to completion (or continuously, for a `FlinkDeployment`), pod disappears when killed. dbt has no server component; it's a CLI invoked inside a pod on demand. Python extraction/validation work (Polars) runs inline inside the same `EXTRACTION_JOBS[feed]` op pod, not as a separate compute resource.
 
 Each module gets at most one container image it owns (custom-built where the module has its own code; off-the-shelf where it doesn't) — **`orchestration` and `streaming` are exceptions with *more* than one** (multiple images from one Dockerfile, or several Dockerfiles), and **`processing`/`dbt` are the opposite exception: zero images of their own**, since both are pure source consumed directly into `orchestration`'s single image rather than built separately. See below — only 5 `Dockerfile`s exist in this repo in total (`frontend`, `orchestration`, and `streaming`'s three).
@@ -148,13 +146,13 @@ Each module gets at most one container image it owns (custom-built where the mod
 |---|---|
 | `metadata/` | The platform's own config database — Postgres DDL/init scripts and its Kubernetes manifests. Every other module reads from this DB; nothing here depends on another module. |
 | `scripts/` | Build-time codegen: reads metadata and generates `EXTRACTION_JOBS`/`MODELING_JOBS`/`SERVING_JOBS`/`master_pipeline`, dbt model/snapshot scaffolds, dbt serve-layer views, and deletion-synthesis models. Also seeds the metadata DB. This is the platform's generation engine — rarely touched day-to-day. |
-| `orchestration/` | The Dagster project — resources, hand-written assets for non-connector feeds, the dbt-assets integration, per-feed connector subclasses for bespoke extraction logic (e.g. REST pagination/flattening), the cooperative wake-up sleep sensor, and `k8s/` manifests for the in-cluster webserver/daemon/code-server Deployments. Consumes what `scripts/` generates. |
+| `orchestration/` | The Dagster project — resources, hand-written assets for non-connector feeds, the dbt-assets integration, per-feed connector subclasses for bespoke extraction logic (e.g. REST pagination/flattening), and `k8s/` manifests for the in-cluster webserver/daemon/code-server Deployments. Consumes what `scripts/` generates. |
 | `processing/connectors/` | The generic, reusable extraction connector framework — base classes and the standard connector kinds (Postgres/CSV/JSON file/REST) plus generic schema discovery. |
 | `processing/raw_to_clean/` | Generic raw→clean validation logic (schema coercion against the metadata-tracked schema registry) — one shared module every feed's `clean` step uses. |
 | `dbt/domains/<domain>/` | One compile-isolated dbt project per business domain — staging/model/serve SQL, plus macros copied in from `dbt/_shared/`. This is where most day-to-day modeling work happens. Each domain also gets its own Docker image, built/rebuilt independently of every other domain's. |
 | `query-engine/` | Trino (compute) and Apache Polaris (Iceberg REST catalog) — config and Kubernetes manifests, no custom application code. |
 | `streaming/` | Real-time ingestion: Kafka (KRaft, single broker) → Flink (Kubernetes Operator, one `FlinkDeployment` per active `streaming_source` row) → the same Iceberg warehouse everything else uses. Metadata-driven onboarding like a batch feed (`streaming_source` table + codegen), plus `streaming/testing/` — isolated, in-cluster tests proving each source end-to-end without needing the batch pipeline to have run first. |
-| `frontend/` | Streamlit CRUD app for all metadata tables (source systems, feeds, lakehouse models, ingestion triggers, streaming sources, per-model column definitions), plus an on-demand `master_pipeline` trigger (via Dagster's GraphQL API, with cooperative wake-up) — a real in-cluster Deployment, `frontend/k8s/`. |
+| `frontend/` | Streamlit CRUD app for all metadata tables (source systems, feeds, lakehouse models, ingestion triggers, streaming sources, per-model column definitions), plus an on-demand `master_pipeline` trigger (via Dagster's GraphQL API) — a real in-cluster Deployment, `frontend/k8s/`. |
 | `platform/` | Cluster-wide concerns not owned by any one module: the local kind cluster definition and Kubernetes namespaces. |
 | `tests/` | Cross-module integration tests (as opposed to each module's own unit tests, which live inside that module). |
 | `features/` | Human-readable Gherkin `.feature` specs written by the QA agent — documentation only, no code or test runner lives here. The real pytest satisfying each scenario lives in `tests/` (or, for non-mocked Dagster pipeline chains, inside `orchestration/`) — see CLAUDE.md's "Multi-agent development workflow". |
@@ -166,7 +164,8 @@ data-platform/
   pyproject.toml, uv.lock
   Justfile
   README.md, CLAUDE.md, .env.example
-  Roadmap.md, Progress.md, Backlog.md, Learnings.md
+  Roadmap.md, Backlog.md, Learnings.md
+  Progress/
   .claude/plans/
   platform/
     kind/kind-cluster.yaml
@@ -207,7 +206,6 @@ data-platform/
       dagster_launch.py
       raw_storage.py
       pipeline_steps.py
-      wake_sleep_sensor.py
       trigger_master_pipeline.py, trigger_schedule_run.py, verify_sensor_trigger.py
       assets/
       connectors/
@@ -221,7 +219,6 @@ data-platform/
     raw_to_clean/
   frontend/
     app.py, metadata_db.py, pages/
-    dagster_wake.py
     tests/
     Dockerfile
     k8s/
@@ -240,7 +237,7 @@ data-platform/
 - **`.claude/plans/`** — working plan/resume files for in-progress multi-session efforts.
 - **`platform/`** — cluster-wide concerns, not owned by one module.
   - `kind/kind-cluster.yaml` — single-node, `extraMounts` → `./data-lake`, `extraPortMappings` for every NodePort (Postgres/Trino/Dagster webserver/Streamlit).
-  - `namespaces/` — `metadata.yaml`, `orchestration.yaml`, `processing.yaml`, `query-engine.yaml`, `frontend.yaml`, `streaming.yaml`, `keda.yaml`.
+  - `namespaces/` — `metadata.yaml`, `orchestration.yaml`, `processing.yaml`, `query-engine.yaml`, `frontend.yaml`, `streaming.yaml`.
 - **`metadata/`** — module: platform config DB.
   - `DataModel.md` — full table-by-table schema, the source of truth; see this file before this README's own (intentionally non-duplicated) schema prose.
   - `db/init/` — `01_platform_metadata.sql`, `02_polaris_db.sql`.
@@ -277,24 +274,22 @@ data-platform/
     - `dagster_launch.py` — shared launch-and-wait helper (submit via GraphQL, poll to terminal status, raise on failure).
     - `raw_storage.py` — durable raw-parquet read/write helpers (the raw→clean storage handoff).
     - `pipeline_steps.py` — the extraction/transformation/serving vocabulary.
-    - `wake_sleep_sensor.py` — daemon-side sleep half of the cooperative wake-up mechanism (see `frontend/dagster_wake.py`) — run-status sensors that remove the KEDA pause annotation once `master_pipeline` is terminal and no other invocation is in flight, gated by a wake-timestamp grace period (see `Learnings.md`, "A KEDA-paused wake needs a matching guard on the automatic sleep").
     - `trigger_master_pipeline.py`, `trigger_schedule_run.py`, `verify_sensor_trigger.py` — host-side scripts backing the `verify-pipeline`/`verify-schedule`/`verify-sensor` recipes.
     - `assets/` — hand-written `extraction_customers`/`extraction_sales`/`financial_assets.py` (sensor), `dbt_assets.py` (domain-scoped `@dbt_assets` factories).
     - `connectors/` — per-feed bespoke connector subclasses (e.g. REST pagination/flattening) — distinct from `processing/connectors/`'s generic base classes.
     - `resources/` — `postgres_metadata_resource.py`, `iceberg_resource.py`.
-    - `tests/` — `test_schedules.py`, `test_sensors.py`, `test_pipeline_steps.py`, `test_wake_sleep_sensor.py`, etc.
+    - `tests/` — `test_schedules.py`, `test_sensors.py`, `test_pipeline_steps.py`, etc.
   - `dagster_home/` — `dagster.yaml` (local/run-pod config) + `dagster-incluster.yaml` (webserver/daemon config, `load_incluster_config: true`) + `workspace.yaml` (points at `dagster-code-server`).
   - `Dockerfile` — `uv`-based; optional `DOMAIN` build arg selects a narrower per-domain image.
-  - `k8s/` — `dagster-webserver`/`dagster-daemon`/`dagster-code-server` Deployments+Services, RBAC (`dagster-run-launcher` role, extended with a `keda.sh/scaledobjects` grant for `wake_sleep_sensor.py`'s own unpause; `rbac-frontend-wake.yaml` separately grants frontend's ServiceAccount cross-namespace pause/poll rights), `postgres-credentials` Secret, `keda-scaledobjects.yaml` (webserver+code-server scale-to-zero, daemon excluded — see `Learnings.md`'s "Kubernetes scaling options compared") (namespace: `orchestration`).
+  - `k8s/` — `dagster-webserver`/`dagster-daemon`/`dagster-code-server` Deployments+Services (all `replicas: 1`, always-on — see `Learnings.md`'s "Dagster control plane scaling on Kubernetes"), RBAC (`dagster-run-launcher` role), `postgres-credentials` Secret (namespace: `orchestration`).
 - **`processing/`**
   - `connectors/` — `uv` workspace member: generic, reusable extraction connector framework (Postgres/CSV/JSON-file/REST base classes + schema discovery).
   - `raw_to_clean/` — `uv` workspace member: generic raw→clean validation logic (schema coercion against `schema_registry`).
 - **`frontend/`** — module: Streamlit CRUD + on-demand pipeline trigger.
-  - `app.py`, `metadata_db.py`, `pages/` — source systems, data feeds, lakehouse models, ingestion triggers, streaming sources, trigger pipeline, per-model column definitions (`7_Model_Table_Columns.py` — see Backlog.md, this page's rebuild is not yet complete); `6_Trigger_Pipeline.py` submits `master_pipeline` directly through Dagster's GraphQL API, with cooperative wake-up; `8_Debug_Model_Query.py` is an ad hoc Trino query tool (pick a `model`-schema table, see its first 500 rows) for confirming a pipeline run actually populated it.
-  - `dagster_wake.py` — cooperative wake-up: wakes orchestration off a KEDA scale-to-zero state via the Kubernetes API before `pages/6_Trigger_Pipeline.py` submits a run — never sleeps itself, see `wake_sleep_sensor.py` above and `Learnings.md`.
-  - `tests/` — `test_metadata_db.py`, `test_trigger_pipeline_page.py` (`streamlit.testing.v1.AppTest` — runs a page's real script headlessly, see `Learnings.md`), `test_dagster_wake.py`.
+  - `app.py`, `metadata_db.py`, `pages/` — source systems, data feeds, lakehouse models, ingestion triggers, streaming sources, trigger pipeline, per-model column definitions (`7_Model_Table_Columns.py` — see Backlog.md, this page's rebuild is not yet complete); `6_Trigger_Pipeline.py` submits `master_pipeline` directly through Dagster's GraphQL API; `8_Debug_Model_Query.py` is an ad hoc Trino query tool (pick a `model`-schema table, see its first 500 rows) for confirming a pipeline run actually populated it.
+  - `tests/` — `test_metadata_db.py`, `test_trigger_pipeline_page.py` (`streamlit.testing.v1.AppTest` — runs a page's real script headlessly, see `Learnings.md`).
   - `Dockerfile` — `uv` workspace member (`package = false`; scoped `uv sync --package frontend`).
-  - `k8s/` — Deployment (`serviceAccountName: frontend`), Service, ServiceAccount, `postgres-credentials` Secret, `DAGSTER_WEBSERVER_HOST`/`PORT` (namespace: `frontend`).
+  - `k8s/` — Deployment, Service, `postgres-credentials` Secret, `DAGSTER_WEBSERVER_HOST`/`PORT` (namespace: `frontend`).
 - **`domain_naming/`** — `uv` workspace member: the single canonical `slugify_domain()` implementation.
 - **`scripts/`** — `uv` workspace member: build-time codegen (`generate_dagster_pipeline.py`, `generate_domain_projects.py`, `generate_serve_views.py`, `generate_model_scaffolds.py`, `generate_ods_models.py`, `generate_sources.py`, `generate_deletion_synthesis_views.py`) + `seed_metadata_db.py` + `bootstrap_kind.sh`.
 - **`data-lake/`** — host-mounted into `kind`: `raw/` (durable per-run parquet snapshots) and `landing/` (file-drop sources only, e.g. `financial_transactions`/`police_crimes`) actively used; `clean/staging/model/iceberg-warehouse/archive/` vestigial or MinIO-backed (Iceberg tables live in MinIO's `lakehouse` bucket, not on this mount).

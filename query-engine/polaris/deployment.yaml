@@ -15,7 +15,15 @@ spec:
     spec:
       containers:
         - name: polaris
-          image: apache/polaris:latest
+          # Pinned (2026-08-03) after an unpinned :latest pull silently
+          # jumped to 1.7.0, which tightened default-base-location/
+          # allowed-locations validation and broke catalog bootstrap with
+          # no code change on this project's side -- see Learnings.md.
+          # Tentative: confirmed working end-to-end against 1.7.0, not
+          # rolled back to whatever 1.6.x version silently preceded it
+          # (never itself pinned/recorded, so not recoverable as a known
+          # value).
+          image: apache/polaris:1.7.0
           ports:
             - containerPort: 8181
               name: api

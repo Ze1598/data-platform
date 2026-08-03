@@ -12,7 +12,11 @@ spec:
       restartPolicy: Never
       containers:
         - name: create-bucket
-          image: minio/mc:latest
+          # Pinned (2026-08-03) by digest, not tag -- minio/mc doesn't
+          # publish clean semver tags matching its own reported version. See
+          # Learnings.md's "Dagster control plane scaling on Kubernetes"
+          # entry (why every off-the-shelf image here got pinned).
+          image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
           command:
             - sh
             - -c

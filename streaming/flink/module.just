@@ -29,8 +29,10 @@ install-operator:
     # defaulting on FlinkDeployment CRs -- not required for jobs to run,
     # and adding a whole new cluster-wide dependency for it wasn't judged
     # worth it for a single local dev cluster.
+    # Chart version pinned (2026-08-03) -- see Learnings.md's "Dagster
+    # control plane scaling on Kubernetes" entry.
     helm upgrade --install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator \
-        -n streaming --set webhook.create=false
+        -n streaming --set webhook.create=false --version 1.15.0
     kubectl rollout status deployment/flink-kubernetes-operator -n streaming --timeout=120s
 
 start:

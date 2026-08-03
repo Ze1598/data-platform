@@ -41,6 +41,17 @@ investing real effort down a specific implementation path. Purely read-only
 actions that answer a question directly from already-known context don't
 need this gate.
 
+**Within already-authorized work, only stop for destructive commands or
+commands operating outside this project's own directory.** Once a task is
+authorized, don't re-ask permission for each individual command needed to
+carry it out — run it. Stop and ask only when a specific command would be
+destructive (deletes/overwrites data, force-pushes, drops a table, etc.) or
+would navigate/act outside this project's own directory tree. This is a
+carve-out from the "ask before making ANY change" gate above, scoped
+specifically to routine command execution once work is already underway —
+it doesn't relax that gate's requirement to ask before starting a new piece
+of work in the first place.
+
 **Default to `just` recipes for actual execution — running code, tests,
 features, or infrastructure — never a raw individual command.** This
 applies to every agent, not just this session; writing/editing code files
@@ -227,24 +238,24 @@ exists. Organize by system/component (e.g. "Dagster + Kubernetes", "dbt
 modeling patterns"), never by build phase, session, or chronological order.
 Exclude phase numbers, "this session" language, prompt-sequence narrative,
 and pure "verified: ..." testing-log paragraphs that don't teach something
-reusable — that content belongs in `Progress/` instead, which is the
+reusable — that content belongs in `Progress/*.md` instead, which is the
 correct home for phase-by-phase chronological narrative.
 
-**`Progress.md` is a lean index, not the build log itself.** The actual
-build/verification history lives under `Progress/` — one file per numbered
-phase (`Progress/<NN>-<slug>.md`) or per dated post-numbered-phase entry
-(`Progress/<YYYY-MM-DD>-<slug>.md`). `Progress.md` holds only a one-line
-status + link per phase/entry. Read a linked file only when its content is
+**`Progress/` is a folder of distinct, grep-able progress logs, not a
+single running log.** The build/verification history lives entirely under
+`Progress/` — one file per numbered phase (`Progress/<NN>-<slug>.md`) or
+per dated post-numbered-phase entry (`Progress/<YYYY-MM-DD>-<slug>.md`),
+each file a self-contained record of that phase/entry. There is no
+separate index file to keep in sync — find a relevant entry by listing or
+grepping `Progress/` directly. Read a found file only when its content is
 actually relevant to the task at hand (working in that phase's area,
-checking whether something was already tried) — do not read the whole set
-as part of routine session startup, and do not write new build/verification
-narrative into the root file. When a phase or dated entry is added, add
-both the detail file and its one-line index entry together.
+checking whether something was already tried) — do not read the whole
+folder as part of routine session startup.
 
 **`Roadmap.md` holds current state and future work only — never
 completed-phase history.** Once a phase is done, its entry is removed from
 Roadmap.md entirely (not marked done in place) — the phase-by-phase
-completed record lives in `Progress.md`'s index instead. Roadmap.md answers
+completed record lives in `Progress/` instead. Roadmap.md answers
 "what's the state now and what's still open," not "what happened, phase by
 phase."
 
@@ -256,8 +267,8 @@ build-out. Project-specific context that changes over time (current phase
 status, open bugs, what's blocking what) lives in `Roadmap.md` (current
 state + future-work design only, no completed-phase history — see
 "Documentation conventions"), `Backlog.md` (deferred items + current
-priority), `Progress.md` (a lean index into `Progress/`, the actual
-phase-by-phase build/verification history — see "Documentation
-conventions"), and `Learnings.md` (human readable technical gotchas for
-humans coming across this repository) — these four are working documents
-for the build-out, not meant to outlive it. 
+priority), `Progress/` (a folder of distinct, per-phase/per-dated-entry
+build/verification logs, grep-able rather than indexed — see
+"Documentation conventions"), and `Learnings.md` (human readable technical
+gotchas for humans coming across this repository) — these four are working
+documents for the build-out, not meant to outlive it. 

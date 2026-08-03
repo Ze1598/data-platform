@@ -61,14 +61,11 @@ spec:
               value: postgres.metadata.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
-          # No requests/limits existed at all before this (confirmed live)
-          # -- this Deployment is now also a KEDA scale-to-zero target (see
-          # ../module.just's `install-keda`/ScaledObject and Learnings.md's
-          # "Kubernetes scaling options compared" entry), so honest sizing
-          # matters even more than usual: KEDA scales *replica count*, not
-          # per-pod footprint, so an underestimate here still costs real
-          # memory the moment this scales back up. Initial estimate, not
-          # measured against real load -- worth tuning from observation.
+          # No requests/limits existed at all before this (confirmed live).
+          # Always-on, replicas: 1, same as code-server/daemon -- see
+          # Learnings.md's "Dagster control plane scaling on Kubernetes"
+          # entry. Initial estimate, not measured against real load --
+          # worth tuning from observation.
           resources:
             requests:
               memory: "384Mi"

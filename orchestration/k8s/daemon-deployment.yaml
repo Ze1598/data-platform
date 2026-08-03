@@ -56,11 +56,9 @@ spec:
             - name: POSTGRES_PORT
               value: "5432"
           # No requests/limits existed at all before this (confirmed live).
-          # Unlike webserver/code-server, the daemon is deliberately NOT a
-          # KEDA scale-to-zero target -- it's what evaluates schedules/
-          # sensors, so if it were asleep, nothing would wake it on a real
-          # trigger (see Learnings.md's "Kubernetes scaling options
-          # compared" entry). Stays always-on; still needs honest sizing.
+          # Always-on, replicas: 1, same as webserver/code-server -- see
+          # Learnings.md's "Dagster control plane scaling on Kubernetes"
+          # entry. Still needs honest sizing.
           resources:
             requests:
               memory: "384Mi"

@@ -17,7 +17,6 @@ from dagster_data_platform.pipeline_generated import (
 )
 from dagster_data_platform.resources.iceberg_resource import IcebergCatalogResource
 from dagster_data_platform.resources.postgres_metadata_resource import PostgresMetadataResource
-from dagster_data_platform.wake_sleep_sensor import ALL_WAKE_SLEEP_SENSORS
 
 # metadata_runs/financial_transactions/police_crimes' extraction/raw/clean
 # assets used to be hand-written here (metadata_runs_assets.py,
@@ -53,7 +52,7 @@ defs = Definitions(
         *ALL_DBT_ASSETS,
     ],
     jobs=ALL_EXTRACTION_JOBS + ALL_MODELING_JOBS + ALL_SERVING_JOBS + [master_pipeline],
-    sensors=ALL_SENSORS + ALL_WAKE_SLEEP_SENSORS,
+    sensors=ALL_SENSORS,
     schedules=ALL_SCHEDULES,
     resources={
         "postgres_metadata": PostgresMetadataResource(

@@ -17,7 +17,10 @@ spec:
       restartPolicy: Never
       containers:
         - name: bootstrap
-          image: apache/polaris-admin-tool:latest
+          # Pinned (2026-08-03) to match the main polaris image's version --
+          # see Learnings.md's "Dagster control plane scaling on
+          # Kubernetes" entry.
+          image: apache/polaris-admin-tool:1.7.0
           args: ["bootstrap", "-r", "POLARIS", "-c", "POLARIS,root,s3cr3t"]
           env:
             - name: POLARIS_PERSISTENCE_TYPE

@@ -20,7 +20,9 @@ spec:
     spec:
       containers:
         - name: kafka
-          image: apache/kafka:latest
+          # Pinned (2026-08-03) -- see Learnings.md's "Dagster control
+          # plane scaling on Kubernetes" entry.
+          image: apache/kafka:4.3.1
           ports:
             - containerPort: 9092
               name: client
