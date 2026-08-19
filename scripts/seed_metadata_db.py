@@ -172,42 +172,6 @@ def seed_lakehouse_model(
     )
 
 
-def seed_lakehouse_model_columns(cur, *, model_friendly_name: str, columns: list[dict]) -> None:
-    """Idempotently seeds lakehouse_model_columns rows for one model --
-    the same data frontend/pages/7_Model_Table_Columns.py's editor grid
-    submits, here as a reproducible seed for a model that predates any
-    real user filling in that page. Each column dict: column_name,
-    source_feed_friendly_name, data_type, is_nullable, is_business_key,
-    is_tracked. `ordinal_position` is the list's own order, not passed
-    explicitly -- same convention as the frontend page (entry order in
-    the editor grid)."""
-    for position, col in enumerate(columns):
-        cur.execute(
-            """
-            INSERT INTO lakehouse_model_columns (
-                model_id, source_feed_id, column_name, data_type,
-                is_nullable, is_business_key, is_tracked, ordinal_position
-            )
-            VALUES (
-                (SELECT id FROM lakehouse_models WHERE friendly_name = %(model_friendly_name)s),
-                (SELECT id FROM data_feed WHERE friendly_name = %(source_feed_friendly_name)s),
-                %(column_name)s, %(data_type)s, %(is_nullable)s, %(is_business_key)s, %(is_tracked)s, %(ordinal_position)s
-            )
-            ON CONFLICT (model_id, column_name) DO NOTHING
-            """,
-            {
-                "model_friendly_name": model_friendly_name,
-                "source_feed_friendly_name": col["source_feed_friendly_name"],
-                "column_name": col["column_name"],
-                "data_type": col["data_type"],
-                "is_nullable": col["is_nullable"],
-                "is_business_key": col["is_business_key"],
-                "is_tracked": col["is_tracked"],
-                "ordinal_position": position,
-            },
-        )
-
-
 def seed_ingestion_trigger(
     cur,
     *,
@@ -402,10 +366,9 @@ def main() -> None:
         # group exists to prove feed-tier parallel extraction, not
         # model-tiering (out of scope for this test, see Roadmap.md).
         # pipeline_steps="0" (extraction only) for every feed here EXCEPT
-        # device_heartbeats, which gained a real lakehouse_models consumer
-        # (dim_iot_device, seeded below) once this became the live test for
-        # the lakehouse_model_columns frontend/codegen feature -- "0,1,2"
-        # there so its tag's dbt nodes aren't excluded from the domain's
+        # device_heartbeats, which has a real lakehouse_models consumer
+        # (dim_iot_device, seeded below) -- "0,1,2" there so its tag's
+        # dbt nodes aren't excluded from the domain's
         # transformation/serving build (dbt_assets.py's per-feed
         # cherry-picking would otherwise skip the whole build as a no-op:
         # confirmed live, a first attempt with "0" here produced a
@@ -566,16 +529,16 @@ def main() -> None:
             updates_enabled=True,
         )
 
-        # iot_telemetry domain -- a live test of the frontend's column-
-        # definition page (frontend/pages/7_Model_Table_Columns.py) and
-        # generate_model_scaffolds.py's dedicated-staging codegen (Backlog.md's
-        # "Frontend page for defining model tables"), kept seeded rather than
-        # a one-off manual test so every nuke-and-rebuild continues to prove
+        # iot_telemetry domain -- proves a real multi-tier batch group
+        # feeding a hand-modeled dimension, kept seeded rather than a
+        # one-off manual test so every nuke-and-rebuild continues to prove
         # it, same reasoning as inventory_events below. Single-feed
-        # (device_heartbeats, from the iot_telemetry batch group) -- proves
-        # the primary, single-feed path; the multi-feed CTE-per-feed/TODO-
-        # combine path is implemented but not exercised by this seed, since
-        # no real model spans 2+ feeds today.
+        # (device_heartbeats, from the iot_telemetry batch group).
+        # business_key_columns/tracked_columns match
+        # dbt/domains/iot_telemetry/models/staging/stg_iot_telemetry_dim_device.sql
+        # and .../model/dimensions/iot_telemetry_dim_device.sql exactly --
+        # those files are already hand-owned and generated, this just keeps
+        # the metadata consistent with what they actually build.
         seed_lakehouse_model(
             cur,
             friendly_name="dim_iot_device",
@@ -584,39 +547,10 @@ def main() -> None:
             table_type="dimension",
             depends_on_feed_friendly_names=["device_heartbeats"],
             owning_feed_friendly_name="device_heartbeats",
-            business_key_columns=[],
-            tracked_columns=[],
+            business_key_columns=["device_id"],
+            tracked_columns=["battery_level", "signal_strength", "firmware_version"],
             scd_type=1,
             deletes_enabled=False,
-        )
-        seed_lakehouse_model_columns(
-            cur,
-            model_friendly_name="dim_iot_device",
-            columns=[
-                {
-                    "column_name": "device_id", "source_feed_friendly_name": "device_heartbeats",
-                    "data_type": "string", "is_nullable": False, "is_business_key": True, "is_tracked": False,
-                },
-                {
-                    "column_name": "battery_level", "source_feed_friendly_name": "device_heartbeats",
-                    "data_type": "long", "is_nullable": False, "is_business_key": False, "is_tracked": True,
-                },
-                {
-                    "column_name": "signal_strength", "source_feed_friendly_name": "device_heartbeats",
-                    "data_type": "long", "is_nullable": False, "is_business_key": False, "is_tracked": True,
-                },
-                {
-                    "column_name": "firmware_version", "source_feed_friendly_name": "device_heartbeats",
-                    "data_type": "string", "is_nullable": False, "is_business_key": False, "is_tracked": True,
-                },
-                {
-                    # Deliberately neither business key nor tracked -- proves
-                    # the third state (a passthrough column excluded from
-                    # both _key_hash and _attr_hash).
-                    "column_name": "ts", "source_feed_friendly_name": "device_heartbeats",
-                    "data_type": "timestamp", "is_nullable": False, "is_business_key": False, "is_tracked": False,
-                },
-            ],
         )
 
         # police_crimes' cron schedule; fct_daily_financial_activity is a

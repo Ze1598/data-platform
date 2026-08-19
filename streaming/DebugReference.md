@@ -26,6 +26,51 @@ echo "{\"event_id\":\"manual-test\",\"event_type\":\"sale\",\"branch\":\"A\",\"c
 '
 ```
 
+### Run schema discovery without the frontend UI
+
+**Scenario**: `event_timestamp_column` is null and `generate-streaming-ingestion` skips the source with "no `schema_registry` entry yet -- run 'Discover Schema' first," but driving the actual Streamlit page isn't practical (no browser available, or scripting a full validation pass). The host machine can't reach Kafka directly — `kafka.streaming.svc.cluster.local` is in-cluster-only DNS, no NodePort — so this has to run from inside a pod that already has the right Python deps; the `frontend` deployment is the one that does (`confluent_kafka`, `connectors.inference`, `metadata_db`). Confirmed live (2026-08-19, `Walkthrough_New_Streaming_Source.md`'s `inventory_events`): produce real messages onto the topic first (see the Kafka section above), then run the exact code `5_Streaming_Sources.py`'s "Discover schema now" button runs:
+```bash
+FRONTEND_POD=$(kubectl get pod -n frontend -l app=frontend -o jsonpath='{.items[0].metadata.name}')
+cat > /tmp/discover_schema.py <<'PYEOF'
+import json, sys, uuid
+sys.path.insert(0, "/app/frontend")
+import polars as pl
+from confluent_kafka import Consumer
+from connectors.inference import infer_column_definitions
+from metadata_db import get_engine, write_schema_registry_version
+from sqlalchemy import text
+
+FRIENDLY_NAME = "inventory_events"  # change per source
+engine = get_engine()
+with engine.connect() as conn:
+    row = conn.execute(text("SELECT id, topic_name FROM streaming_source WHERE friendly_name = :n"), {"n": FRIENDLY_NAME}).fetchone()
+source_id, topic_name = str(row[0]), row[1]
+
+consumer = Consumer({"bootstrap.servers": "kafka.streaming.svc.cluster.local:9092",
+                      "group.id": f"schema-discovery-{uuid.uuid4()}", "auto.offset.reset": "earliest"})
+consumer.subscribe([topic_name])
+messages = []
+for _ in range(15):
+    msg = consumer.poll(timeout=2.0)
+    if msg is None or msg.error():
+        continue
+    messages.append(json.loads(msg.value()))
+consumer.close()
+
+column_definitions = infer_column_definitions(pl.DataFrame(messages))
+write_schema_registry_version(engine, controlling_object_id=source_id, controlling_object_type="streaming_source",
+                               column_definitions=column_definitions, primary_key_columns=[], created_by="manual-cli")
+print(f"Discovered {len(column_definitions)} column(s) from {len(messages)} message(s)")
+PYEOF
+kubectl cp /tmp/discover_schema.py frontend/"$FRONTEND_POD":/tmp/discover_schema.py
+kubectl exec -n frontend "$FRONTEND_POD" -- python /tmp/discover_schema.py
+
+# then set event_timestamp_column the same way "Edit existing" does:
+kubectl exec -n metadata statefulset/postgres -- psql -U platform -d platform_metadata -c \
+  "UPDATE streaming_source SET event_timestamp_column = '<column>' WHERE friendly_name = '<friendly_name>';"
+```
+Use a fresh `group.id` (a random UUID, not the source's own id) every run — a stable `group.id` commits consumed offsets, so a second run against the same source finds nothing new and the poll loop just times out silently instead of erroring.
+
 ---
 
 ## Flink

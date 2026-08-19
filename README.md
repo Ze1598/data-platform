@@ -103,7 +103,7 @@ Two independent watermark scopes:
 
 The full table-by-table schema (columns, constraints, purpose, and join/lookup relationships) lives in [metadata/DataModel.md](metadata/DataModel.md) — that file is the source of truth; this section intentionally doesn't duplicate it to avoid drift.
 
-Tables: `source_system`, `data_feed`, `streaming_source` (the streaming analog of `data_feed`, driving metadata-driven Kafka→Flink onboarding), `schema_registry` (polymorphic across `data_feed`/`streaming_source`), `lakehouse_models` (fact/dim config — staging itself has no metadata row, it's naming-convention-only), `lakehouse_model_columns` (opt-in per-model column definitions, powering the frontend's Model Table Columns page), `load_type` (lookup), `pipeline_steps` (lookup — extraction/transformation/serving, referenced by `data_feed.pipeline_steps`/`lakehouse_models.pipeline_steps` for cherry-picking), `ingestion_triggers` (schedule or sensor metadata for a feed/model's `master_pipeline` trigger — codegen'd into real Dagster `ScheduleDefinition`/`SensorDefinition` objects by `scripts/generate_dagster_pipeline.py`), `data_processing_runs` (one wide row per feed-run or model-run per job execution, spanning raw→clean→staging→model→serve).
+Tables: `source_system`, `data_feed`, `streaming_source` (the streaming analog of `data_feed`, driving metadata-driven Kafka→Flink onboarding), `schema_registry` (polymorphic across `data_feed`/`streaming_source`), `lakehouse_models` (fact/dim config — staging itself has no metadata row, it's naming-convention-only), `load_type` (lookup), `pipeline_steps` (lookup — extraction/transformation/serving, referenced by `data_feed.pipeline_steps`/`lakehouse_models.pipeline_steps` for cherry-picking), `ingestion_triggers` (schedule or sensor metadata for a feed/model's `master_pipeline` trigger — codegen'd into real Dagster `ScheduleDefinition`/`SensorDefinition` objects by `scripts/generate_dagster_pipeline.py`), `data_processing_runs` (one wide row per feed-run or model-run per job execution, spanning raw→clean→staging→model→serve).
 
 This same Postgres instance also hosts `polaris_db` for Apache Polaris (the Iceberg REST catalog).
 
@@ -233,7 +233,7 @@ data-platform/
 - **`pyproject.toml`, `uv.lock`** — the `uv` workspace root. Members: `frontend`, `scripts`, `domain_naming`, `orchestration/dagster_data_platform`, `processing/connectors`, `processing/raw_to_clean`, `query-engine/polaris_client`, `tests/integration`, `streaming/producer`, `streaming/testing`.
 - **`Justfile`** — cross-module sequencing (`start`/`kill`/`smoketest`/`test`); see each module's own `module.just` for what a recipe actually does.
 - **`README.md`, `CLAUDE.md`, `.env.example`** — this file (architecture + design reference), agent instructions, env template.
-- **`Roadmap.md`, `Progress.md`, `Backlog.md`, `Learnings.md`** — phase status + open build order, chronological build record, deferred items, technical gotchas.
+- **`Roadmap.md`, `Progress/`, `Backlog.md`, `Learnings.md`** — phase status + open build order, chronological per-phase/per-dated-entry build record (no index file), deferred items, technical gotchas.
 - **`.claude/plans/`** — working plan/resume files for in-progress multi-session efforts.
 - **`platform/`** — cluster-wide concerns, not owned by one module.
   - `kind/kind-cluster.yaml` — single-node, `extraMounts` → `./data-lake`, `extraPortMappings` for every NodePort (Postgres/Trino/Dagster webserver/Streamlit).
@@ -286,7 +286,7 @@ data-platform/
   - `connectors/` — `uv` workspace member: generic, reusable extraction connector framework (Postgres/CSV/JSON-file/REST base classes + schema discovery).
   - `raw_to_clean/` — `uv` workspace member: generic raw→clean validation logic (schema coercion against `schema_registry`).
 - **`frontend/`** — module: Streamlit CRUD + on-demand pipeline trigger.
-  - `app.py`, `metadata_db.py`, `pages/` — source systems, data feeds, lakehouse models, ingestion triggers, streaming sources, trigger pipeline, per-model column definitions (`7_Model_Table_Columns.py` — see Backlog.md, this page's rebuild is not yet complete); `6_Trigger_Pipeline.py` submits `master_pipeline` directly through Dagster's GraphQL API; `8_Debug_Model_Query.py` is an ad hoc Trino query tool (pick a `model`-schema table, see its first 500 rows) for confirming a pipeline run actually populated it.
+  - `app.py`, `metadata_db.py`, `pages/` — source systems, data feeds, lakehouse models, ingestion triggers, streaming sources, trigger pipeline; `6_Trigger_Pipeline.py` submits `master_pipeline` directly through Dagster's GraphQL API; `8_Debug_Model_Query.py` is an ad hoc Trino query tool (pick a `model`-schema table, see its first 500 rows) for confirming a pipeline run actually populated it.
   - `tests/` — `test_metadata_db.py`, `test_trigger_pipeline_page.py` (`streamlit.testing.v1.AppTest` — runs a page's real script headlessly, see `Learnings.md`).
   - `Dockerfile` — `uv` workspace member (`package = false`; scoped `uv sync --package frontend`).
   - `k8s/` — Deployment, Service, `postgres-credentials` Secret, `DAGSTER_WEBSERVER_HOST`/`PORT` (namespace: `frontend`).

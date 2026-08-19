@@ -265,7 +265,7 @@ just streaming::kill
 
 `streaming/testing/` runs steps 2–8 above automatically, in isolation
 (dummy model-layer fixtures instead of requiring a real batch run first) —
-see `Progress.md`'s "Isolated streaming test suite" entry and
+see `Progress/11-streaming-ingestion.md`'s "Isolated streaming test suite" entry and
 `streaming/DebugReference.md`. It's a hand-maintained test fixture
 (`run.py`'s `_MESSAGE_FIXTURES`), not a substitute for this walkthrough —
 it exists to prove the *platform* still works, not to onboard a *new*

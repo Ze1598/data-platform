@@ -7,11 +7,11 @@
 }}
 
 {#
-    Generated scaffold (scripts/generate_model_scaffolds.py), driven by
-    lakehouse_model_columns (frontend/pages/6_Model_Table_Columns.py) --
-    dedicated staging for iot_telemetry_dim_device, distinct from any per-feed
-    stg_<feed>.sql. Casts and the key/tracked column split come from that
-    table.
+    Hand-owned staging for iot_telemetry_dim_device, distinct from
+    stg_device_heartbeats -- aliased by the model's own table_name since
+    it predates this platform's per-feed staging convention. No metadata
+    dependency: casts and the key/tracked column split are plain
+    hand-written business logic, same as any other staging model.
 #}
 
 {% set updates_enabled = var('updates_enabled_by_model', {}).get(model.name, true) %}

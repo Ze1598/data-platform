@@ -1,10 +1,10 @@
 # Data Platform: Roadmap (current state + future work)
 
-Architecture and design live in [README.md](README.md) — that's the permanent reference. This file tracks current state and what's not yet built; it and `Progress.md`/`Backlog.md`/`Learnings.md` are working documents for this project's build-out, not meant to outlive it. Completed-phase detail intentionally isn't duplicated here — see `Progress.md`, now an index into `Progress/`.
+Architecture and design live in [README.md](README.md) — that's the permanent reference. This file tracks current state and what's not yet built; it and `Progress/`/`Backlog.md`/`Learnings.md` are working documents for this project's build-out, not meant to outlive it. Completed-phase detail intentionally isn't duplicated here — see `Progress/`, a folder of distinct, grep-able per-phase/per-dated-entry logs with no separate index file.
 
 ## Current state (as of 2026-07-27)
 
-All numbered build-order phases (1–11, 13–15) are complete and live-verified — see `Progress.md`'s index for phase-by-phase detail. Phase 12 was removed from the roadmap. Nothing has a "next" designation right now — see `Backlog.md` for genuinely open, unscheduled items to pull from, and "Future work" below for larger, not-yet-scoped directions.
+All numbered build-order phases (1–11, 13–15) are complete and live-verified — see `Progress/` for phase-by-phase detail. Phase 12 was removed from the roadmap. Nothing has a "next" designation right now — see `Backlog.md` for genuinely open, unscheduled items to pull from, and "Future work" below for larger, not-yet-scoped directions.
 
 **Azure portability** is a deliberate design intention behind this project (see README.md's "Storage" bullet) — real ADLS Gen2 isn't a phase on this build order, and isn't something to implement here. Noted for context only.
 

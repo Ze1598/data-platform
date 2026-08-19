@@ -52,29 +52,22 @@ def test_clean_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):
 
 def _staging_table_names_for_feed(metadata_cur, friendly_name: str) -> list[str]:
     """Every staging table this feed's clean-layer data can physically land
-    in. Historically exactly one, aliased by the feed's own friendly_name
-    (every hand-written stg_<feed>.sql, e.g. stg_customers.sql/
-    stg_sales.sql -- still true for any feed with no lakehouse_model_columns
-    rows). A feed with lakehouse_model_columns rows
-    (frontend/pages/7_Model_Table_Columns.py) also gets one DEDICATED
-    stg_<table_name> per model sourcing from it, aliased by that model's
-    table_name -- NOT the feed's own name (see
-    scripts/generate_model_scaffolds.py's dedicated-staging codegen). A
-    feed can have both at once (a pre-existing hand-written staging model
-    plus a newly-added dedicated one for a different model), so this
-    returns every structurally-possible name; the caller checks whichever
-    ones actually exist."""
-    metadata_cur.execute(
-        """
-        SELECT DISTINCT lm.table_name
-        FROM lakehouse_model_columns lmc
-        JOIN data_feed df ON df.id = lmc.source_feed_id
-        JOIN lakehouse_models lm ON lm.id = lmc.model_id
-        WHERE df.friendly_name = %s
-        """,
-        (friendly_name,),
-    )
-    return [friendly_name] + [row[0] for row in metadata_cur.fetchall()]
+    in. Always includes the feed's own hand-written stg_<feed>.sql (e.g.
+    stg_customers.sql/stg_sales.sql). A model can also alias its staging by
+    its own table_name instead of the feed's name (see
+    dbt/domains/iot_telemetry/models/staging/stg_iot_telemetry_dim_device.sql,
+    a hand-owned staging file predating this platform's staging-is-always-
+    per-feed convention) -- found via lakehouse_models.depends_on_feeds,
+    the metadata link between a feed and any model consuming it."""
+    metadata_cur.execute("SELECT id FROM data_feed WHERE friendly_name = %s", (friendly_name,))
+    feed_id = str(metadata_cur.fetchone()[0])
+    metadata_cur.execute("SELECT table_name, depends_on_feeds FROM lakehouse_models")
+    extra = [
+        table_name
+        for table_name, depends_on_feeds in metadata_cur.fetchall()
+        if feed_id in (depends_on_feeds or "").split(",")
+    ]
+    return [friendly_name] + extra
 
 
 def test_staging_layer_timestamps_are_timezone_aware(trino_conn, metadata_conn):

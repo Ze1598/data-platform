@@ -354,6 +354,16 @@ If a pipeline validates incoming data against a metadata-tracked expected schema
 
 **Broader lesson**: any "poll until N items arrive, with a bounded attempt budget" loop has two independent knobs — how much data will realistically ever arrive, and how the loop's target/timeout are sized — and they have to be reasoned about together. A default that looks reasonable in isolation (sample up to 20 messages) can silently turn into a near-worst-case wait if the actual upstream producer's own batch size is smaller, and nothing errors — it just gets slow in a way that reads as "stuck," not "misconfigured."
 
+### A second metadata table describing the same entity as an existing one, built independently, drifts and never gets reconciled
+
+**Symptom**: `generate_model_scaffolds.py` generated a model's dedicated staging file from `lakehouse_model_columns` correctly, but `generate_deletion_synthesis_views.py` silently ignored that same file and fell back to a different, feed-named staging table for any model that also had `deletes_enabled=true` — two codegen scripts disagreeing about which staging table was authoritative for the same model.
+
+**Cause**: `lakehouse_model_columns` was added later as a richer, opt-in, per-column alternative to `lakehouse_models.business_key_columns`/`tracked_columns` — but it duplicated information that already lived on `lakehouse_models` (which model owns which columns, which are keys, which are tracked) rather than extending the existing table. The two codegen scripts were built against the two different tables independently and never reconciled, so any consumer written against the older table (deletion synthesis) had no way to know the newer table existed for a given model.
+
+**Resolution**: removed `lakehouse_model_columns` entirely rather than reconciling the two — it carried no information not already derivable from `lakehouse_models` plus its own generated code, so the "richer" table was solving a problem that didn't need a second table at all. See `Progress/2026-08-19-remove-lakehouse-model-columns.md` for the full removal.
+
+**Broader lesson**: before adding a new metadata table to capture finer-grained configuration for an entity that already has a table, check whether the existing table's own columns (or a small extension to them) could express the same thing. A second table for the same entity, built independently, doesn't just risk drifting from the first — every existing consumer of the first table becomes silently incomplete the moment the second table is the one that's actually authoritative for some rows, and nothing forces those consumers to be updated in step.
+
 ---
 
 ## Dagster + Kubernetes
@@ -623,7 +633,7 @@ Real production Dagster deployments (and now this project's own, see README.md "
 - **`dagster-webserver`**: serves GraphQL/UI, talks to the code-server over gRPC (`workspace.yaml`'s `grpc_server:` entry) rather than importing pipeline code directly. Only needs Postgres (for `dagster_db` itself).
 - **`dagster-daemon`**: the background loop (schedules, sensors, picking up QUEUED runs) — the one piece that actually calls `K8sRunLauncher.launch_run()`, and so the only one that needs `load_incluster_config: true` plus the RBAC grants above (confirmed via the earlier `k8s_job_executor` investigation that this field can't be templated per-consumer with `{env:}`, hence two full sibling `dagster.yaml` files rather than one shared, parameterized one).
 
-This split was forced, not a style choice: `master_pipeline`'s own op calls back into the webserver's GraphQL API to launch its child jobs from *inside* its own pod, and there was no cluster-addressable webserver for it to reach before this existed — see the neighboring "A feed whose source is the pipeline's own run history..." entry's fourth occurrence and Progress.md's Phase 14 section for the full arc from `dagster dev` on the host to this topology.
+This split was forced, not a style choice: `master_pipeline`'s own op calls back into the webserver's GraphQL API to launch its child jobs from *inside* its own pod, and there was no cluster-addressable webserver for it to reach before this existed — see the neighboring "A feed whose source is the pipeline's own run history..." entry's fourth occurrence and `Progress/14-master-pipeline-orchestration.md` for the full arc from `dagster dev` on the host to this topology.
 
 ### Per-job container image overrides via the `dagster-k8s/config` tag — no separate code locations needed
 
@@ -817,7 +827,7 @@ A related, sharper edge worth remembering if a dependent widget's *options* can 
 
 ### `curl`-ing a Streamlit page URL, or re-typing its backend logic in isolation, is not testing the page
 
-**Symptom**: `frontend/pages/6_Trigger_Pipeline.py` (numbered `5_` at the time this was found, see Progress.md's 2026-07-27 page-renumbering entry) crashed immediately on load in a real browser (`pandas.errors.DatabaseError: column "created_at" does not exist`, from `fetch_table(engine, "data_feed")` silently relying on `fetch_table`'s `order_by="created_at"` default — `data_feed` has no such column; every other page passes `order_by="friendly_name"` explicitly), despite having been "verified" beforehand two different ways that both reported success.
+**Symptom**: `frontend/pages/6_Trigger_Pipeline.py` (numbered `5_` at the time this was found, see `Progress/2026-07-27-documentation-audit.md`'s page-renumbering entry) crashed immediately on load in a real browser (`pandas.errors.DatabaseError: column "created_at" does not exist`, from `fetch_table(engine, "data_feed")` silently relying on `fetch_table`'s `order_by="created_at"` default — `data_feed` has no such column; every other page passes `order_by="friendly_name"` explicitly), despite having been "verified" beforehand two different ways that both reported success.
 
 **Cause, both false-positives explained**: (1) `curl http://localhost:8501/Trigger_Pipeline` returned `200` — but a Streamlit multi-page app serves a static HTML/JS shell over plain HTTP; the actual page script only executes over the browser's WebSocket connection once the client JS connects, so a bare HTTP GET never runs the page's Python at all, buggy or not. (2) The trigger *function* itself was verified by `kubectl exec`-ing a hand-copied snippet of just that function into the running pod — real, and it did prove the GraphQL logic works, but it never touched the page's top-level code (the `fetch_table` calls that populate the dropdowns, which run unconditionally on every page load, before any button is clicked) — the actual bug was in code that was never executed by either check.
 

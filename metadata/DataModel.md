@@ -128,7 +128,7 @@ Resolves the "what happens when a feed never gets a hand-modeled dimension/fact"
 
 ## `lakehouse_models`
 
-One row per Kimball fact/dimension table the platform builds — **not** staging (staging stays pure naming-convention, no metadata row of its own — `lakehouse_model_columns` below is a distinct, opt-in table describing a specific model's columns, not a staging-layer entity).
+One row per Kimball fact/dimension table the platform builds — **not** staging (staging stays pure naming-convention, no metadata row of its own).
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -157,31 +157,6 @@ One row per Kimball fact/dimension table the platform builds — **not** staging
 ### Staging update-tracking rule
 
 Staging tables have no `lakehouse_models` row of their own, but their merge behavior still needs a source of truth for "does this feed's staging table need to track attribute updates, or is it insert-only." Rule: for a given `data_feed`, find every `lakehouse_models` row whose `depends_on_feeds` includes that feed's `id`. If **any** of them has `updates_enabled = true`, that feed's staging table tracks updates (merges on `_attr_hash` change). If none do — including the case where **zero** models currently depend on the feed — staging defaults to tracking updates too (the safe default: assume changes matter until a model explicitly says otherwise via `updates_enabled = false`). Only once every dependent model agrees `updates_enabled = false` does staging become insert-only.
-
----
-
-## `lakehouse_model_columns`
-
-One row per column of a `lakehouse_models` row that has opted into the frontend's metadata-driven column-definition UX (`frontend/pages/7_Model_Table_Columns.py`) instead of hand-writing its staging/model SQL column list. A model with zero rows here is untouched by this mechanism — it keeps the original, fully hand-written `business_key_columns`/`tracked_columns`-scaffolded flow (`scripts/generate_model_scaffolds.py`'s pre-existing behavior).
-
-| Column | Type | Constraints |
-|---|---|---|
-| id | uuid | PK, default `gen_random_uuid()` |
-| model_id | uuid | not null, FK → `lakehouse_models(id)` |
-| source_feed_id | uuid | not null, FK → `data_feed(id)` — which of the model's `depends_on_feeds` this column comes from. Membership (must actually be one of `depends_on_feeds`) is application-enforced (the frontend page), same as `depends_on_feeds`/`owning_feed_id`'s own convention, not a real FK-into-a-comma-list constraint |
-| column_name | text | not null |
-| data_type | text | not null, check in `('string','long','double','boolean','timestamp')` — the same small vocabulary `raw_to_clean/schema_validation.py`'s `TYPE_MAP` already uses for feed-side schema discovery, reused here rather than a separate full-SQL-type vocabulary |
-| is_nullable | boolean | not null, default true |
-| is_business_key | boolean | not null, default false — this column is part of the model's business key: the dedicated staging model's `_key_hash` and, equivalently, the model layer's own business-key hash. Mutually exclusive with `is_tracked` (check constraint) |
-| is_tracked | boolean | not null, default true — included in the dedicated staging model's `_attr_hash` (change detection). Only meaningful when `is_business_key=false`; a column can be neither (excluded from both key and hash — a passthrough column that shouldn't itself trigger a new version/update) |
-| ordinal_position | int | not null — column order in the generated SQL, taken from entry order in the frontend's editor grid |
-| created_at | timestamptz | not null, default `now()` |
-
-Constraints: unique `(model_id, column_name)`; check `not (is_business_key and is_tracked)`.
-
-**Joins/lookups**: `model_id` → `lakehouse_models.id`. `source_feed_id` → `data_feed.id`.
-
-**Codegen**: when a model has rows here, `generate_model_scaffolds.py` generates (if missing) a *dedicated* per-model staging file, `stg_<table_name>.sql` — distinct from the pre-existing per-feed `stg_<feed>.sql` staging models, which stay shared/hand-written and unaffected. The dedicated staging model follows the same cast/`_key_hash`/`_attr_hash`/incremental/`classify_changes` pattern every hand-written staging model already uses (see `stg_customers.sql`/`stg_sales.sql`), parameterized by this table instead of hand-picked: `is_business_key` columns feed `_key_hash`, `is_tracked` columns feed `_attr_hash`, each cast per `data_type` (`string`→`varchar`, `long`→`bigint`, `double`→`double`, `boolean`→`boolean`, `timestamp`→`timestamp(6) with time zone`, matching every existing staging model's cast convention). A model whose columns span more than one distinct `source_feed_id` gets one CTE per feed in the generated staging file, but the actual combining select across feeds is intentionally left as a hand-written `-- TODO` placeholder — there is no metadata describing how two feeds' rows relate (no join-key/condition concept exists), the same reasoning `generate_model_scaffolds.py` already documents for why FK-join boilerplate at the model layer isn't auto-derived either.
 
 ---
 
