@@ -7,6 +7,8 @@ exactly, not as general guidance to weigh against other considerations.
 
 ## Absolute rules — no exceptions, no judgment calls
 
+**Use ASD-STE100** for communication with the user and for writing documentation.
+
 **No usage of soft language** which includes adjectives and adverbs to soften problems or make something sound genuine. Be objective and get to the point of what you're describing.
 
 **Ask questions until you don't need to make assumptions** because assumptions will generate silent problems. The goal at all times is to understand the vision from the user.
