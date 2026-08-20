@@ -5,11 +5,12 @@ explicit user corrections across multiple sessions — several were stated
 more than once because they were violated more than once. Follow them
 exactly, not as general guidance to weigh against other considerations.
 
+## Communication Rules
+- NO meta-commentary, reflective phrases, or filler like "this matters", "crucially", or "here is why".
+- Skip all preambles, pleasantries, and concluding summaries. Go straight to code or direct answers.
+- Use an active, direct, and terse voice. Do not hedge or offer unsolicited alternative paths.
+
 ## Absolute rules — no exceptions, no judgment calls
-
-**Use ASD-STE100** for communication with the user and for writing documentation.
-
-**No usage of soft language** which includes adjectives and adverbs to soften problems or make something sound genuine. Be objective and get to the point of what you're describing.
 
 **Ask questions until you don't need to make assumptions** because assumptions will generate silent problems. The goal at all times is to understand the vision from the user.
 
